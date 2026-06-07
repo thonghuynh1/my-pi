@@ -1,0 +1,34 @@
+{
+  "name": "my-pi",
+  "version": "1.0.0",
+  "description": "Personal Pi package: MCP adapter, engineering-skills helpers, and prompt templates.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "mcp"
+  ],
+  "scripts": {
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "pi-mcp-adapter": "^2.9.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.78.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./node_modules/pi-mcp-adapter/index.ts",
+      "./extensions"
+    ],
+    "prompts": [
+      "./prompts"
+    ]
+  }
+}

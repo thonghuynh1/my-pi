@@ -87,21 +87,38 @@ function getContextLine(ctx: ExtensionContext): string {
   return `ctx ${tokens}/${window} ${percent}`;
 }
 
-function installUsageFooter(ctx: ExtensionContext): void {
+function getModelLine(pi: ExtensionAPI, ctx: ExtensionContext): string {
+  const model = ctx.model;
+  if (!model) return "model no-model";
+
+  const thinkingLevel = pi.getThinkingLevel();
+  return `model ${model.provider}/${model.id} (${thinkingLevel})`;
+}
+
+function getCoachLine(): string {
+  const s = (globalThis as { __frontendCoach?: { clients?: number; label?: string } })
+    .__frontendCoach;
+  if (!s) return "";
+  const label = s.label ? String(s.label) : s.clients ? `${s.clients} browser${s.clients === 1 ? "" : "s"}` : "waiting";
+  return `coach ${label}`;
+}
+
+function installUsageFooter(pi: ExtensionAPI, ctx: ExtensionContext): void {
   if (!ctx.hasUI) return;
 
   ctx.ui.setFooter((_tui, theme) => ({
     dispose() {},
     invalidate() {},
     render(width: number): string[] {
-      const model = `model ${ctx.model?.id ?? "no-model"}`;
+      const model = getModelLine(pi, ctx);
       const totals = getTokenTotals(ctx);
+      const coach = getCoachLine();
 
       const line1 = padRight(getContextLine(ctx), model, width);
-      const line2 = truncateToWidth(
-        `in ${compactNumber(totals.input)} · out ${compactNumber(totals.output)} · cache ${compactNumber(totals.cache)}`,
-        width,
-      );
+      const line2Left = `in ${compactNumber(totals.input)} · out ${compactNumber(totals.output)} · cache ${compactNumber(totals.cache)}`;
+      const line2 = coach
+        ? padRight(line2Left, coach, width)
+        : truncateToWidth(line2Left, width);
       const line3 = truncateToWidth(
         `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)}`,
         width,
@@ -111,9 +128,13 @@ function installUsageFooter(ctx: ExtensionContext): void {
       const leftPart = line1.slice(0, modelStart);
       const rightPart = line1.slice(modelStart);
 
+      const coachStart = coach ? Math.max(0, line2.length - coach.length) : line2.length;
+      const line2Left2 = line2.slice(0, coachStart);
+      const line2Right = line2.slice(coachStart);
+
       return [
         theme.fg("warning", leftPart) + theme.fg("accent", rightPart),
-        theme.fg("warning", line2),
+        theme.fg("warning", line2Left2) + theme.fg("accent", line2Right),
         theme.fg("warning", line3),
       ];
     },
@@ -121,17 +142,17 @@ function installUsageFooter(ctx: ExtensionContext): void {
 }
 
 export default function usageFooter(pi: ExtensionAPI) {
-  pi.on("session_start", async (_event, ctx) => installUsageFooter(ctx));
-  pi.on("model_select", async (_event, ctx) => installUsageFooter(ctx));
-  pi.on("thinking_level_select", async (_event, ctx) => installUsageFooter(ctx));
-  pi.on("agent_start", async (_event, ctx) => installUsageFooter(ctx));
-  pi.on("turn_end", async (_event, ctx) => installUsageFooter(ctx));
-  pi.on("agent_end", async (_event, ctx) => installUsageFooter(ctx));
+  pi.on("session_start", async (_event, ctx) => installUsageFooter(pi, ctx));
+  pi.on("model_select", async (_event, ctx) => installUsageFooter(pi, ctx));
+  pi.on("thinking_level_select", async (_event, ctx) => installUsageFooter(pi, ctx));
+  pi.on("agent_start", async (_event, ctx) => installUsageFooter(pi, ctx));
+  pi.on("turn_end", async (_event, ctx) => installUsageFooter(pi, ctx));
+  pi.on("agent_end", async (_event, ctx) => installUsageFooter(pi, ctx));
 
   pi.registerCommand("usage-footer", {
     description: "Install/refresh the custom usage footer.",
     handler: async (_args, ctx) => {
-      installUsageFooter(ctx);
+      installUsageFooter(pi, ctx);
       ctx.ui.notify("Usage footer installed", "info");
     },
   });

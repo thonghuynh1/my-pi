@@ -4,8 +4,8 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const SERVER_NAME = "engineering-skills";
+const STATUS_KEY = "engineering-skills";
 const GLOBAL_MCP_CONFIG = join(homedir(), ".config", "mcp", "mcp.json");
-const DEFAULT_REPO_PATH = "F:/MyWork/PrecioHackathon/hackathon-grill-me";
 
 interface McpConfigFile {
   mcpServers?: Record<string, unknown>;
@@ -40,15 +40,14 @@ function findEngineeringSkillsConfig(): { path: string; configured: boolean } {
   return { path: GLOBAL_MCP_CONFIG, configured: false };
 }
 
-function resolveServerRepoPath(args: string | undefined): string {
-  const explicit = args?.trim();
-  if (explicit) return resolve(explicit.replace(/^['"]|['"]$/g, ""));
+function normalizeRepoPath(args: string | undefined): string | undefined {
+  const explicit = args?.trim().replace(/^['"]|['"]$/g, "");
+  if (explicit) return resolve(explicit);
 
-  if (process.env.ENGINEERING_SKILLS_MCP) {
-    return resolve(process.env.ENGINEERING_SKILLS_MCP);
-  }
+  const envPath = process.env.ENGINEERING_SKILLS_MCP?.trim();
+  if (envPath) return resolve(envPath);
 
-  return DEFAULT_REPO_PATH;
+  return undefined;
 }
 
 function writeGlobalEngineeringSkillsConfig(repoPath: string): string {
@@ -76,29 +75,52 @@ function writeGlobalEngineeringSkillsConfig(repoPath: string): string {
   return GLOBAL_MCP_CONFIG;
 }
 
+function updateStatus(ctx: { hasUI: boolean; ui: { setStatus: (key: string, value: string) => void } }): void {
+  if (!ctx.hasUI) return;
+  const status = findEngineeringSkillsConfig();
+  ctx.ui.setStatus(
+    STATUS_KEY,
+    status.configured ? "engineering-skills MCP" : "engineering-skills MCP: run /engineering-skill <repo-path>",
+  );
+}
+
 export default function engineeringSkills(pi: ExtensionAPI) {
-  pi.on("session_start", async (_event, ctx) => {
-    if (!ctx.hasUI) return;
-    const status = findEngineeringSkillsConfig();
-    ctx.ui.setStatus(
-      "engineering-skills",
-      status.configured ? "engineering-skills MCP" : "engineering-skills MCP: setup needed",
-    );
+  pi.on("session_start", async (_event, ctx) => updateStatus(ctx));
+
+  async function setupEngineeringSkills(args: string | undefined, ctx: Parameters<Parameters<typeof pi.registerCommand>[1]["handler"]>[1]) {
+    const repoPath = normalizeRepoPath(args);
+
+    if (!repoPath) {
+      const status = findEngineeringSkillsConfig();
+      if (status.configured) {
+        ctx.ui.notify(`${SERVER_NAME} MCP is already configured in ${status.path}`, "info");
+        return;
+      }
+
+      ctx.ui.notify("Usage: /engineering-skill <path-to-engineering-skills-mcp-repo>", "warning");
+      ctx.ui.notify("Example: /engineering-skill C:/skills-vscode", "info");
+      return;
+    }
+
+    try {
+      const configPath = writeGlobalEngineeringSkillsConfig(repoPath);
+      updateStatus(ctx);
+      ctx.ui.notify(`Configured ${SERVER_NAME} MCP in ${configPath}`, "info");
+      ctx.ui.notify("Reloading Pi so pi-mcp-adapter sees the config...", "info");
+      await ctx.reload();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(message, "error");
+    }
+  }
+
+  pi.registerCommand("engineering-skill", {
+    description: "Configure engineering-skills MCP. Usage: /engineering-skill <path-to-engineering-skills-mcp-repo>",
+    handler: setupEngineeringSkills,
   });
 
   pi.registerCommand("engineering-skills-mcp-setup", {
-    description: "Configure global engineering-skills MCP server. Optional arg: path to engineering-skills-mcp repo.",
-    handler: async (args, ctx) => {
-      const repoPath = resolveServerRepoPath(args);
-      try {
-        const configPath = writeGlobalEngineeringSkillsConfig(repoPath);
-        ctx.ui.notify(`Configured ${SERVER_NAME} MCP in ${configPath}`, "info");
-        ctx.ui.notify("Reloading Pi so pi-mcp-adapter sees the config...", "info");
-        await ctx.reload();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        ctx.ui.notify(message, "error");
-      }
-    },
+    description: "Alias for /engineering-skill <path-to-engineering-skills-mcp-repo>.",
+    handler: setupEngineeringSkills,
   });
 }

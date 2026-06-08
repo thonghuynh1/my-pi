@@ -1,10 +1,12 @@
 {
   "name": "frontend-coach",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Click an element in your browser, tell pi what to change. pi edits the source.",
+  "description": "Click an element in your browser, tell pi what to change. pi edits the source. Also records autonomous browser tests as .webm videos.",
   "dependencies": {
+    "ffmpeg-static": "^5.2.0",
+    "playwright-core": "^1.49.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {

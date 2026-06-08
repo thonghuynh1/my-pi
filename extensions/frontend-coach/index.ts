@@ -1,7 +1,8 @@
 /**
  * frontend-coach
  *
- * Hosts a tiny HTTP + WebSocket server on 127.0.0.1:7777.
+ * Provides a tiny HTTP + WebSocket server on 127.0.0.1:7777.
+ * The server is off by default; run /coach-on to bind the port.
  *  - HTTP  GET /picker.js  → serves the in-page click picker (one-time fetch)
  *  - WS    /               → live channel between the page and pi
  *
@@ -27,10 +28,23 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { spawn } from "node:child_process";
 import { WebSocketServer, type WebSocket } from "ws";
+import {
+	DEFAULT_CDP_PORT,
+	ensureBrowser,
+	findEdgeBinary,
+	isEdgeRunning,
+	launchEdge,
+	profileDir,
+	stopEdge,
+} from "./edge.ts";
+import { recordTest, type RecordTestInput } from "./recorder.ts";
+import { listRecords, loadRecord, pathsForId, recordsDir } from "./records.ts";
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.FRONTEND_COACH_PORT ?? 7777);
+const AUTO_START = /^(1|true|yes)$/i.test(process.env.FRONTEND_COACH_AUTO_START ?? "");
 
 export default async function (pi: ExtensionAPI) {
 	const here = dirname(fileURLToPath(import.meta.url));
@@ -239,15 +253,20 @@ export default async function (pi: ExtensionAPI) {
 		else setStatus(coachState.label || "off");
 	});
 
-	// ------- Initial bind -------
-	const initial = await startServer();
-	if (!initial.ok) {
-		console.warn(
-			`[frontend-coach] could not bind ${HOST}:${PORT} (${initial.reason}).\n` +
-			`  This pi will run with frontend-coach disabled. Use /coach-on to retry,\n` +
-			`  or set FRONTEND_COACH_PORT=7778 to bind a different port (also update\n` +
-			`  Web/src/index.tsx bootstrap if you do).`,
-		);
+	// ------- Initial state -------
+	// Keep the bridge off by default so ordinary pi sessions do not reserve a port.
+	// Set FRONTEND_COACH_AUTO_START=1 if you want the old startup behavior.
+	setStatus("off");
+	if (AUTO_START) {
+		const initial = await startServer();
+		if (!initial.ok) {
+			console.warn(
+				`[frontend-coach] could not bind ${HOST}:${PORT} (${initial.reason}).\n` +
+				`  This pi will run with frontend-coach disabled. Use /coach-on to retry,\n` +
+				`  or set FRONTEND_COACH_PORT=7778 to bind a different port (also update\n` +
+				`  Web/src/index.tsx bootstrap if you do).`,
+			);
+		}
 	}
 
 	// ------- Tools the LLM can call back into the page -------
@@ -293,6 +312,91 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
+	// ------- browser_record_test: autonomous, recorded UI test -------
+	// The agent calls this AFTER finishing a frontend change. It drives the
+	// already-open Edge tab via CDP (no permission prompts), captures a webm
+	// of the interaction, and writes a structured report. Assertion failures
+	// surface as isError=true so the agent can iterate on the fix.
+	const StepSchema = Type.Object({
+		action: Type.Union([
+			Type.Literal("click"), Type.Literal("dblclick"),
+			Type.Literal("type"), Type.Literal("fill"),
+			Type.Literal("press"), Type.Literal("hover"),
+			Type.Literal("wait"), Type.Literal("waitFor"),
+			Type.Literal("navigate"), Type.Literal("scroll"),
+			Type.Literal("eval"),
+		], { description: "What to do at this step." }),
+		selector: Type.Optional(Type.String({ description: "CSS selector (click/dblclick/type/fill/hover/waitFor/scroll/optional for press)." })),
+		value: Type.Optional(Type.String({ description: "Text for type/fill." })),
+		key: Type.Optional(Type.String({ description: "Key name for press (e.g. 'Enter', 'Tab', 'Control+S')." })),
+		url: Type.Optional(Type.String({ description: "URL for navigate." })),
+		ms: Type.Optional(Type.Number({ description: "Milliseconds for wait, or timeout override for waitFor." })),
+		expression: Type.Optional(Type.String({ description: "JS expression for eval (no statements)." })),
+	});
+	const AssertionSchema = Type.Object({
+		description: Type.String({ description: "Human-readable description, shown in the report." }),
+		expression: Type.String({ description: "JS expression evaluated in the page; truthy = pass. Example: document.querySelector('#send[disabled]') !== null" }),
+	});
+	pi.registerTool({
+		name: "browser_record_test",
+		label: "Record browser test",
+		description:
+			"Run an autonomous UI test in the controlled Edge tab (no user prompts) and save a .webm screen recording " +
+			"plus a structured report under ./.frontend-coach/records/. Use this after implementing a frontend change " +
+			"to prove it works. If any step or assertion fails, the tool returns isError=true with a transcript — fix the " +
+			"code and call it again. Requires /coach-launch-edge to have been run first.",
+		parameters: Type.Object({
+			name: Type.String({ description: "Short title for the recording (used in filename and report)." }),
+			url: Type.Optional(Type.String({ description: "Navigate to this URL before recording. Omit to use the current tab." })),
+			steps: Type.Array(StepSchema, { description: "Sequence of UI actions to perform while recording." }),
+			assertions: Type.Optional(Type.Array(AssertionSchema, { description: "Post-step checks. Test passes only if all are truthy." })),
+			fps: Type.Optional(Type.Number({ description: "Recording frame rate (1–30, default 10)." })),
+			relatedChange: Type.Optional(Type.String({ description: "Short note describing the change this test verifies (file paths, intent). Saved in the report." })),
+			stopOnStepFailure: Type.Optional(Type.Boolean({ description: "Stop running steps on the first failure (default true)." })),
+			viewport: Type.Optional(Type.Object({
+				width: Type.Number(),
+				height: Type.Number(),
+			}, { description: "Override viewport size for this test." })),
+		}),
+		async execute(_id, params: RecordTestInput) {
+			try {
+				const { report } = await recordTest(params);
+				const lines: string[] = [];
+				lines.push(`${report.passed ? "✅ PASSED" : "❌ FAILED"} — ${report.name}`);
+				lines.push(`id    : ${report.id}`);
+				lines.push(`video : ${report.videoPath} (${(report.video.sizeBytes / 1024).toFixed(1)} KiB)`);
+				lines.push(`report: ${pathsForId(report.id).md}`);
+				if (report.failure) lines.push(`fail  : ${report.failure}`);
+				const failedSteps = report.steps.filter((s) => !s.ok);
+				const failedAsserts = report.assertions.filter((a) => !a.ok);
+				if (failedSteps.length) {
+					lines.push("failed steps:");
+					for (const s of failedSteps) lines.push(`  - ${s.action} ${s.selector ?? s.url ?? s.expression ?? ""} → ${s.error}`);
+				}
+				if (failedAsserts.length) {
+					lines.push("failed assertions:");
+					for (const a of failedAsserts) lines.push(`  - ${a.description}${a.error ? ` (${a.error})` : ""}`);
+				}
+				const recentErrors = report.console.filter((c) => c.type === "error" || c.type === "pageerror").slice(-5);
+				if (recentErrors.length) {
+					lines.push("console errors:");
+					for (const c of recentErrors) lines.push(`  [${c.type}] ${c.text}`);
+				}
+				return {
+					content: [{ type: "text", text: lines.join("\n") }],
+					details: report,
+					isError: !report.passed,
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `browser_record_test failed: ${(err as Error).message}` }],
+					details: { error: String((err as Error).message ?? err) } as any,
+					isError: true,
+				};
+			}
+		},
+	});
+
 	pi.registerTool({
 		name: "browser_eval",
 		label: "Evaluate JS in page",
@@ -310,6 +414,110 @@ export default async function (pi: ExtensionAPI) {
 	});
 
 	// ------- Commands -------
+	// ------- Edge launch + recording commands -------
+	pi.registerCommand("coach-launch-edge", {
+		description: "Launch a controlled Microsoft Edge window with CDP enabled so the agent can drive + record tabs without permission prompts. Usage: /coach-launch-edge [url]",
+		handler: async (args, ctx) => {
+			const url = (args ?? "").trim() || process.env.FRONTEND_COACH_URL || undefined;
+			ctx.ui.notify(`Launching Edge on CDP port ${DEFAULT_CDP_PORT}…`, "info");
+			const r = await launchEdge({ url });
+			if (!r.ok) {
+				ctx.ui.notify(`Edge launch failed: ${r.reason}`, "error");
+				return;
+			}
+			if (r.alreadyRunning) {
+				ctx.ui.notify(`Edge already listening on :${r.port} — reusing it`, "info");
+			} else {
+				ctx.ui.notify(`Edge launched on :${r.port} (profile: ${profileDir()})`, "info");
+				console.log(`[frontend-coach] Edge profile dir: ${profileDir()}`);
+			}
+		},
+	});
+
+	pi.registerCommand("coach-edge-status", {
+		description: "Show whether the controlled Edge instance is reachable.",
+		handler: async (_args, ctx) => {
+			const bin = findEdgeBinary();
+			let alive = false;
+			try {
+				const r = await fetch(`http://127.0.0.1:${DEFAULT_CDP_PORT}/json/version`);
+				alive = r.ok;
+			} catch {}
+			const lines = [
+				`binary       : ${bin ?? "(not found)"}`,
+				`cdp port     : ${DEFAULT_CDP_PORT}`,
+				`cdp reachable: ${alive ? "yes" : "no"}`,
+				`spawned here : ${isEdgeRunning() ? "yes" : "no"}`,
+				`profile      : ${profileDir()}`,
+			];
+			ctx.ui.notify(lines.join("  ·  "), "info");
+			console.log("\n--- coach-edge-status ---\n" + lines.join("\n") + "\n");
+		},
+	});
+
+	pi.registerCommand("coach-stop-edge", {
+		description: "Kill the controlled Edge window spawned by /coach-launch-edge (does not touch your normal Edge).",
+		handler: async (_args, ctx) => {
+			if (!isEdgeRunning()) {
+				ctx.ui.notify("No Edge instance was spawned by this pi (nothing to kill).", "info");
+				return;
+			}
+			stopEdge();
+			ctx.ui.notify("Controlled Edge instance terminated.", "info");
+		},
+	});
+
+	pi.registerCommand("coach-records", {
+		description: "List the latest browser_record_test recordings (pass/fail, video paths).",
+		handler: async (_args, ctx) => {
+			const rs = listRecords(30);
+			if (rs.length === 0) {
+				ctx.ui.notify(`No records yet. Folder: ${recordsDir()}`, "info");
+				return;
+			}
+			const lines = rs.map((r) =>
+				`${r.passed ? "✅" : "❌"} ${r.recordedAt}  ${r.id}  (${(r.durationMs / 1000).toFixed(1)}s)\n     ${r.videoPath}`,
+			);
+			ctx.ui.notify(`${rs.length} record(s) in ${recordsDir()}`, "info");
+			console.log("\n--- frontend-coach records ---\n" + lines.join("\n") + "\n");
+		},
+	});
+
+	pi.registerCommand("coach-record", {
+		description: "Print the markdown report for a recording. Usage: /coach-record <id>",
+		handler: async (args, ctx) => {
+			const id = (args ?? "").trim();
+			if (!id) {
+				ctx.ui.notify("Usage: /coach-record <id>  (see /coach-records for ids)", "error");
+				return;
+			}
+			const r = loadRecord(id);
+			if (!r) {
+				ctx.ui.notify(`No record found for id ${id}`, "error");
+				return;
+			}
+			const md = readFileSync(pathsForId(id).md, "utf8");
+			ctx.ui.notify(`Printed report for ${id}`, "info");
+			console.log("\n" + md + "\n");
+			console.log(`Open the video:  ${pathsForId(id).video}\n`);
+		},
+	});
+
+	pi.registerCommand("coach-records-open", {
+		description: "Open the ./.frontend-coach/records/ folder in your OS file explorer.",
+		handler: async (_args, ctx) => {
+			const dir = recordsDir();
+			try {
+				if (process.platform === "win32") spawn("explorer", [dir], { detached: true, stdio: "ignore" }).unref();
+				else if (process.platform === "darwin") spawn("open", [dir], { detached: true, stdio: "ignore" }).unref();
+				else spawn("xdg-open", [dir], { detached: true, stdio: "ignore" }).unref();
+				ctx.ui.notify(`Opened ${dir}`, "info");
+			} catch (err) {
+				ctx.ui.notify(`Failed to open folder: ${(err as Error).message}`, "error");
+			}
+		},
+	});
+
 	pi.registerCommand("coach-bookmarklet", {
 		description: "Print a bookmarklet you can drag to your bookmarks bar to inject the picker.",
 		handler: async (_args, ctx) => {
@@ -366,5 +574,8 @@ export default async function (pi: ExtensionAPI) {
 	// ------- Cleanup -------
 	pi.on("session_shutdown", () => {
 		stopServer("shutdown");
+		// Leave the Edge window alone on session_shutdown — it survives /new
+		// and /resume so the agent keeps the same logged-in tab across sessions.
+		// Use /coach-stop-edge to kill it explicitly.
 	});
 }

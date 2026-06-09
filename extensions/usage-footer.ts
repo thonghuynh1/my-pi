@@ -6,8 +6,30 @@ type AssistantUsage = {
   cacheRead?: number;
   cacheWrite?: number;
   totalTokens?: number;
-  cost?: { total?: number };
+  cost?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
 };
+
+// Returns the total USD cost of an assistant message robustly: prefers
+// the SDK-precomputed `cost.total` (already includes cacheRead/cacheWrite
+// at their proper rates), and falls back to summing the sub-fields if
+// the provider forgot to fill `total`. Guarantees cache pricing always
+// counts.
+function totalCostOf(usage: AssistantUsage | undefined): number {
+  if (!usage?.cost) return 0;
+  if (typeof usage.cost.total === "number") return usage.cost.total;
+  return (
+    (usage.cost.input ?? 0) +
+    (usage.cost.output ?? 0) +
+    (usage.cost.cacheRead ?? 0) +
+    (usage.cost.cacheWrite ?? 0)
+  );
+}
 
 function compactNumber(value: number): string {
   if (!Number.isFinite(value)) return "0";
@@ -70,7 +92,7 @@ function getTokenTotals(ctx: ExtensionContext): {
     output += messageOutput;
     cache += messageCache;
     total += usage.totalTokens ?? messageInput + messageOutput + messageCache;
-    cost += usage.cost?.total ?? 0;
+    cost += totalCostOf(usage);
   }
 
   return { input, output, cache, total, cost };
@@ -103,6 +125,20 @@ function getCoachLine(): string {
   return `coach ${label}`;
 }
 
+function getSubagentLine(): string {
+  const s = (globalThis as { __subagent?: { enabled?: boolean; active?: number; label?: string } })
+    .__subagent;
+  if (!s) return "";
+  const label = s.label
+    ? String(s.label)
+    : s.enabled
+      ? s.active && s.active > 0
+        ? `on · ${s.active} running`
+        : "on"
+      : "off";
+  return `subagent ${label}`;
+}
+
 function installUsageFooter(pi: ExtensionAPI, ctx: ExtensionContext): void {
   if (!ctx.hasUI) return;
 
@@ -113,16 +149,17 @@ function installUsageFooter(pi: ExtensionAPI, ctx: ExtensionContext): void {
       const model = getModelLine(pi, ctx);
       const totals = getTokenTotals(ctx);
       const coach = getCoachLine();
+      const subagent = getSubagentLine();
 
       const line1 = padRight(getContextLine(ctx), model, width);
       const line2Left = `in ${compactNumber(totals.input)} · out ${compactNumber(totals.output)} · cache ${compactNumber(totals.cache)}`;
       const line2 = coach
         ? padRight(line2Left, coach, width)
         : truncateToWidth(line2Left, width);
-      const line3 = truncateToWidth(
-        `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)}`,
-        width,
-      );
+      const line3Left = `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)}`;
+      const line3 = subagent
+        ? padRight(line3Left, subagent, width)
+        : truncateToWidth(line3Left, width);
 
       const modelStart = Math.max(0, line1.length - model.length);
       const leftPart = line1.slice(0, modelStart);
@@ -132,10 +169,14 @@ function installUsageFooter(pi: ExtensionAPI, ctx: ExtensionContext): void {
       const line2Left2 = line2.slice(0, coachStart);
       const line2Right = line2.slice(coachStart);
 
+      const subagentStart = subagent ? Math.max(0, line3.length - subagent.length) : line3.length;
+      const line3Left2 = line3.slice(0, subagentStart);
+      const line3Right = line3.slice(subagentStart);
+
       return [
         theme.fg("warning", leftPart) + theme.fg("accent", rightPart),
         theme.fg("warning", line2Left2) + theme.fg("accent", line2Right),
-        theme.fg("warning", line3),
+        theme.fg("warning", line3Left2) + theme.fg("accent", line3Right),
       ];
     },
   }));

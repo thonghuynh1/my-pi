@@ -96,6 +96,12 @@ let processedAssistantCount = 0;
 // Regular-tool records that have completed since the last assistant
 // message; their cost is set when the next assistant turn arrives.
 const pendingRegularTools: ToolRecord[] = [];
+// Accumulated cost of tool-calling assistant turns awaiting distribution
+// to the tool records that haven't finished yet at the time the turn is
+// processed. Distributed on the next turn_end when pendingRegularTools
+// is non-empty.
+let pendingCallingTurnCost = 0;
+let pendingCallingTurnTokens = 0;
 // Stashed for sessionTotals() so the widget renderer can read the real
 // session branch (same source the footer uses) without being passed ctx.
 let currentCtx: ExtensionContext | undefined;
@@ -238,9 +244,10 @@ function totalCostOf(usage: AssistantUsage | undefined): number {
 	);
 }
 
-// Real session billing. Reads the parent's session branch (the same
-// source `usage-footer.ts` uses) and ADDS subagent costs (which run in
-// their own in-memory sessions and never appear in the parent branch).
+// Tool-attributed session cost. Only counts assistant turns that contain
+// tool calls (the model spent tokens generating those calls) plus subagent
+// costs. Pure-text response turns are "main agent" cost shown only in the
+// usage-footer's grand total.
 function sessionTotals(): { tokens: number; costUsd: number } {
 	let tokens = 0;
 	let costUsd = 0;
@@ -249,7 +256,12 @@ function sessionTotals(): { tokens: number; costUsd: number } {
 	if (sm) {
 		for (const entry of sm.getBranch()) {
 			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-			const usage = (entry.message as { usage?: AssistantUsage }).usage;
+			const msg = entry.message as { content?: any[]; usage?: AssistantUsage };
+			const hasToolCalls =
+				Array.isArray(msg.content) &&
+				msg.content.some((b: any) => b.type === "toolCall");
+			if (!hasToolCalls) continue;
+			const usage = msg.usage;
 			if (!usage) continue;
 			const input = usage.input ?? 0;
 			const output = usage.output ?? 0;
@@ -270,54 +282,63 @@ function sessionTotals(): { tokens: number; costUsd: number } {
 	return { tokens, costUsd };
 }
 
-// Walk the branch on turn_end, find any new assistant message(s) since
-// last call, and distribute their *real* billed input cost across the
-// regular tools that ran since the previous turn (weighted by result
-// size). This gives each tool row a $ value that matches what the
-// provider actually charged to feed that result back into the prompt.
+// Walk the branch on turn_end. When a new assistant message contains tool
+// calls, stash its full cost.total (the entire model cost of that turn).
+// When pendingRegularTools is non-empty AND we have stashed calling-turn
+// cost, distribute it proportionally by args token size. This gives each
+// tool row a $ value reflecting the full model cost of the turn that
+// generated the call.
 function attributePendingTools(ctx: ExtensionContext): void {
 	const sm = ctx.sessionManager;
 	if (!sm) return;
 
 	let seen = 0;
-	let newInputCost = 0;
-	let newInputTokens = 0;
 	let lastModelId: string | undefined;
 
 	for (const entry of sm.getBranch()) {
 		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 		seen++;
 		if (seen <= processedAssistantCount) continue;
-		const usage = (entry.message as { usage?: AssistantUsage; model?: string }).usage;
-		lastModelId = (entry.message as { model?: string }).model ?? lastModelId;
+		const msg = entry.message as { content?: any[]; usage?: AssistantUsage; model?: string };
+		lastModelId = msg.model ?? lastModelId;
+		const usage = msg.usage;
 		if (!usage) continue;
-		// "New" prompt cost this turn = freshly-billed input + any new
-		// cache-write tokens (content promoted into the cache). cacheRead
-		// is the cheap re-use of the already-cached prefix and is not
-		// caused by the new tool results.
-		newInputCost += (usage.cost?.input ?? 0) + (usage.cost?.cacheWrite ?? 0);
-		newInputTokens += (usage.input ?? 0) + (usage.cacheWrite ?? 0);
+
+		// Detect tool-calling turns and accumulate their full cost.
+		const hasToolCalls =
+			Array.isArray(msg.content) &&
+			msg.content.some((b: any) => b.type === "toolCall");
+		if (hasToolCalls) {
+			pendingCallingTurnCost += totalCostOf(usage);
+			const input = usage.input ?? 0;
+			const output = usage.output ?? 0;
+			const cacheRead = usage.cacheRead ?? 0;
+			const cacheWrite = usage.cacheWrite ?? 0;
+			pendingCallingTurnTokens += usage.totalTokens ?? input + output + cacheRead + cacheWrite;
+		}
 	}
 
 	processedAssistantCount = seen;
 
 	if (pendingRegularTools.length === 0) return;
-	if (newInputCost <= 0 && newInputTokens <= 0) return;
+	if (pendingCallingTurnCost <= 0) return;
 
 	let totalWeight = 0;
 	for (const rec of pendingRegularTools) {
-		totalWeight += rec.fullResultLen ?? rec.resultText?.length ?? 1;
+		totalWeight += rec.outputTokens ?? 1;
 	}
 	if (totalWeight <= 0) totalWeight = pendingRegularTools.length;
 
 	for (const rec of pendingRegularTools) {
-		const w = (rec.fullResultLen ?? rec.resultText?.length ?? 1) / totalWeight;
-		rec.costUsd = newInputCost * w;
-		rec.inputTokens = Math.round(newInputTokens * w);
+		const w = (rec.outputTokens ?? 1) / totalWeight;
+		rec.costUsd = pendingCallingTurnCost * w;
+		rec.inputTokens = Math.round(pendingCallingTurnTokens * w);
 		rec.modelId = lastModelId ?? rec.modelId;
 		rec.costAttributed = true;
 	}
 	pendingRegularTools.length = 0;
+	pendingCallingTurnCost = 0;
+	pendingCallingTurnTokens = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +425,8 @@ export default function (pi: ExtensionAPI) {
 		currentCtx = ctx;
 		processedAssistantCount = 0;
 		pendingRegularTools.length = 0;
+		pendingCallingTurnCost = 0;
+		pendingCallingTurnTokens = 0;
 		if (!ctx.hasUI) return;
 		refreshWidget(ctx);
 	});

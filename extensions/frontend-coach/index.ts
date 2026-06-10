@@ -33,14 +33,26 @@ import { WebSocketServer, type WebSocket } from "ws";
 import {
 	DEFAULT_CDP_PORT,
 	ensureBrowser,
+	ensurePickerInstalled,
 	findEdgeBinary,
 	isEdgeRunning,
 	launchEdge,
 	profileDir,
 	stopEdge,
 } from "./edge.ts";
-import { recordTest, type RecordTestInput } from "./recorder.ts";
+import { recordTest, type RecordTestInput, type Step as RecorderStep, type Assertion as RecorderAssertion } from "./recorder.ts";
 import { listRecords, loadRecord, pathsForId, recordsDir } from "./records.ts";
+import {
+	catalogStats,
+	coachEnv,
+	listWidgets,
+	repoForFile,
+	resolveRecordingPlan,
+	resolveWidget,
+	type Scope,
+} from "./widgets.ts";
+import { spawnSync } from "node:child_process";
+import { resolve as resolvePath } from "node:path";
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.FRONTEND_COACH_PORT ?? 7777);
@@ -397,6 +409,216 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
+	// ------- Widget-aware helpers (MyOffice-specific) -------
+	// These three tools let the Ralph loop go from "I changed file X" to a
+	// recorded test of the right widget URL in one call, without hand-
+	// maintaining a routes file. See widgets.ts for the resolver.
+	const ScopeSchema = Type.Union([
+		Type.Literal("user-aggregated"),
+		Type.Literal("user-overview"),
+		Type.Literal("company-single"),
+		Type.Literal("company-special"),
+		Type.Literal("modal"),
+	]);
+
+	pi.registerTool({
+		name: "coach_resolve_widget",
+		label: "Resolve MyOffice widget",
+		description:
+			"Map a file path / widget uid / scope to the concrete MyOffice widget(s) it lives in. " +
+			"Returns the URL, mount selector and a ready-expression for each candidate so the agent " +
+			"knows where to record a test. Catalog is derived from WidgetDataProvider.cs (no static " +
+			"map to maintain). When `file` matches multiple widgets, results are ranked by filename " +
+			"heuristic — first entry is the best guess.",
+		parameters: Type.Object({
+			file: Type.Optional(Type.String({ description: "Absolute path of a changed source file (e.g. C:/GitRepos/Documents/src/X.tsx)." })),
+			uid: Type.Optional(Type.String({ description: "Widget Uid as defined in WidgetDataProvider.cs (e.g. 'Documents', 'AggregatedMessages')." })),
+			scope: Type.Optional(ScopeSchema),
+			serviceName: Type.Optional(Type.String({ description: "ServiceName / repo name (e.g. 'Documents', 'Activities')." })),
+		}),
+		async execute(_id, params: { file?: string; uid?: string; scope?: Scope; serviceName?: string }) {
+			try {
+				const hits = await resolveWidget(params);
+				if (hits.length === 0) {
+					return {
+						content: [{ type: "text", text: `No widget matched query: ${JSON.stringify(params)}` }],
+						details: { widgets: [] },
+						isError: true,
+					};
+				}
+				const lines = hits.slice(0, 10).map((w, i) => {
+					const tag = i === 0 && hits.length > 1 ? "\u2605 " : "  ";
+					return `${tag}${w.uid} [${w.scope}] service=${w.serviceName} viewState=${w.viewState}\n` +
+						`     url   : ${w.url ?? "(no url \u2014 needs vars or is modal)"}\n` +
+						`     mount : ${w.mountSelector}\n` +
+						`     repo  : ${w.repo.path}`;
+				});
+				return {
+					content: [{ type: "text", text: lines.join("\n\n") }],
+					details: { widgets: hits },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `coach_resolve_widget failed: ${(err as Error).message}` }],
+					details: { error: (err as Error).message },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "coach_list_widgets",
+		label: "List MyOffice widgets",
+		description:
+			"List every known MyOffice widget (optionally filtered by scope / serviceName). " +
+			"Useful for fan-out testing (\"record one test per widget in this repo\") or for the agent " +
+			"to discover what exists before planning.",
+		parameters: Type.Object({
+			scope: Type.Optional(ScopeSchema),
+			serviceName: Type.Optional(Type.String()),
+		}),
+		async execute(_id, params: { scope?: Scope; serviceName?: string }) {
+			try {
+				const all = await listWidgets(params);
+				const lines = all.map((w) =>
+					`${w.uid.padEnd(34)} ${w.scope.padEnd(18)} ${w.serviceName.padEnd(14)} ${w.url ?? "(no url)"}`,
+				);
+				return {
+					content: [{
+						type: "text",
+						text: `${all.length} widget(s)\n\nUID                                SCOPE              SERVICE        URL\n${lines.join("\n")}`,
+					}],
+					details: { widgets: all },
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `coach_list_widgets failed: ${(err as Error).message}` }],
+					details: { error: (err as Error).message },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "browser_record_for_widget",
+		label: "Record test for widget",
+		description:
+			"End-to-end widget-aware recording. Pick the target widget by `uid`, by `file` (changed " +
+			"source path), or `fromGitDiff:true` (uses `git diff --name-only HEAD`). The tool resolves " +
+			"the MyOffice URL + mount selector via WidgetDataProvider.cs, prepends auto wait/ready " +
+			"steps, then runs browser_record_test. Returns the same pass/fail report. Requires " +
+			"/coach-launch-edge to have been run first.",
+		parameters: Type.Object({
+			uid: Type.Optional(Type.String({ description: "Widget Uid to test. Mutually exclusive with file/fromGitDiff." })),
+			file: Type.Optional(Type.String({ description: "A changed source file; the tool maps it to its owning widget." })),
+			fromGitDiff: Type.Optional(Type.Boolean({ description: "If true, runs `git diff --name-only HEAD` and uses the first matched widget." })),
+			scope: Type.Optional(ScopeSchema),
+			name: Type.Optional(Type.String({ description: "Recording title; defaults to '<uid> smoke'." })),
+			relatedChange: Type.Optional(Type.String()),
+			steps: Type.Optional(Type.Array(StepSchema, { description: "Extra steps appended after the auto waitFor/ready check." })),
+			assertions: Type.Optional(Type.Array(AssertionSchema)),
+			fps: Type.Optional(Type.Number()),
+			shellOrigin: Type.Optional(Type.String({ description: "Override MyOffice origin (default https://localhost:5050)." })),
+		}),
+		async execute(_id, params: {
+			uid?: string;
+			file?: string;
+			fromGitDiff?: boolean;
+			scope?: Scope;
+			name?: string;
+			relatedChange?: string;
+			steps?: RecorderStep[];
+			assertions?: RecorderAssertion[];
+			fps?: number;
+			shellOrigin?: string;
+		}) {
+			try {
+				let file = params.file;
+				if (params.fromGitDiff && !file && !params.uid) {
+					const diff = spawnSync("git", ["diff", "--name-only", "HEAD"], { encoding: "utf8" });
+					if (diff.status !== 0) {
+						return {
+							content: [{ type: "text", text: `git diff failed: ${diff.stderr || diff.error?.message || "unknown"}` }],
+							details: {},
+							isError: true,
+						};
+					}
+					const files = diff.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean).map((p) => resolvePath(p));
+					for (const f of files) {
+						if (repoForFile(f)) { file = f; break; }
+					}
+					if (!file) {
+						return {
+							content: [{ type: "text", text: `No changed file maps to a known repo. Diff:\n${files.join("\n")}` }],
+							details: { files },
+							isError: true,
+						};
+					}
+				}
+
+				if (!file && !params.uid) {
+					return {
+						content: [{ type: "text", text: "browser_record_for_widget needs one of: uid, file, or fromGitDiff:true" }],
+						details: {},
+						isError: true,
+					};
+				}
+
+				const { plan, candidates, reason } = await resolveRecordingPlan({
+					uid: params.uid,
+					file,
+					scope: params.scope,
+					shellOrigin: params.shellOrigin,
+				});
+				if (!plan) {
+					return {
+						content: [{
+							type: "text",
+							text: `Cannot record: ${reason}\nCandidates considered:\n${candidates.slice(0, 5).map((w) => `  - ${w.uid} [${w.scope}] url=${w.url ?? "(none)"}`).join("\n") || "  (none)"}`,
+						}],
+						details: { candidates },
+						isError: true,
+					};
+				}
+
+				const recordInput: RecordTestInput = {
+					name: params.name ?? `${plan.widget.uid} smoke`,
+					url: plan.absoluteUrl,
+					steps: [
+						...plan.autoSteps.map<RecorderStep>((s) => s as RecorderStep),
+						...(params.steps ?? []),
+					],
+					assertions: params.assertions,
+					fps: params.fps,
+					relatedChange: params.relatedChange ?? (file ? `file=${file} widget=${plan.widget.uid}` : `widget=${plan.widget.uid}`),
+				};
+
+				const { report } = await recordTest(recordInput);
+				const head = `${report.passed ? "\u2705 PASSED" : "\u274C FAILED"} \u2014 ${report.name}\n` +
+					`widget: ${plan.widget.uid} [${plan.widget.scope}] @ ${plan.absoluteUrl}\n` +
+					`id    : ${report.id}\n` +
+					`video : ${report.videoPath}`;
+				const failBits: string[] = [];
+				if (report.failure) failBits.push(`fail  : ${report.failure}`);
+				for (const s of report.steps.filter((x) => !x.ok)) failBits.push(`  step ${s.action} ${s.selector ?? s.url ?? s.expression ?? ""} \u2192 ${s.error}`);
+				for (const a of report.assertions.filter((x) => !x.ok)) failBits.push(`  assert FAIL: ${a.description}${a.error ? ` (${a.error})` : ""}`);
+				return {
+					content: [{ type: "text", text: failBits.length ? `${head}\n${failBits.join("\n")}` : head }],
+					details: { plan, report } as any,
+					isError: !report.passed,
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `browser_record_for_widget failed: ${(err as Error).message}` }],
+					details: { error: (err as Error).message },
+					isError: true,
+				};
+			}
+		},
+	});
+
 	pi.registerTool({
 		name: "browser_eval",
 		label: "Evaluate JS in page",
@@ -415,6 +637,25 @@ export default async function (pi: ExtensionAPI) {
 
 	// ------- Commands -------
 	// ------- Edge launch + recording commands -------
+	pi.registerCommand("coach-inject-picker", {
+		description: "Force-install the Alt+P picker into the controlled Edge (auto-injects on every navigation thereafter). Useful if Alt+P stopped responding.",
+		handler: async (_args, ctx) => {
+			try {
+				const browser = await ensureBrowser();
+				const context = browser.contexts()[0] ?? (await browser.newContext());
+				const pages = context.pages();
+				await ensurePickerInstalled(context, pages[0]);
+				// Also inject into any other open tabs so they all gain Alt+P.
+				for (const p of pages.slice(1)) {
+					try { await ensurePickerInstalled(context, p); } catch {}
+				}
+				ctx.ui.notify(`Picker injected into ${pages.length} tab(s).`, "info");
+			} catch (err) {
+				ctx.ui.notify(`Failed to inject picker: ${(err as Error).message}`, "error");
+			}
+		},
+	});
+
 	pi.registerCommand("coach-launch-edge", {
 		description: "Launch a controlled Microsoft Edge window with CDP enabled so the agent can drive + record tabs without permission prompts. Usage: /coach-launch-edge [url]",
 		handler: async (args, ctx) => {
@@ -430,6 +671,18 @@ export default async function (pi: ExtensionAPI) {
 			} else {
 				ctx.ui.notify(`Edge launched on :${r.port} (profile: ${profileDir()})`, "info");
 				console.log(`[frontend-coach] Edge profile dir: ${profileDir()}`);
+			}
+			// Auto-install the Alt+P picker into every page in this controlled
+			// Edge so the user does not need the bookmarklet and so it survives
+			// any navigation done by browser_record_test.
+			try {
+				const browser = await ensureBrowser(r.port);
+				const context = browser.contexts()[0] ?? (await browser.newContext());
+				const page = context.pages()[0];
+				await ensurePickerInstalled(context, page);
+				ctx.ui.notify(`Alt+P picker installed (auto-injects on every page).`, "info");
+			} catch (err) {
+				ctx.ui.notify(`Picker auto-install failed: ${(err as Error).message}`, "warn");
 			}
 		},
 	});
@@ -515,6 +768,47 @@ export default async function (pi: ExtensionAPI) {
 			} catch (err) {
 				ctx.ui.notify(`Failed to open folder: ${(err as Error).message}`, "error");
 			}
+		},
+	});
+
+	pi.registerCommand("coach-widgets", {
+		description: "Print the resolved MyOffice widget catalog (uid · scope · service · URL). Source: WidgetDataProvider.cs.",
+		handler: async (_args, ctx) => {
+			try {
+				const stats = await catalogStats();
+				const all = await listWidgets();
+				const lines = [
+					`MyOffice  : ${stats.myOfficePath}`,
+					`Catalog   : ${stats.catalogFile} ${stats.catalogFileExists ? "\u2713" : "\u2717 missing"}`,
+					`Overrides : ${stats.overridesFile} ${stats.overridesPresent ? "\u2713" : "(none)"}`,
+					`Env file  : ${stats.envFile} ${stats.envPresent ? "\u2713" : "(none)"}`,
+					`Vars      : userId=${stats.vars.userId ?? "?"} clientId=${stats.vars.clientId ?? "?"} companyId=${stats.vars.companyId ?? "?"}`,
+					`Total     : ${stats.totalWidgets} widget(s)  by scope: ${Object.entries(stats.byScope).map(([k, v]) => `${k}=${v}`).join(" ") || "(empty)"}`,
+					"",
+					"UID                                SCOPE              SERVICE        URL",
+					...all.map((w) => `${w.uid.padEnd(34)} ${w.scope.padEnd(18)} ${w.serviceName.padEnd(14)} ${w.url ?? "(no url)"}`),
+				];
+				ctx.ui.notify(`${stats.totalWidgets} widget(s)`, "info");
+				console.log("\n--- frontend-coach widgets ---\n" + lines.join("\n") + "\n");
+			} catch (err) {
+				ctx.ui.notify(`Failed: ${(err as Error).message}`, "error");
+			}
+		},
+	});
+
+	pi.registerCommand("coach-env", {
+		description: "Show resolved vars (userId/clientId/companyId) the widget resolver will use, and where each came from.",
+		handler: async (_args, ctx) => {
+			const vars = await coachEnv();
+			const lines = [
+				`userId    : ${vars.userId ?? "(not set)"}`,
+				`clientId  : ${vars.clientId ?? "(not set)"}`,
+				`companyId : ${vars.companyId ?? "(not set)"}`,
+				"",
+				"Resolution order: live Edge tab URL > .frontend-coach/env.local.json > COACH_USER_ID/COACH_CLIENT_ID/COACH_COMPANY_ID env vars.",
+			];
+			ctx.ui.notify(lines[0] + " \u00b7 " + lines[1] + " \u00b7 " + lines[2], "info");
+			console.log("\n--- coach-env ---\n" + lines.join("\n") + "\n");
 		},
 	});
 

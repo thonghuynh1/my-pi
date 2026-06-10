@@ -10,9 +10,10 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { chromium, type Browser } from "playwright-core";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 
 export const DEFAULT_CDP_PORT = Number(process.env.FRONTEND_COACH_CDP_PORT ?? 9222);
 
@@ -127,6 +128,36 @@ export function stopEdge(): void {
 		try { edgeProc.kill(); } catch {}
 	}
 	edgeProc = null;
+}
+
+/**
+ * Inject the Alt+P picker into every page in this context, and into the
+ * given page right now (which may have loaded before the init-script was
+ * registered). Safe to call multiple times — the picker self-guards with
+ * `window.__piCoach`. Without this, any page.goto() during a recording wipes
+ * the picker and Alt+P stops working until the user re-runs the bookmarklet.
+ */
+const pickerSourceCache = { src: null as string | null };
+function loadPickerSource(): string {
+	if (pickerSourceCache.src != null) return pickerSourceCache.src;
+	const here = dirname(fileURLToPath(import.meta.url));
+	pickerSourceCache.src = readFileSync(join(here, "picker.js"), "utf8");
+	return pickerSourceCache.src;
+}
+const contextsWithPicker = new WeakSet<BrowserContext>();
+export async function ensurePickerInstalled(context: BrowserContext, page?: Page): Promise<void> {
+	const src = loadPickerSource();
+	if (!contextsWithPicker.has(context)) {
+		try {
+			await context.addInitScript({ content: src });
+			contextsWithPicker.add(context);
+		} catch (err) {
+			console.warn(`[frontend-coach] addInitScript failed: ${(err as Error).message}`);
+		}
+	}
+	if (page) {
+		try { await page.evaluate(src); } catch { /* CSP or detached frame — ignore */ }
+	}
 }
 
 /** Connect Playwright to the running Edge via CDP. Cached. */

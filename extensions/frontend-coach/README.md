@@ -134,6 +134,65 @@ The `.webm` files play in any modern browser — just drag one onto an Edge/Chro
 
 ---
 
+## Workflow 3 — widget-aware recording (MyOffice-specific)
+
+For MyOffice + sibling-widget repos, the shell mounts widgets from many repos
+at parameterised routes (`/user/:userId/:widgetuid` and
+`/client/.../company/.../:widgetuid`). Hand-picking the right URL per change
+is tedious, so the extension derives it from
+`MyOffice/Domain/Services/WidgetDataProvider.cs` and exposes:
+
+| Tool | Purpose |
+|---|---|
+| `coach_resolve_widget({ file? \| uid? \| serviceName?, scope? })` | Map a changed file (or uid) to the widget(s) it lives in. Returns ranked candidates with `url`, `mountSelector`, `readyExpression`. |
+| `coach_list_widgets({ scope?, serviceName? })` | Enumerate the catalog (37 entries today). |
+| `browser_record_for_widget({ file \| uid \| fromGitDiff, assertions?, steps? })` | One-shot: resolve + record. Use this in a Ralph loop. |
+
+Minimal Ralph-loop iteration after editing UI:
+
+```jsonc
+browser_record_for_widget({
+  "fromGitDiff": true,
+  "assertions": [
+    { "description": "badge appears",
+      "expression": "document.querySelector('[data-testid=unread-badge]') !== null" }
+  ]
+})
+```
+
+Vars (`userId`/`clientId`/`companyId`) come from, in order:
+1. The currently open URL in the controlled Edge tab,
+2. `./.frontend-coach/env.local.json`,
+3. `COACH_USER_ID` / `COACH_CLIENT_ID` / `COACH_COMPANY_ID` env vars.
+
+If `clientId` isn't set it defaults to `userId`.
+
+Commands for humans:
+
+| Command | Purpose |
+|---|---|
+| `/coach-widgets` | Print the resolved catalog + vars |
+| `/coach-env` | Show which userId/clientId/companyId will be used |
+
+Override one entry (e.g. unusual `_listWidgets` route) by dropping a
+`./.frontend-coach/widgets.overrides.json` like:
+
+```jsonc
+{
+  "widgets": [
+    { "uid": "CompanyConfig", "urlOverride": "/client/{clientId}/company/{companyId}/companyinfo/CompanyConfig" }
+  ]
+}
+```
+
+Config env vars (only needed outside the default layout):
+
+- `COACH_MYOFFICE_PATH` (default `C:/GitRepos/MyOffice`)
+- `COACH_GITREPOS_ROOT` (default `C:/GitRepos`)
+- `COACH_SHELL_ORIGIN` (default `https://localhost:5050`)
+
+---
+
 ## Notes / gotchas
 
 - **Workflow 1's `Alt+P` picker** uses your own browser; **workflow 2's recordings** use the dedicated Edge launched by `/coach-launch-edge`. They don't share state.
@@ -156,5 +215,6 @@ frontend-coach/
 ├── edge.ts      ← locate, launch, attach to Microsoft Edge via CDP
 ├── recorder.ts  ← drive page + pipe Page.screencastFrame into ffmpeg → webm
 ├── records.ts   ← on-disk record format (id, paths, markdown rendering)
+├── widgets.ts   ← MyOffice widget catalog resolver (workflow 3)
 └── picker.js    ← injected into your page (workflow 1 only)
 ```

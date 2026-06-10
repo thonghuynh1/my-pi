@@ -12,7 +12,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { statSync } from "node:fs";
-import { ensureBrowser } from "./edge.ts";
+import { ensureBrowser, ensurePickerInstalled } from "./edge.ts";
 import {
 	makeRecordId,
 	pathsForId,
@@ -164,6 +164,11 @@ export async function recordTest(input: RecordTestInput): Promise<RecordTestOutc
 	const context = browser.contexts()[0] ?? (await browser.newContext());
 	let page = context.pages()[0];
 	if (!page) page = await context.newPage();
+
+	// Make sure the Alt+P picker survives whatever navigations the steps do.
+	// Without this, page.goto() wipes window.__piCoach and Alt+P stops working
+	// after the first browser_record_test run.
+	await ensurePickerInstalled(context, page);
 
 	if (input.viewport) {
 		try { await page.setViewportSize(input.viewport); } catch { /* viewport not always settable over CDP */ }

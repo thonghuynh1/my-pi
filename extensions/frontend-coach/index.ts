@@ -858,30 +858,30 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("coach-off", {
-		description: "Stop the frontend-coach server in this pi instance, releasing the port so another pi can take it.",
-		handler: async (_args, ctx) => {
-			if (!coachState.running) {
-				ctx.ui.notify("frontend-coach is already off", "info");
-				return;
-			}
-			stopServer("manual");
-			ctx.ui.notify(`frontend-coach stopped (port ${PORT} released)`, "info");
-		},
-	});
-
-	pi.registerCommand("coach-on", {
-		description: "Start the frontend-coach server in this pi instance (binds port 7777 or $FRONTEND_COACH_PORT).",
-		handler: async (_args, ctx) => {
-			if (coachState.running) {
-				ctx.ui.notify(`frontend-coach already running on ${HOST}:${PORT}`, "info");
-				return;
-			}
-			const result = await startServer();
-			if (result.ok) {
-				ctx.ui.notify(`frontend-coach started on ${HOST}:${PORT}`, "info");
+	pi.registerCommand("coach", {
+		description: "Enable or disable the frontend-coach server. Usage: /coach [on|off]",
+		handler: async (args, ctx) => {
+			const action = args.trim().toLowerCase();
+			if (!action || action === "on") {
+				if (coachState.running) {
+					ctx.ui.notify(`frontend-coach already running on ${HOST}:${PORT}`, "info");
+					return;
+				}
+				const result = await startServer();
+				if (result.ok) {
+					ctx.ui.notify(`frontend-coach started on ${HOST}:${PORT}`, "info");
+				} else {
+					ctx.ui.notify(`frontend-coach failed to start: ${result.reason}`, "error");
+				}
+			} else if (action === "off") {
+				if (!coachState.running) {
+					ctx.ui.notify("frontend-coach is already off", "info");
+					return;
+				}
+				stopServer("manual");
+				ctx.ui.notify(`frontend-coach stopped (port ${PORT} released)`, "info");
 			} else {
-				ctx.ui.notify(`frontend-coach failed to start: ${result.reason}`, "error");
+				ctx.ui.notify("Usage: /coach [on|off]", "info");
 			}
 		},
 	});

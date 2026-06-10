@@ -240,18 +240,18 @@ export default function usageFooter(pi: ExtensionAPI) {
   pi.on("agent_end", async (_event, ctx) => installUsageFooter(pi, ctx));
 
   pi.registerCommand("usage-footer", {
-    description: "Install/refresh the custom usage footer.",
-    handler: async (_args, ctx) => {
-      installUsageFooter(pi, ctx);
-      ctx.ui.notify("Usage footer installed", "info");
-    },
-  });
-
-  pi.registerCommand("usage-footer-off", {
-    description: "Restore the default footer.",
-    handler: async (_args, ctx) => {
-      ctx.ui.setFooter(undefined);
-      ctx.ui.notify("Default footer restored", "info");
+    description: "Enable or disable the custom usage footer. Usage: /usage-footer [on|off]",
+    handler: async (args, ctx) => {
+      const action = args.trim().toLowerCase();
+      if (!action || action === "on") {
+        installUsageFooter(pi, ctx);
+        ctx.ui.notify("Usage footer installed", "info");
+      } else if (action === "off") {
+        ctx.ui.setFooter(undefined);
+        ctx.ui.notify("Default footer restored", "info");
+      } else {
+        ctx.ui.notify("Usage: /usage-footer [on|off]", "info");
+      }
     },
   });
 }

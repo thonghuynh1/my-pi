@@ -108,6 +108,107 @@ function totalCostOf(usage: AssistantUsage | undefined): number {
 	);
 }
 
+// --- Batch-coach detection state and helpers ---
+// This hook lives in subagents.ts because it is intentionally gated by subagentModeEnabled (MESO-001).
+
+const BATCH_COACH_TOOLS: ReadonlySet<string> = new Set(["bash", "read", "grep", "ls", "mcp"]);
+const BATCH_COACH_BUFFER_MAX = 10;
+const BATCH_COACH_N = 3;
+const DEPENDENCY_MIN_CHARS = 6;
+const SELF_NARRATED_BATCHING_RE =
+	/\b(in parallel|concurrently|simultaneously|in one (call|message|turn)|batch (these|them|the)|batched)\b/i;
+
+interface BatchCoachTurnRecord {
+	turnIndex: number;
+	toolCallCount: number;
+	toolName?: string;
+	inputSummary?: string;
+	outputSample?: string;
+	visibleText: string;
+	isError: boolean;
+}
+
+function batchCoachExtractToolInputSummary(toolName: string, args: Record<string, unknown>): string {
+	if (toolName === "bash") return String(args.command ?? "").slice(0, 120);
+	if (toolName === "read") return String(args.path ?? "").slice(0, 120);
+	if (toolName === "grep") return String(args.pattern ?? args.query ?? "").slice(0, 120);
+	if (toolName === "ls") return String(args.path ?? "").slice(0, 120);
+	const fallback = args.path ?? args.query ?? args.command ?? args.tool ?? "";
+	return String(fallback).slice(0, 120);
+}
+
+function batchCoachSummarizeTurn(event: TurnEndEvent): BatchCoachTurnRecord | undefined {
+	const msg = event.message as { role?: string; content?: unknown } | undefined;
+	if (!msg || msg.role !== "assistant" || !Array.isArray(msg.content)) return undefined;
+
+	const content = msg.content as Array<{ type?: string; text?: string; name?: string; arguments?: Record<string, unknown> }>;
+	const toolCalls = content.filter((p) => p.type === "toolCall");
+	const toolCallCount = toolCalls.length;
+	const toolName = toolCalls.length === 1 ? toolCalls[0].name : undefined;
+
+	// Scan visible text content blocks only, not thinking blocks (issue 03 requirement).
+	let visibleText = "";
+	for (const part of content) {
+		if (part.type === "text" && typeof part.text === "string") visibleText += part.text;
+	}
+
+	let inputSummary: string | undefined;
+	if (toolCalls.length === 1 && toolName) {
+		inputSummary = batchCoachExtractToolInputSummary(toolName, toolCalls[0].arguments ?? {});
+	}
+
+	let outputSample: string | undefined;
+	let isError = false;
+	if (event.toolResults.length > 0) {
+		const first = event.toolResults[0];
+		isError = first.isError;
+		for (const part of first.content) {
+			if (typeof part === "object" && part !== null && "text" in part) {
+				outputSample = String((part as { text: string }).text).slice(0, 200);
+				break;
+			}
+		}
+	}
+
+	return { turnIndex: event.turnIndex, toolCallCount, toolName, inputSummary, outputSample, visibleText, isError };
+}
+
+function batchCoachHasDependency(results: BatchCoachTurnRecord[]): boolean {
+	const slice = results.slice(-BATCH_COACH_N);
+	for (let i = 0; i < slice.length - 1; i++) {
+		const outputSample = slice[i].outputSample;
+		if (!outputSample || outputSample.length < DEPENDENCY_MIN_CHARS) continue;
+		for (let j = i + 1; j < slice.length; j++) {
+			const nextInput = slice[j].inputSummary;
+			if (!nextInput) continue;
+			if (nextInput.includes(outputSample)) return true;
+			if (outputSample.includes(nextInput)) return true;
+			const words = outputSample.split(/\s+/).filter((w) => w.length >= DEPENDENCY_MIN_CHARS);
+			if (words.some((w) => nextInput.includes(w))) return true;
+		}
+	}
+	return false;
+}
+
+function batchCoachBuildNudge(records: BatchCoachTurnRecord[], selfNarratedMatch: string | undefined): string {
+	const slice = records.slice(-BATCH_COACH_N);
+	let text = "";
+	if (selfNarratedMatch) {
+		text += `You wrote "${selfNarratedMatch}" but then executed the calls sequentially.\n\n`;
+	}
+	text += "Your last turns were independent single-call probes:\n";
+	for (let i = 0; i < slice.length; i++) {
+		const r = slice[i];
+		text += `${i + 1}. ${r.toolName}(${r.inputSummary ?? "..."})\n`;
+	}
+	text += `\nBefore your next tool call, plan the next 2\u20133 calls together. If independent, batch them via:\n`;
+	text += `- one chained bash command: \`cmd1 && cmd2\`\n`;
+	text += `- multiple tool calls in the same assistant message\n`;
+	text += `- a focused subagent when the work spans several files\n`;
+	text += `\nContinue your work \u2014 but batched.`;
+	return text;
+}
+
 interface RunningSubagentStatus {
 	id: string;
 	type: SubagentType;
@@ -787,6 +888,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		subagentModeEnabled = false;
 		activeSubagents.clear();
+		batchCoachBuffer.length = 0;
+		batchCoachNudged = false;
 		// New session ⇒ reset accumulated subagent billing so the footer
 		// doesn't carry costs over from a previous session.
 		subagentState.totalCostUsd = 0;
@@ -807,13 +910,6 @@ export default function (pi: ExtensionAPI) {
 	// and injects a steering message before the next LLM call.
 	const batchCoachBuffer: BatchCoachTurnRecord[] = [];
 	let batchCoachNudged = false;
-
-	// Reset batch-coach state on new session.
-	// (session_start handler above already clears subagentModeEnabled.)
-	const origSessionStart = pi.on("session_start", async () => {
-		batchCoachBuffer.length = 0;
-		batchCoachNudged = false;
-	});
 
 	pi.on("turn_end", (event: TurnEndEvent) => {
 		if (!subagentModeEnabled) return;
@@ -851,6 +947,22 @@ export default function (pi: ExtensionAPI) {
 		const recentText = last3.map((r) => r.visibleText).join("\n");
 		const selfNarratedMatch = SELF_NARRATED_BATCHING_RE.exec(recentText)?.[0];
 
+		// display: false keeps the nudge out of the TUI but it IS model-visible.
+		// pi's convertToLlm() converts all CustomMessages to user messages
+		// regardless of the display flag. display only gates TUI rendering.
+		// Verified against @earendil-works/pi-coding-agent dist/core/messages.js
+		// and docs/session-format.md ("CustomMessageEntry — Extension-injected
+		// messages that DO participate in LLM context").
+		//
+		// Manual verification recipe:
+		//   1. Run pi with /subagent on.
+		//   2. Trigger 3+ consecutive single-call tool turns on a batchable tool
+		//      (e.g. grep, read, find) without dependencies between them.
+		//   3. Confirm the model reacts to the nudge (e.g. starts batching
+		//      subagent calls) on the next turn.
+		//   4. Run pi with /subagent off, repeat the same pattern.
+		//   5. Confirm no nudge fires (batch-coach returns early at the
+		//      subagentModeEnabled guard).
 		pi.sendMessage(
 			{
 				customType: "subagent-batch-coach",

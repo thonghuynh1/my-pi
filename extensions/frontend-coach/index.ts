@@ -472,7 +472,7 @@ export default async function (pi: ExtensionAPI) {
 			} catch (err) {
 				return {
 					content: [{ type: "text", text: `coach_resolve_widget failed: ${(err as Error).message}` }],
-					details: { error: (err as Error).message },
+					details: { widgets: [] },
 					isError: true,
 				};
 			}
@@ -507,7 +507,7 @@ export default async function (pi: ExtensionAPI) {
 			} catch (err) {
 				return {
 					content: [{ type: "text", text: `coach_list_widgets failed: ${(err as Error).message}` }],
-					details: { error: (err as Error).message },
+					details: { widgets: [] },
 					isError: true,
 				};
 			}
@@ -698,7 +698,7 @@ export default async function (pi: ExtensionAPI) {
 				await ensurePickerInstalled(context, page);
 				ctx.ui.notify(`Alt+P picker installed (auto-injects on every page).`, "info");
 			} catch (err) {
-				ctx.ui.notify(`Picker auto-install failed: ${(err as Error).message}`, "warn");
+				ctx.ui.notify(`Picker auto-install failed: ${(err as Error).message}`, "warning");
 			}
 		},
 	});

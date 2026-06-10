@@ -29,6 +29,7 @@ import { Type, type Static } from "typebox";
 
 type SubagentType = "explore" | "shell" | "custom";
 type AgentSource = "user" | "project";
+type ActiveModel = NonNullable<ExtensionContext["model"]>;
 
 interface CustomAgent {
 	name: string;
@@ -58,6 +59,12 @@ interface SubagentUsage {
 	totalTokens: number;
 	costUsd: number;
 	modelId?: string;
+}
+
+interface ModelSelection {
+	model?: ActiveModel;
+	requestedModel?: string;
+	usedFallback: boolean;
 }
 
 interface SubagentDetails {
@@ -173,18 +180,26 @@ function batchCoachSummarizeTurn(event: TurnEndEvent): BatchCoachTurnRecord | un
 	return { turnIndex: event.turnIndex, toolCallCount, toolName, inputSummary, outputSample, visibleText, isError };
 }
 
+function batchCoachInputDependsOnPriorOutput(priorRecords: BatchCoachTurnRecord[], nextRecord: BatchCoachTurnRecord): boolean {
+	const nextInput = nextRecord.inputSummary;
+	if (!nextInput) return false;
+	for (const priorRecord of priorRecords) {
+		const outputSample = priorRecord.outputSample;
+		if (!outputSample || outputSample.length < DEPENDENCY_MIN_CHARS) continue;
+		if (nextInput.includes(outputSample)) return true;
+		if (outputSample.includes(nextInput)) return true;
+		const words = outputSample.split(/\s+/).filter((w) => w.length >= DEPENDENCY_MIN_CHARS);
+		if (words.some((w) => nextInput.includes(w))) return true;
+	}
+	return false;
+}
+
 function batchCoachHasDependency(results: BatchCoachTurnRecord[]): boolean {
 	const slice = results.slice(-BATCH_COACH_N);
 	for (let i = 0; i < slice.length - 1; i++) {
-		const outputSample = slice[i].outputSample;
-		if (!outputSample || outputSample.length < DEPENDENCY_MIN_CHARS) continue;
-		for (let j = i + 1; j < slice.length; j++) {
-			const nextInput = slice[j].inputSummary;
-			if (!nextInput) continue;
-			if (nextInput.includes(outputSample)) return true;
-			if (outputSample.includes(nextInput)) return true;
-			const words = outputSample.split(/\s+/).filter((w) => w.length >= DEPENDENCY_MIN_CHARS);
-			if (words.some((w) => nextInput.includes(w))) return true;
+		if (batchCoachInputDependsOnPriorOutput(slice.slice(i, i + 1), slice[i + 1])) return true;
+		for (let j = i + 2; j < slice.length; j++) {
+			if (batchCoachInputDependsOnPriorOutput([slice[i]], slice[j])) return true;
 		}
 	}
 	return false;
@@ -369,6 +384,13 @@ function discoverCustomAgents(cwd: string): CustomAgent[] {
 	return [...byName.values()];
 }
 
+function prioritizeCustomAgentsForDisplay(agents: CustomAgent[]): CustomAgent[] {
+	return [...agents].sort((a, b) => {
+		if (a.source !== b.source) return a.source === "project" ? -1 : 1;
+		return a.name.localeCompare(b.name);
+	});
+}
+
 function resolveRunConfig(params: SubagentParamsType, cwd: string): RunConfig {
 	if (params.type === "explore") {
 		return {
@@ -424,6 +446,37 @@ function parseModelOverride(modelOverride: string | undefined, inheritedProvider
 	const slash = value.indexOf("/");
 	if (slash > 0) return { provider: value.slice(0, slash), modelId: value.slice(slash + 1) };
 	return { provider: inheritedProvider, modelId: value };
+}
+
+function sameModel(left: ActiveModel | undefined, right: ActiveModel | undefined): boolean {
+	return Boolean(left && right && left.provider === right.provider && left.id === right.id);
+}
+
+export function selectSubagentModel(
+	requestedModel: string | undefined,
+	inheritedModel: ExtensionContext["model"],
+	modelRegistry: ExtensionContext["modelRegistry"],
+): ModelSelection {
+	const trimmedRequestedModel = requestedModel?.trim();
+	if (!trimmedRequestedModel) {
+		return { model: inheritedModel ?? undefined, usedFallback: false };
+	}
+
+	const currentProviderOverrideModel = inheritedModel?.provider
+		? modelRegistry.find(inheritedModel.provider, trimmedRequestedModel)
+		: undefined;
+	const { provider, modelId } = parseModelOverride(trimmedRequestedModel, inheritedModel?.provider);
+	const overrideModel = currentProviderOverrideModel ?? (provider && modelId ? modelRegistry.find(provider, modelId) : undefined);
+	const overrideModelIsReady = Boolean(overrideModel && modelRegistry.hasConfiguredAuth(overrideModel));
+	if (overrideModel && overrideModelIsReady) {
+		return { model: overrideModel, requestedModel: trimmedRequestedModel, usedFallback: false };
+	}
+
+	return {
+		model: inheritedModel ?? undefined,
+		requestedModel: trimmedRequestedModel,
+		usedFallback: true,
+	};
 }
 
 function normalizeTimeoutSeconds(params: unknown): SubagentParamsType {
@@ -586,15 +639,16 @@ async function runSubagent(
 	const cwd = path.resolve(ctx.cwd, normalizePathArgument(params.cwd ?? "."));
 	const config = resolveRunConfig(params, cwd);
 	const inheritedModel = ctx.model;
-	const { provider, modelId } = parseModelOverride(config.model, inheritedModel?.provider);
-	const resolvedModel = provider && modelId ? ctx.modelRegistry.find(provider, modelId) : inheritedModel;
-	if (!resolvedModel) {
+	const modelSelection = selectSubagentModel(config.model, inheritedModel, ctx.modelRegistry);
+	const selectedModel = modelSelection.model;
+	if (!selectedModel) {
 		throw new Error(
-			config.model
-				? `Could not resolve model override "${config.model}".`
+			modelSelection.requestedModel
+				? `Could not resolve model override "${modelSelection.requestedModel}" and no active model is available for fallback.`
 				: "No active model is available for the subagent.",
 		);
 	}
+	let resolvedModel: ActiveModel = selectedModel;
 
 	const timeoutController = new AbortController();
 	let timeout: NodeJS.Timeout | undefined;
@@ -618,7 +672,9 @@ async function runSubagent(
 		startedAt: Date.now(),
 		turns: 0,
 		toolCalls,
-		preview: "starting...",
+		preview: modelSelection.usedFallback && modelSelection.requestedModel
+			? `override ${modelSelection.requestedModel} unavailable, using inherited model`
+			: "starting...",
 		inputTokens: 0,
 		outputTokens: 0,
 		cacheTokens: 0,
@@ -655,16 +711,44 @@ async function runSubagent(
 			},
 		});
 
-		const childSessionManager = SessionManager.inMemory(cwd);
-		const created = await createAgentSessionFromServices({
-			services,
-			sessionManager: childSessionManager,
-			model: resolvedModel,
-			tools: config.tools,
-			thinkingLevel: pi.getThinkingLevel(),
-		});
-		session = created.session;
-		publishStatus();
+		const createChildSession = (model: ActiveModel) =>
+			createAgentSessionFromServices({
+				services,
+				sessionManager: SessionManager.inMemory(cwd),
+				model,
+				tools: config.tools,
+				thinkingLevel: pi.getThinkingLevel(),
+			});
+		let created: Awaited<ReturnType<typeof createAgentSessionFromServices>>;
+		try {
+			created = await createChildSession(resolvedModel);
+		} catch (error) {
+			const fallbackModel = inheritedModel;
+			const canFallbackToInheritedModel = Boolean(
+				config.model && fallbackModel && !sameModel(resolvedModel, fallbackModel),
+			);
+			if (!canFallbackToInheritedModel || !fallbackModel) throw error;
+			resolvedModel = fallbackModel;
+			liveStatus.model = `${resolvedModel.provider}/${resolvedModel.id}`;
+			liveStatus.preview = `override ${config.model} failed, using inherited model`;
+			publishStatus();
+			created = await createChildSession(resolvedModel);
+		}
+		const resetAttemptState = () => {
+			finalMessages = [];
+			streamingText = "";
+			turns = 0;
+			toolCalls.length = 0;
+			liveStatus.currentTool = undefined;
+			liveStatus.inputTokens = 0;
+			liveStatus.outputTokens = 0;
+			liveStatus.cacheTokens = 0;
+			liveStatus.totalTokens = 0;
+			liveStatus.cost = 0;
+			liveStatus.contextTokens = null;
+			liveStatus.contextWindow = 0;
+			liveStatus.contextPercent = null;
+		};
 
 		const abortChild = () => {
 			void session?.abort();
@@ -672,8 +756,11 @@ async function runSubagent(
 		ctx.signal?.addEventListener("abort", abortChild, { once: true });
 		timeoutController.signal.addEventListener("abort", abortChild, { once: true });
 
-		session.subscribe((event) => {
-			switch (event.type) {
+		const bindSession = (nextSession: Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"]) => {
+			session = nextSession;
+			publishStatus();
+			nextSession.subscribe((event) => {
+				switch (event.type) {
 				case "agent_start": {
 					liveStatus.preview = "agent session started";
 					publishStatus();
@@ -731,21 +818,42 @@ async function runSubagent(
 					publishStatus();
 					break;
 				}
-			}
-		});
+				}
+			});
+		};
+
+		bindSession(created.session);
 
 		const prompt = `Task: ${params.task}\n\nReturn only the useful findings for the parent agent.`;
-		await Promise.race([
-			session.prompt(prompt),
-			new Promise<never>((_, reject) => {
-				ctx.signal?.addEventListener("abort", () => reject(new Error("Subagent was aborted.")), { once: true });
-				timeoutController.signal.addEventListener(
-					"abort",
-					() => reject(new Error(`Subagent timed out after ${params.timeoutSeconds} seconds.`)),
-					{ once: true },
-				);
-			}),
-		]);
+		const runPrompt = () =>
+			Promise.race([
+				session!.prompt(prompt),
+				new Promise<never>((_, reject) => {
+					ctx.signal?.addEventListener("abort", () => reject(new Error("Subagent was aborted.")), { once: true });
+					timeoutController.signal.addEventListener(
+						"abort",
+						() => reject(new Error(`Subagent timed out after ${params.timeoutSeconds} seconds.`)),
+						{ once: true },
+					);
+				}),
+			]);
+		try {
+			await runPrompt();
+		} catch (error) {
+			const fallbackModel = inheritedModel;
+			const canRetryPromptWithInheritedModel = Boolean(
+				config.model && fallbackModel && !sameModel(resolvedModel, fallbackModel) && turns === 0 && toolCalls.length === 0,
+			);
+			if (!canRetryPromptWithInheritedModel || !fallbackModel) throw error;
+			await session?.abort();
+			resetAttemptState();
+			resolvedModel = fallbackModel;
+			liveStatus.model = `${resolvedModel.provider}/${resolvedModel.id}`;
+			liveStatus.preview = `override ${config.model} failed, using inherited model`;
+			const retryCreated = await createChildSession(resolvedModel);
+			bindSession(retryCreated.session);
+			await runPrompt();
+		}
 
 		const output = finalAssistantText(finalMessages) || streamingText.trim() || "(subagent completed with no output)";
 		return {
@@ -879,8 +987,14 @@ export default function (pi: ExtensionAPI) {
 		tuiRef?.requestRender();
 	}
 
+	function resetBatchCoachState() {
+		batchCoachBuffer.length = 0;
+		batchCoachNudged = false;
+	}
+
 	function setSubagentMode(enabled: boolean) {
 		subagentModeEnabled = enabled;
+		resetBatchCoachState();
 		publishStateLabel();
 		pi.appendEntry("subagent-mode", { enabled, timestamp: Date.now() });
 	}
@@ -888,8 +1002,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		subagentModeEnabled = false;
 		activeSubagents.clear();
-		batchCoachBuffer.length = 0;
-		batchCoachNudged = false;
+		resetBatchCoachState();
 		// New session ⇒ reset accumulated subagent billing so the footer
 		// doesn't carry costs over from a previous session.
 		subagentState.totalCostUsd = 0;
@@ -926,8 +1039,20 @@ export default function (pi: ExtensionAPI) {
 			const allSingleSameTool =
 				last3.every((r) => r.toolCallCount === 1) &&
 				new Set(last3.map((r) => r.toolName)).size === 1;
-			if (!allSingleSameTool || !BATCH_COACH_TOOLS.has(last3[0].toolName ?? "")) {
+			const isIndependentBatchableStretch =
+				allSingleSameTool &&
+				BATCH_COACH_TOOLS.has(last3[0].toolName ?? "") &&
+				!batchCoachHasDependency(last3);
+			if (!isIndependentBatchableStretch) {
+				const currentRecord = last3[last3.length - 1];
+				const currentRecordCanStartNewStretch =
+					currentRecord.toolCallCount === 1 &&
+					BATCH_COACH_TOOLS.has(currentRecord.toolName ?? "") &&
+					!batchCoachInputDependsOnPriorOutput(last3.slice(0, -1), currentRecord);
 				batchCoachNudged = false;
+				batchCoachBuffer.length = 0;
+				if (currentRecordCanStartNewStretch) batchCoachBuffer.push(currentRecord);
+				return;
 			}
 		}
 
@@ -957,7 +1082,7 @@ export default function (pi: ExtensionAPI) {
 		// Manual verification recipe:
 		//   1. Run pi with /subagent on.
 		//   2. Trigger 3+ consecutive single-call tool turns on a batchable tool
-		//      (e.g. grep, read, find) without dependencies between them.
+		//      (e.g. grep, read, ls) without dependencies between them.
 		//   3. Confirm the model reacts to the nudge (e.g. starts batching
 		//      subagent calls) on the next turn.
 		//   4. Run pi with /subagent off, repeat the same pattern.
@@ -981,7 +1106,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (!subagentModeEnabled) return;
-		const customAgents = discoverCustomAgents(ctx.cwd)
+		const customAgents = prioritizeCustomAgentsForDisplay(discoverCustomAgents(ctx.cwd))
 			.slice(0, 20)
 			.map((agent) => `- ${agent.name} (${agent.source}): ${agent.description || agent.filePath}`)
 			.join("\n");

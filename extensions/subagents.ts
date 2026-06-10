@@ -22,6 +22,7 @@ import {
 	type ExtensionContext,
 	type Theme,
 	type ToolDefinition,
+	type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
@@ -799,6 +800,66 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		refreshSubagentStatusWidget(ctx);
+	});
+
+	// Batch-coach: active only when subagent mode is enabled (MESO-001).
+	// Detects three consecutive same-tool single-call turns that appear independent
+	// and injects a steering message before the next LLM call.
+	const batchCoachBuffer: BatchCoachTurnRecord[] = [];
+	let batchCoachNudged = false;
+
+	// Reset batch-coach state on new session.
+	// (session_start handler above already clears subagentModeEnabled.)
+	const origSessionStart = pi.on("session_start", async () => {
+		batchCoachBuffer.length = 0;
+		batchCoachNudged = false;
+	});
+
+	pi.on("turn_end", (event: TurnEndEvent) => {
+		if (!subagentModeEnabled) return;
+
+		const record = batchCoachSummarizeTurn(event);
+		if (!record) return;
+
+		batchCoachBuffer.push(record);
+		if (batchCoachBuffer.length > BATCH_COACH_BUFFER_MAX) batchCoachBuffer.shift();
+
+		// Reset nudge flag when the streak of same-tool turns breaks.
+		if (batchCoachNudged && batchCoachBuffer.length >= BATCH_COACH_N) {
+			const last3 = batchCoachBuffer.slice(-BATCH_COACH_N);
+			const allSingleSameTool =
+				last3.every((r) => r.toolCallCount === 1) &&
+				new Set(last3.map((r) => r.toolName)).size === 1;
+			if (!allSingleSameTool || !BATCH_COACH_TOOLS.has(last3[0].toolName ?? "")) {
+				batchCoachNudged = false;
+			}
+		}
+
+		if (batchCoachBuffer.length < BATCH_COACH_N) return;
+
+		const last3 = batchCoachBuffer.slice(-BATCH_COACH_N);
+		const allSingleSameTool =
+			last3.every((r) => r.toolCallCount === 1) &&
+			new Set(last3.map((r) => r.toolName)).size === 1;
+
+		if (!allSingleSameTool) return;
+		if (!BATCH_COACH_TOOLS.has(last3[0].toolName ?? "")) return;
+		if (batchCoachHasDependency(last3)) return;
+		if (batchCoachNudged) return;
+
+		// Self-narration detection: scan visible text only, not thinking blocks.
+		const recentText = last3.map((r) => r.visibleText).join("\n");
+		const selfNarratedMatch = SELF_NARRATED_BATCHING_RE.exec(recentText)?.[0];
+
+		pi.sendMessage(
+			{
+				customType: "subagent-batch-coach",
+				content: batchCoachBuildNudge(last3, selfNarratedMatch),
+				display: false,
+			},
+			{ deliverAs: "steer" },
+		);
+		batchCoachNudged = true;
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {

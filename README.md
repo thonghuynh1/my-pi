@@ -6,6 +6,7 @@ Personal Pi package that bundles:
 - `/poteto-me` prompt template
 - `engineering-skills` helper/footer extension
 - `usage-footer.ts` footer/status extension showing model and context usage
+- `subagents.ts` in-process subagent tool with `explore`, `shell`, and `custom` modes
 
 ## Install locally
 
@@ -63,6 +64,49 @@ The package also adds a footer/status entry with the active model and context us
 
 ```text
 /usage-footer
+```
+
+## Subagents
+
+This package registers a `subagent` tool. It runs child Pi `AgentSession`s in-process (SDK-style, no subprocess) with isolated context.
+
+Modes:
+
+- `explore` - read-only codebase investigation using `read`, `grep`, `find`, `ls`
+- `shell` - command-oriented investigation using `read`, `grep`, `find`, `ls`, `bash`
+- `custom` - load a markdown agent from `~/.pi/agent/agents/*.md` or nearest `.pi/agents/*.md`
+
+Custom agent example:
+
+```md
+---
+name: reviewer
+description: Review code for correctness and maintainability
+tools: read, grep, find, ls
+model: inherit
+---
+
+You are a focused review subagent. Return actionable findings with evidence.
+```
+
+Enable session-level subagent workflow instructions:
+
+```text
+/subagent
+```
+
+After that, future prompts in the session tell the main agent when and how to use `explore`, `shell`, and `custom` subagents automatically. Manage it with:
+
+```text
+/subagent status
+/subagent off
+/subagent on
+```
+
+List custom agents in Pi:
+
+```text
+/subagents
 ```
 
 ## Install on another PC

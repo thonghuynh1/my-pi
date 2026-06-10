@@ -22,6 +22,7 @@
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
+	ExtensionContext,
 	Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -51,12 +52,34 @@ interface ToolRecord {
 	endedAt?: number;
 	summary: string; // one-line summary for the panel
 	resultText?: string; // truncated raw text for the overlay
-	// Cost accounting (estimates) ---------------------------------------
+	fullResultLen?: number; // raw (untruncated) result length used for cost distribution
+	// Cost accounting --------------------------------------------------
+	// For regular tools these are filled in on the NEXT turn_end, when
+	// the assistant message arrives carrying real billed usage. We then
+	// distribute that turn's input cost across the pending tools by their
+	// result size. For the `subagent` tool they come straight from the
+	// child session's real usage (see subagents.ts).
 	outputTokens?: number; // tokens model emitted to call this tool (args)
-	inputTokens?: number; // tokens this tool's result adds to context
-	costUsd?: number; // estimated $ contribution (out*outRate + in*inRate)
-	modelId?: string; // model active when this tool finished
+	inputTokens?: number; // tokens this tool's result added to the prompt
+	costUsd?: number; // real $ contribution (not an estimate)
+	modelId?: string; // model active when this tool was billed
+	costAttributed?: boolean; // regular tool: set once turn_end priced it
 }
+
+type AssistantUsage = {
+	input?: number;
+	output?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	totalTokens?: number;
+	cost?: {
+		input?: number;
+		output?: number;
+		cacheRead?: number;
+		cacheWrite?: number;
+		total?: number;
+	};
+};
 
 const records: ToolRecord[] = [];
 const recordById = new Map<string, ToolRecord>();
@@ -64,7 +87,18 @@ const MAX_RECORDS = 500; // cap memory across long sessions
 const PANEL_VISIBLE_ROWS = 6; // most-recent N shown in widget
 
 let panelEnabled = true;
+let activeSubagentCount = 0;
 const WIDGET_ID = "tool-panel";
+
+// Real-billing tracking -----------------------------------------------
+// Number of assistant messages already attributed in the current branch.
+let processedAssistantCount = 0;
+// Regular-tool records that have completed since the last assistant
+// message; their cost is set when the next assistant turn arrives.
+const pendingRegularTools: ToolRecord[] = [];
+// Stashed for sessionTotals() so the widget renderer can read the real
+// session branch (same source the footer uses) without being passed ctx.
+let currentCtx: ExtensionContext | undefined;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -181,22 +215,109 @@ function fmtCost(usd: number | undefined): string {
 	return `$${usd.toFixed(2)}`;
 }
 
-function priceOf(rec: ToolRecord, model: any): number {
-	const input = model?.cost?.input ?? 0;
-	const output = model?.cost?.output ?? 0;
+function fmtRecCost(rec: ToolRecord): string {
+	// While a regular tool is still queued to be priced on the next
+	// assistant turn, show "…" instead of a misleading $0.
+	if (rec.costAttributed === false) return "…";
+	return fmtCost(rec.costUsd);
+}
+
+// Returns the total USD cost of an assistant message, robustly: prefers
+// the SDK-precomputed `cost.total` (which already includes input +
+// output + cacheRead + cacheWrite at each rate), and falls back to
+// summing the sub-fields if the provider forgot to fill `total`. This
+// guarantees cache pricing is always counted even on quirky providers.
+function totalCostOf(usage: AssistantUsage | undefined): number {
+	if (!usage?.cost) return 0;
+	if (typeof usage.cost.total === "number") return usage.cost.total;
 	return (
-		((rec.outputTokens ?? 0) * output + (rec.inputTokens ?? 0) * input) / 1_000_000
+		(usage.cost.input ?? 0) +
+		(usage.cost.output ?? 0) +
+		(usage.cost.cacheRead ?? 0) +
+		(usage.cost.cacheWrite ?? 0)
 	);
 }
 
+// Real session billing. Reads the parent's session branch (the same
+// source `usage-footer.ts` uses) and ADDS subagent costs (which run in
+// their own in-memory sessions and never appear in the parent branch).
 function sessionTotals(): { tokens: number; costUsd: number } {
 	let tokens = 0;
 	let costUsd = 0;
+
+	const sm = currentCtx?.sessionManager;
+	if (sm) {
+		for (const entry of sm.getBranch()) {
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			const usage = (entry.message as { usage?: AssistantUsage }).usage;
+			if (!usage) continue;
+			const input = usage.input ?? 0;
+			const output = usage.output ?? 0;
+			const cacheRead = usage.cacheRead ?? 0;
+			const cacheWrite = usage.cacheWrite ?? 0;
+			tokens += usage.totalTokens ?? input + output + cacheRead + cacheWrite;
+			costUsd += totalCostOf(usage);
+		}
+	}
+
+	// Subagents live in their own sessions; add their real cost on top.
 	for (const r of records) {
+		if (r.name !== "subagent") continue;
 		tokens += (r.inputTokens ?? 0) + (r.outputTokens ?? 0);
 		costUsd += r.costUsd ?? 0;
 	}
+
 	return { tokens, costUsd };
+}
+
+// Walk the branch on turn_end, find any new assistant message(s) since
+// last call, and distribute their *real* billed input cost across the
+// regular tools that ran since the previous turn (weighted by result
+// size). This gives each tool row a $ value that matches what the
+// provider actually charged to feed that result back into the prompt.
+function attributePendingTools(ctx: ExtensionContext): void {
+	const sm = ctx.sessionManager;
+	if (!sm) return;
+
+	let seen = 0;
+	let newInputCost = 0;
+	let newInputTokens = 0;
+	let lastModelId: string | undefined;
+
+	for (const entry of sm.getBranch()) {
+		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+		seen++;
+		if (seen <= processedAssistantCount) continue;
+		const usage = (entry.message as { usage?: AssistantUsage; model?: string }).usage;
+		lastModelId = (entry.message as { model?: string }).model ?? lastModelId;
+		if (!usage) continue;
+		// "New" prompt cost this turn = freshly-billed input + any new
+		// cache-write tokens (content promoted into the cache). cacheRead
+		// is the cheap re-use of the already-cached prefix and is not
+		// caused by the new tool results.
+		newInputCost += (usage.cost?.input ?? 0) + (usage.cost?.cacheWrite ?? 0);
+		newInputTokens += (usage.input ?? 0) + (usage.cacheWrite ?? 0);
+	}
+
+	processedAssistantCount = seen;
+
+	if (pendingRegularTools.length === 0) return;
+	if (newInputCost <= 0 && newInputTokens <= 0) return;
+
+	let totalWeight = 0;
+	for (const rec of pendingRegularTools) {
+		totalWeight += rec.fullResultLen ?? rec.resultText?.length ?? 1;
+	}
+	if (totalWeight <= 0) totalWeight = pendingRegularTools.length;
+
+	for (const rec of pendingRegularTools) {
+		const w = (rec.fullResultLen ?? rec.resultText?.length ?? 1) / totalWeight;
+		rec.costUsd = newInputCost * w;
+		rec.inputTokens = Math.round(newInputTokens * w);
+		rec.modelId = lastModelId ?? rec.modelId;
+		rec.costAttributed = true;
+	}
+	pendingRegularTools.length = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +356,7 @@ export default function (pi: ExtensionAPI) {
 						const tokens = (rec.inputTokens ?? 0) + (rec.outputTokens ?? 0);
 						const meta = theme.fg(
 							"dim",
-							`${elapsed.padStart(5)}  ${fmtTokens(tokens).padStart(5)}t  ${fmtCost(rec.costUsd).padStart(7)}`,
+							`${elapsed.padStart(5)}  ${fmtTokens(tokens).padStart(5)}t  ${fmtRecCost(rec).padStart(7)}`,
 						);
 						// reserve width for the right-aligned meta block so the summary truncates cleanly
 						const metaWidth = visibleWidth(meta);
@@ -267,7 +388,10 @@ export default function (pi: ExtensionAPI) {
 
 	const refreshWidget = (ctx: { ui: any; hasUI: boolean }) => {
 		if (!ctx.hasUI) return;
-		if (!panelEnabled) {
+		// Hide the tool-panel widget while one or more subagents are running so
+		// the screen real estate is freed up for the subagent status widget.
+		// It reappears automatically when the last subagent finishes.
+		if (!panelEnabled || activeSubagentCount > 0) {
 			ctx.ui.setWidget(WIDGET_ID, undefined);
 			return;
 		}
@@ -276,12 +400,35 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", (_event, ctx) => {
+		activeSubagentCount = 0;
+		currentCtx = ctx;
+		processedAssistantCount = 0;
+		pendingRegularTools.length = 0;
 		if (!ctx.hasUI) return;
+		refreshWidget(ctx);
+	});
+
+	// After every assistant turn, price the tools that ran since the
+	// previous turn using the freshly-billed usage on the new message.
+	pi.on("turn_end", (_event, ctx) => {
+		currentCtx = ctx;
+		attributePendingTools(ctx);
+		refreshWidget(ctx);
+	});
+	pi.on("agent_end", (_event, ctx) => {
+		currentCtx = ctx;
+		attributePendingTools(ctx);
 		refreshWidget(ctx);
 	});
 
 	// ----- track tool lifecycle ------------------------------------------
 	pi.on("tool_execution_start", (event, ctx) => {
+		currentCtx = ctx;
+		if (event.toolName === "subagent") {
+			activeSubagentCount += 1;
+			refreshWidget(ctx);
+			return; // skip recording until the subagent finishes
+		}
 		const rec: ToolRecord = {
 			id: event.toolCallId,
 			name: event.toolName,
@@ -304,18 +451,58 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_execution_end", (event, ctx) => {
+		currentCtx = ctx;
+		if (event.toolName === "subagent") {
+			activeSubagentCount = Math.max(0, activeSubagentCount - 1);
+			// Record the subagent call now (so its row appears once it's done
+			// and the panel becomes visible again).
+			const details = event.result?.details;
+			const subagentUsage = details?.usage;
+			const args = (details && { type: details.type, name: details.name, task: details.task }) ?? {};
+			const fullResult = extractResultText(event.result);
+			const rec: ToolRecord = {
+				id: event.toolCallId,
+				name: "subagent",
+				args,
+				status: event.isError ? "error" : "done",
+				startedAt: Date.now(),
+				endedAt: Date.now(),
+				summary: summarize("subagent", args),
+				resultText: clip(fullResult, 8_000),
+				fullResultLen: fullResult.length,
+				// Real usage from the child session.
+				outputTokens: subagentUsage?.outputTokens ?? 0,
+				inputTokens: subagentUsage?.inputTokens ?? 0,
+				modelId: subagentUsage?.modelId,
+				costUsd: subagentUsage?.costUsd ?? 0,
+				costAttributed: true,
+			};
+			pushRecord(rec);
+			// A subagent's own result text ALSO gets fed back into the
+			// parent prompt on the next turn, so the parent will be billed
+			// for it as input. Queue it for proportional attribution too
+			// — but mark it already-priced so we don't overwrite the real
+			// child-session cost. We track it via fullResultLen only.
+			refreshWidget(ctx);
+			return;
+		}
 		const rec = recordById.get(event.toolCallId);
 		if (!rec) return;
 		rec.status = event.isError ? "error" : "done";
 		rec.endedAt = Date.now();
 		const fullResult = extractResultText(event.result);
 		rec.resultText = clip(fullResult, 8_000);
-		// Per-tool token + cost estimate. The model is the one active right
-		// now; resumed/switched-model sessions get the live price.
+		rec.fullResultLen = fullResult.length;
+		// `outputTokens` for a regular tool ≈ args size emitted by the
+		// model. It's not used in cost math (the assistant turn that
+		// emitted the call already has its real `cost.output` billed via
+		// the session branch); we keep it for display only.
 		rec.outputTokens = approxTokens(safeJson(rec.args));
-		rec.inputTokens = approxTokens(fullResult);
+		rec.inputTokens = 0; // filled in by attributePendingTools on next turn_end
+		rec.costUsd = 0;
 		rec.modelId = ctx.model?.id;
-		rec.costUsd = priceOf(rec, ctx.model);
+		rec.costAttributed = false;
+		pendingRegularTools.push(rec);
 		refreshWidget(ctx);
 	});
 
@@ -513,7 +700,7 @@ class ToolHistoryOverlay {
 				const tok = (rec.inputTokens ?? 0) + (rec.outputTokens ?? 0);
 				const meta = th.fg(
 					"dim",
-					`${fmtTokens(tok).padStart(5)}t ${fmtCost(rec.costUsd).padStart(7)} ${elapsed}`,
+					`${fmtTokens(tok).padStart(5)}t ${fmtRecCost(rec).padStart(7)} ${elapsed}`,
 				);
 				const name = isSel
 					? th.bold(th.fg("accent", rec.name.padEnd(6)))
@@ -551,7 +738,7 @@ class ToolHistoryOverlay {
 								"dim",
 								`(out ${fmtTokens(outTok)} args · in ${fmtTokens(inTok)} result)`,
 							) +
-							`   ${th.fg("toolTitle", "cost:")} ${th.fg("accent", fmtCost(sel.costUsd))}` +
+							`   ${th.fg("toolTitle", "cost:")} ${th.fg("accent", fmtRecCost(sel))}` +
 							(sel.modelId ? `  ${th.fg("dim", `@ ${sel.modelId}`)}` : ""),
 					),
 				);

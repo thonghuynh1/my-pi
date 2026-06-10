@@ -63,18 +63,46 @@ function padRight(left: string, right: string, width: number): string {
   return `${renderedLeft}${padding}${right}`;
 }
 
+function getSubagentTotals(): {
+  cost: number;
+  tokens: number;
+  input: number;
+  output: number;
+  cache: number;
+} {
+  const s = (globalThis as {
+    __subagent?: {
+      totalCostUsd?: number;
+      totalTokens?: number;
+      totalInputTokens?: number;
+      totalOutputTokens?: number;
+      totalCacheTokens?: number;
+    };
+  }).__subagent;
+  return {
+    cost: s?.totalCostUsd ?? 0,
+    tokens: s?.totalTokens ?? 0,
+    input: s?.totalInputTokens ?? 0,
+    output: s?.totalOutputTokens ?? 0,
+    cache: s?.totalCacheTokens ?? 0,
+  };
+}
+
 function getTokenTotals(ctx: ExtensionContext): {
   input: number;
   output: number;
   cache: number;
   total: number;
   cost: number;
+  parentCost: number;
+  subCost: number;
+  subTokens: number;
 } {
   let input = 0;
   let output = 0;
   let cache = 0;
   let total = 0;
-  let cost = 0;
+  let parentCost = 0;
 
   for (const entry of ctx.sessionManager.getBranch()) {
     if (entry.type !== "message" || entry.message.role !== "assistant") continue;
@@ -92,10 +120,29 @@ function getTokenTotals(ctx: ExtensionContext): {
     output += messageOutput;
     cache += messageCache;
     total += usage.totalTokens ?? messageInput + messageOutput + messageCache;
-    cost += totalCostOf(usage);
+    parentCost += totalCostOf(usage);
   }
 
-  return { input, output, cache, total, cost };
+  // Subagents run in their own in-memory sessions and never appear in the
+  // parent branch above, so their real billed cost/tokens are missing from
+  // the loop. Add them on top so the footer matches what we're actually
+  // being charged (and matches the tool-panel's session total).
+  const sub = getSubagentTotals();
+  input += sub.input;
+  output += sub.output;
+  cache += sub.cache;
+  total += sub.tokens;
+
+  return {
+    input,
+    output,
+    cache,
+    total,
+    cost: parentCost + sub.cost,
+    parentCost,
+    subCost: sub.cost,
+    subTokens: sub.tokens,
+  };
 }
 
 function getContextLine(ctx: ExtensionContext): string {
@@ -156,7 +203,9 @@ function installUsageFooter(pi: ExtensionAPI, ctx: ExtensionContext): void {
       const line2 = coach
         ? padRight(line2Left, coach, width)
         : truncateToWidth(line2Left, width);
-      const line3Left = `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)}`;
+      const line3Left = totals.subCost > 0
+        ? `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)} (${formatMoney(totals.parentCost)} + ${formatMoney(totals.subCost)} sub)`
+        : `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)}`;
       const line3 = subagent
         ? padRight(line3Left, subagent, width)
         : truncateToWidth(line3Left, width);

@@ -706,12 +706,30 @@ export default function (pi: ExtensionAPI) {
 	let tuiRef: { requestRender: () => void } | undefined;
 	let spinnerTimer: ReturnType<typeof setInterval> | undefined;
 
-	// Shared global so other extensions (e.g. usage-footer) can render our status.
+	// Shared global so other extensions (e.g. usage-footer) can render our status
+	// and include real subagent billing in the session totals. Subagents run in
+	// their own in-memory sessions, so their cost/tokens never appear in the
+	// parent's sessionManager branch — we accumulate them here so the footer can
+	// add them on top.
 	const subagentState = ((globalThis as any).__subagent ??= {
 		enabled: false,
 		active: 0,
 		label: "off",
-	}) as { enabled: boolean; active: number; label: string };
+		totalCostUsd: 0,
+		totalTokens: 0,
+		totalInputTokens: 0,
+		totalOutputTokens: 0,
+		totalCacheTokens: 0,
+	}) as {
+		enabled: boolean;
+		active: number;
+		label: string;
+		totalCostUsd: number;
+		totalTokens: number;
+		totalInputTokens: number;
+		totalOutputTokens: number;
+		totalCacheTokens: number;
+	};
 
 	function publishStateLabel() {
 		subagentState.enabled = subagentModeEnabled;
@@ -768,6 +786,13 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		subagentModeEnabled = false;
 		activeSubagents.clear();
+		// New session ⇒ reset accumulated subagent billing so the footer
+		// doesn't carry costs over from a previous session.
+		subagentState.totalCostUsd = 0;
+		subagentState.totalTokens = 0;
+		subagentState.totalInputTokens = 0;
+		subagentState.totalOutputTokens = 0;
+		subagentState.totalCacheTokens = 0;
 		for (const entry of ctx.sessionManager.getEntries() as any[]) {
 			if (entry.type === "custom" && entry.customType === "subagent-mode") {
 				subagentModeEnabled = Boolean(entry.data?.enabled);
@@ -818,6 +843,19 @@ export default function (pi: ExtensionAPI) {
 				else activeSubagents.delete(toolCallId);
 				refreshSubagentStatusWidget(ctx);
 			});
+			// Accumulate real subagent billing into the shared global so the
+			// usage-footer can include it in the session totals (subagents run
+			// in their own sessions, invisible to ctx.sessionManager).
+			const u = result.usage;
+			if (u) {
+				subagentState.totalCostUsd += u.costUsd ?? 0;
+				subagentState.totalInputTokens += u.inputTokens ?? 0;
+				subagentState.totalOutputTokens += u.outputTokens ?? 0;
+				subagentState.totalCacheTokens += u.cacheTokens ?? 0;
+				subagentState.totalTokens +=
+					u.totalTokens ??
+					(u.inputTokens ?? 0) + (u.outputTokens ?? 0) + (u.cacheTokens ?? 0);
+			}
 			if (result.status === "error") {
 				return {
 					content: [

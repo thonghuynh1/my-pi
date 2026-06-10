@@ -134,19 +134,28 @@ The `.webm` files play in any modern browser — just drag one onto an Edge/Chro
 
 ---
 
-## Workflow 3 — widget-aware recording (MyOffice-specific)
+## Workflow 3 — widget-aware recording (MyOffice + MyBusiness)
 
-For MyOffice + sibling-widget repos, the shell mounts widgets from many repos
-at parameterised routes (`/user/:userId/:widgetuid` and
-`/client/.../company/.../:widgetuid`). Hand-picking the right URL per change
-is tedious, so the extension derives it from
-`MyOffice/Domain/Services/WidgetDataProvider.cs` and exposes:
+The MyOffice and MyBusiness shells both mount widgets from many sibling repos
+at parameterised routes:
+
+- **MyOffice** (`https://localhost:5050`): `/user/:userId/:widgetuid` and
+  `/client/.../company/.../:widgetuid`.
+- **MyBusiness** (`https://localhost:5000`): `/app/client/:userId/company/:companyId`
+  (dashboard grid) and `/app/client/:userId/company/:companyId/single/:widgetuid`.
+
+Hand-picking the right URL per change is tedious, so the extension derives it
+from each shell's `Domain/Services/WidgetDataProvider.cs` (it understands both
+MyOffice's object-initializer shape and MyBusiness's `Dictionary/List<Widget>`
+constructor shape). The **active shell is auto-detected** from the live Edge tab
+origin; force it with the `app: "myoffice" | "mybusiness"` param or `COACH_APP`.
+The tools exposed:
 
 | Tool | Purpose |
 |---|---|
-| `coach_resolve_widget({ file? \| uid? \| serviceName?, scope? })` | Map a changed file (or uid) to the widget(s) it lives in. Returns ranked candidates with `url`, `mountSelector`, `readyExpression`. |
-| `coach_list_widgets({ scope?, serviceName? })` | Enumerate the catalog (37 entries today). |
-| `browser_record_for_widget({ file \| uid \| fromGitDiff, assertions?, steps? })` | One-shot: resolve + record. Use this in a Ralph loop. |
+| `coach_resolve_widget({ file? \| uid? \| serviceName?, scope?, app? })` | Map a changed file (or uid) to the widget(s) it lives in. Returns ranked candidates with `url`, `mountSelector`, `readyExpression`. |
+| `coach_list_widgets({ scope?, serviceName?, app? })` | Enumerate the catalog for the active (or forced) shell. |
+| `browser_record_for_widget({ file \| uid \| fromGitDiff, assertions?, steps?, app? })` | One-shot: resolve + record. Use this in a Ralph loop. |
 
 Minimal Ralph-loop iteration after editing UI:
 
@@ -171,8 +180,8 @@ Commands for humans:
 
 | Command | Purpose |
 |---|---|
-| `/coach-widgets` | Print the resolved catalog + vars |
-| `/coach-env` | Show which userId/clientId/companyId will be used |
+| `/coach-widgets [myoffice\|mybusiness]` | Print the resolved catalog + active shell + vars |
+| `/coach-env` | Show the active shell + which userId/clientId/companyId will be used |
 
 Override one entry (e.g. unusual `_listWidgets` route) by dropping a
 `./.frontend-coach/widgets.overrides.json` like:
@@ -188,8 +197,11 @@ Override one entry (e.g. unusual `_listWidgets` route) by dropping a
 Config env vars (only needed outside the default layout):
 
 - `COACH_MYOFFICE_PATH` (default `C:/GitRepos/MyOffice`)
+- `COACH_MYBUSINESS_PATH` (default `C:/GitRepos/MyBusiness`)
 - `COACH_GITREPOS_ROOT` (default `C:/GitRepos`)
-- `COACH_SHELL_ORIGIN` (default `https://localhost:5050`)
+- `COACH_MYOFFICE_ORIGIN` / `COACH_SHELL_ORIGIN` (default `https://localhost:5050`)
+- `COACH_MYBUSINESS_ORIGIN` (default `https://localhost:5000`)
+- `COACH_APP` (`myoffice` | `mybusiness`) — force the active shell when no Edge tab is open
 
 ---
 
@@ -215,6 +227,6 @@ frontend-coach/
 ├── edge.ts      ← locate, launch, attach to Microsoft Edge via CDP
 ├── recorder.ts  ← drive page + pipe Page.screencastFrame into ffmpeg → webm
 ├── records.ts   ← on-disk record format (id, paths, markdown rendering)
-├── widgets.ts   ← MyOffice widget catalog resolver (workflow 3)
+├── widgets.ts   ← MyOffice + MyBusiness widget catalog resolver (workflow 3)
 └── picker.js    ← injected into your page (workflow 1 only)
 ```

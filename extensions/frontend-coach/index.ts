@@ -45,10 +45,12 @@ import { listRecords, loadRecord, pathsForId, recordsDir } from "./records.ts";
 import {
 	catalogStats,
 	coachEnv,
+	detectApp,
 	listWidgets,
 	repoForFile,
 	resolveRecordingPlan,
 	resolveWidget,
+	type AppKind,
 	type Scope,
 } from "./widgets.ts";
 import { spawnSync } from "node:child_process";
@@ -419,7 +421,16 @@ export default async function (pi: ExtensionAPI) {
 		Type.Literal("company-single"),
 		Type.Literal("company-special"),
 		Type.Literal("modal"),
+		Type.Literal("mb-grid"),
+		Type.Literal("mb-single"),
+		Type.Literal("mb-pane"),
+		Type.Literal("mb-modal"),
+		Type.Literal("mb-component"),
 	]);
+	const AppSchema = Type.Union([
+		Type.Literal("myoffice"),
+		Type.Literal("mybusiness"),
+	], { description: "Which shell to target. Auto-detected from the live Edge tab origin (5050=MyOffice, 5000=MyBusiness) when omitted." });
 
 	pi.registerTool({
 		name: "coach_resolve_widget",
@@ -435,10 +446,11 @@ export default async function (pi: ExtensionAPI) {
 			uid: Type.Optional(Type.String({ description: "Widget Uid as defined in WidgetDataProvider.cs (e.g. 'Documents', 'AggregatedMessages')." })),
 			scope: Type.Optional(ScopeSchema),
 			serviceName: Type.Optional(Type.String({ description: "ServiceName / repo name (e.g. 'Documents', 'Activities')." })),
+			app: Type.Optional(AppSchema),
 		}),
-		async execute(_id, params: { file?: string; uid?: string; scope?: Scope; serviceName?: string }) {
+		async execute(_id, params: { file?: string; uid?: string; scope?: Scope; serviceName?: string; app?: AppKind }) {
 			try {
-				const hits = await resolveWidget(params);
+				const hits = await resolveWidget(params, { app: params.app });
 				if (hits.length === 0) {
 					return {
 						content: [{ type: "text", text: `No widget matched query: ${JSON.stringify(params)}` }],
@@ -477,10 +489,11 @@ export default async function (pi: ExtensionAPI) {
 		parameters: Type.Object({
 			scope: Type.Optional(ScopeSchema),
 			serviceName: Type.Optional(Type.String()),
+			app: Type.Optional(AppSchema),
 		}),
-		async execute(_id, params: { scope?: Scope; serviceName?: string }) {
+		async execute(_id, params: { scope?: Scope; serviceName?: string; app?: AppKind }) {
 			try {
-				const all = await listWidgets(params);
+				const all = await listWidgets(params, { app: params.app });
 				const lines = all.map((w) =>
 					`${w.uid.padEnd(34)} ${w.scope.padEnd(18)} ${w.serviceName.padEnd(14)} ${w.url ?? "(no url)"}`,
 				);
@@ -520,7 +533,8 @@ export default async function (pi: ExtensionAPI) {
 			steps: Type.Optional(Type.Array(StepSchema, { description: "Extra steps appended after the auto waitFor/ready check." })),
 			assertions: Type.Optional(Type.Array(AssertionSchema)),
 			fps: Type.Optional(Type.Number()),
-			shellOrigin: Type.Optional(Type.String({ description: "Override MyOffice origin (default https://localhost:5050)." })),
+			app: Type.Optional(AppSchema),
+			shellOrigin: Type.Optional(Type.String({ description: "Override shell origin (default https://localhost:5050 for MyOffice, https://localhost:5000 for MyBusiness)." })),
 		}),
 		async execute(_id, params: {
 			uid?: string;
@@ -532,6 +546,7 @@ export default async function (pi: ExtensionAPI) {
 			steps?: RecorderStep[];
 			assertions?: RecorderAssertion[];
 			fps?: number;
+			app?: AppKind;
 			shellOrigin?: string;
 		}) {
 			try {
@@ -570,6 +585,7 @@ export default async function (pi: ExtensionAPI) {
 					uid: params.uid,
 					file,
 					scope: params.scope,
+					app: params.app,
 					shellOrigin: params.shellOrigin,
 				});
 				if (!plan) {
@@ -772,13 +788,16 @@ export default async function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("coach-widgets", {
-		description: "Print the resolved MyOffice widget catalog (uid · scope · service · URL). Source: WidgetDataProvider.cs.",
-		handler: async (_args, ctx) => {
+		description: "Print the resolved widget catalog for the active shell (uid · scope · service · URL). Source: WidgetDataProvider.cs. Usage: /coach-widgets [myoffice|mybusiness]",
+		handler: async (args, ctx) => {
 			try {
-				const stats = await catalogStats();
-				const all = await listWidgets();
+				const forced = (args ?? "").trim().toLowerCase();
+				const app = forced === "mybusiness" || forced === "myoffice" ? (forced as AppKind) : undefined;
+				const stats = await catalogStats({ app });
+				const all = await listWidgets({}, { app: stats.app });
 				const lines = [
-					`MyOffice  : ${stats.myOfficePath}`,
+					`App       : ${stats.app}  (origin ${stats.origin})`,
+					`Repo      : ${stats.repoPath}`,
 					`Catalog   : ${stats.catalogFile} ${stats.catalogFileExists ? "\u2713" : "\u2717 missing"}`,
 					`Overrides : ${stats.overridesFile} ${stats.overridesPresent ? "\u2713" : "(none)"}`,
 					`Env file  : ${stats.envFile} ${stats.envPresent ? "\u2713" : "(none)"}`,
@@ -797,17 +816,19 @@ export default async function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("coach-env", {
-		description: "Show resolved vars (userId/clientId/companyId) the widget resolver will use, and where each came from.",
+		description: "Show the active shell + resolved vars (userId/clientId/companyId) the widget resolver will use, and where each came from.",
 		handler: async (_args, ctx) => {
+			const app = await detectApp();
 			const vars = await coachEnv();
 			const lines = [
+				`app       : ${app}`,
 				`userId    : ${vars.userId ?? "(not set)"}`,
 				`clientId  : ${vars.clientId ?? "(not set)"}`,
 				`companyId : ${vars.companyId ?? "(not set)"}`,
 				"",
 				"Resolution order: live Edge tab URL > .frontend-coach/env.local.json > COACH_USER_ID/COACH_CLIENT_ID/COACH_COMPANY_ID env vars.",
 			];
-			ctx.ui.notify(lines[0] + " \u00b7 " + lines[1] + " \u00b7 " + lines[2], "info");
+			ctx.ui.notify(`${app} \u00b7 user=${vars.userId ?? "?"} \u00b7 company=${vars.companyId ?? "?"}`, "info");
 			console.log("\n--- coach-env ---\n" + lines.join("\n") + "\n");
 		},
 	});

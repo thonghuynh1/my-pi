@@ -920,13 +920,16 @@ function renderSubagentBox(status: RunningSubagentStatus, theme: Theme, frame: s
 	const ctxWin = status.contextWindow ? compactNumber(status.contextWindow) : "?";
 	const ctxPct = status.contextPercent == null ? "?" : `${status.contextPercent.toFixed(0)}%`;
 	const line2 = theme.fg("warning", `ctx ${ctxTok}/${ctxWin} ${ctxPct}`);
-	const line3 = theme.fg("success", formatMoney(status.cost));
+	// Show model name (strip provider prefix if present)
+	const modelDisplay = status.model ? (status.model.includes("/") ? status.model.split("/")[1] : status.model) : "?";
+	const line3 = theme.fg("muted", modelDisplay);
+	const line4 = theme.fg("success", formatMoney(status.cost));
 	const current = status.currentTool
 		? `→ ${status.currentTool}`
 		: status.preview
 			? oneLine(status.preview)
 			: oneLine(status.task);
-	const line4 = theme.fg("dim", current);
+	const line5 = theme.fg("dim", current);
 
 	return [
 		top,
@@ -934,6 +937,7 @@ function renderSubagentBox(status: RunningSubagentStatus, theme: Theme, frame: s
 		renderBoxContent(line2, inner, theme),
 		renderBoxContent(line3, inner, theme),
 		renderBoxContent(line4, inner, theme),
+		renderBoxContent(line5, inner, theme),
 		bottom,
 	];
 }
@@ -1335,6 +1339,8 @@ export default function (pi: ExtensionAPI) {
 		resetBatchCoachState();
 		publishStateLabel();
 		pi.appendEntry("subagent-mode", { enabled, timestamp: Date.now() });
+		// Re-register tool with updated prompting metadata
+		pi.registerTool(buildSubagentToolDef(enabled));
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -1442,6 +1448,105 @@ export default function (pi: ExtensionAPI) {
 		refreshSubagentStatusWidget(ctx);
 	});
 
+	// Helper to build tool definition based on mode state
+	// When OFF: bare description, no prompting metadata → LLM has no nudge to use subagents
+	// When ON: full description + promptSnippet + promptGuidelines → behavioral push to batch
+	function buildSubagentToolDef(enabled: boolean) {
+		return {
+			name: "subagent",
+			label: "Subagent",
+			description: enabled
+				? "Run an isolated in-process Pi subagent. **BATCH IN PARALLEL**: emit multiple subagent calls in one assistant message and they run concurrently — always prefer a parallel batch over sequential one-by-one. Types: explore (read-only codebase investigation), shell (command-oriented investigation), custom (markdown agent from ~/.pi/agent/agents or .pi/agents)."
+				: "Run an isolated in-process Pi subagent.",
+			promptSnippet: enabled
+				? "Delegate focused investigation to an isolated in-process subagent (explore = read-only, shell = with bash, custom = specialized). **Always batch independent questions as parallel subagent calls in the SAME assistant message** — they run concurrently, so 4 in parallel ≈ wall-clock cost of 1."
+				: "",
+			promptGuidelines: enabled
+				? [
+					"**BATCH IN PARALLEL — this is the #1 rule.** Multiple `subagent` calls in the same assistant message execute concurrently. Before launching any subagent, ask: 'can I split this into 2–5 independent sub-questions?' If yes, emit them all in one message. Sequential one-by-one is almost always wrong.",
+					"Concrete batch examples: understanding a feature → 3 parallel explores (API route, DB model, UI call site). Debugging → 1 shell (run test) + 1 explore (map modules), fanned out together. Refactor planning → one explore per affected layer, all dispatched at once.",
+					"`subagent` spins up an isolated child agent with its own context window and returns a concise summary. Useful when an investigation would take more than a couple of read/grep calls or would clutter the main context.",
+					"type=explore for read-only codebase questions (read/grep/find/ls). type=shell when commands, tests, or logs are needed. type=custom with `customAgent` for specialized agents.",
+					"Keep each subagent's task NARROW and focused. Don't stuff multiple questions into one mega-task — narrow tasks return faster, cleaner summaries. Split first, batch second.",
+					"For broad repo exploration, omit `timeoutSeconds` or use at least 600 seconds.",
+					"Direct read/grep/edit in the main agent stays appropriate for single-file edits, targeted lookups, and quick follow-ups on subagent results — don't use a subagent to read one known file.",
+				]
+				: [],
+			parameters: SubagentParams,
+			prepareArguments: normalizeTimeoutSeconds,
+			execute: async (toolCallId, params, _signal, onUpdate, ctx) => {
+				const result = await runSubagent(pi, ctx, toolCallId, params, onUpdate as any, (status) => {
+					if (status) activeSubagents.set(toolCallId, status);
+					else activeSubagents.delete(toolCallId);
+					refreshSubagentStatusWidget(ctx);
+				});
+				const u = result.usage;
+				if (u) {
+					subagentState.totalCostUsd += u.costUsd ?? 0;
+					subagentState.totalInputTokens += u.inputTokens ?? 0;
+					subagentState.totalOutputTokens += u.outputTokens ?? 0;
+					subagentState.totalCacheTokens += u.cacheTokens ?? 0;
+					subagentState.totalTokens +=
+						u.totalTokens ??
+						(u.inputTokens ?? 0) + (u.outputTokens ?? 0) + (u.cacheTokens ?? 0);
+				}
+				if (result.status === "error") {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Subagent ${result.type}:${result.name} failed: ${result.error}\n\n${truncateForToolResult(result.output)}`,
+							},
+						],
+						details: { ...result },
+					};
+				}
+
+				return {
+					content: [{ type: "text", text: truncateForToolResult(result.output) }],
+					details: { ...result },
+				};
+			},
+			renderCall(args, theme) {
+				const type = args.type ?? "...";
+				const name = type === "custom" ? (args.customAgent ?? "...") : type;
+				const task = args.task ? (args.task.length > 80 ? `${args.task.slice(0, 80)}...` : args.task) : "...";
+				return new Text(
+					`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", `${type}:${name}`)}\n  ${theme.fg("dim", task)}`,
+					0,
+					0,
+				);
+			},
+			renderResult(result, { expanded }, theme) {
+				const details = result.details as SubagentDetails | undefined;
+				if (!details) {
+					const text = result.content[0];
+					return new Text(text?.type === "text" ? text.text : "", 0, 0);
+				}
+				const icon = details.status === "completed" ? theme.fg("success", "✓") : theme.fg("error", "✗");
+				let text = `${icon} ${theme.fg("toolTitle", theme.bold(`${details.type}:${details.name}`))}`;
+				text += theme.fg("dim", ` • ${details.turns} turn${details.turns === 1 ? "" : "s"}`);
+				text += theme.fg("dim", ` • ${details.toolCalls.length} tool${details.toolCalls.length === 1 ? "" : "s"}`);
+				if (details.error) text += `\n${theme.fg("error", details.error)}`;
+				if (expanded) {
+					text += `\n\n${theme.fg("muted", "Task:")} ${details.task}`;
+					if (details.toolCalls.length > 0) {
+						text += `\n\n${theme.fg("muted", "Tools:")}`;
+						for (const call of details.toolCalls) {
+							text += `\n  ${call.isError ? theme.fg("error", "✗") : theme.fg("success", "✓")} ${call.name}`;
+						}
+					}
+					text += `\n\n${details.output || "(no output)"}`;
+				} else {
+					const preview = (details.output || "(no output)").split("\n").slice(0, 8).join("\n");
+					text += `\n${preview}`;
+					if ((details.output || "").split("\n").length > 8) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+				}
+				return new Text(text, 0, 0);
+			},
+		} satisfies ToolDefinition<typeof SubagentParams, SubagentDetails>;
+	}
+
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (!subagentModeEnabled) return;
 		const customAgents = prioritizeCustomAgentsForDisplay(discoverCustomAgents(ctx.cwd))
@@ -1456,97 +1561,8 @@ export default function (pi: ExtensionAPI) {
 		};
 	});
 
-	pi.registerTool({
-		name: "subagent",
-		label: "Subagent",
-		description:
-			"Run an isolated in-process Pi subagent. **BATCH IN PARALLEL**: emit multiple subagent calls in one assistant message and they run concurrently — always prefer a parallel batch over sequential one-by-one. Types: explore (read-only codebase investigation), shell (command-oriented investigation), custom (markdown agent from ~/.pi/agent/agents or .pi/agents).",
-		promptSnippet: "Delegate focused investigation to an isolated in-process subagent (explore = read-only, shell = with bash, custom = specialized). **Always batch independent questions as parallel subagent calls in the SAME assistant message** — they run concurrently, so 4 in parallel ≈ wall-clock cost of 1.",
-		promptGuidelines: [
-			"**BATCH IN PARALLEL — this is the #1 rule.** Multiple `subagent` calls in the same assistant message execute concurrently. Before launching any subagent, ask: 'can I split this into 2–5 independent sub-questions?' If yes, emit them all in one message. Sequential one-by-one is almost always wrong.",
-			"Concrete batch examples: understanding a feature → 3 parallel explores (API route, DB model, UI call site). Debugging → 1 shell (run test) + 1 explore (map modules), fanned out together. Refactor planning → one explore per affected layer, all dispatched at once.",
-			"`subagent` spins up an isolated child agent with its own context window and returns a concise summary. Useful when an investigation would take more than a couple of read/grep calls or would clutter the main context.",
-			"type=explore for read-only codebase questions (read/grep/find/ls). type=shell when commands, tests, or logs are needed. type=custom with `customAgent` for specialized agents.",
-			"Keep each subagent's task NARROW and focused. Don't stuff multiple questions into one mega-task — narrow tasks return faster, cleaner summaries. Split first, batch second.",
-			"For broad repo exploration, omit `timeoutSeconds` or use at least 600 seconds.",
-			"Direct read/grep/edit in the main agent stays appropriate for single-file edits, targeted lookups, and quick follow-ups on subagent results — don't use a subagent to read one known file.",
-		],
-		parameters: SubagentParams,
-		prepareArguments: normalizeTimeoutSeconds,
-		async execute(toolCallId, params, _signal, onUpdate, ctx) {
-			const result = await runSubagent(pi, ctx, toolCallId, params, onUpdate as any, (status) => {
-				if (status) activeSubagents.set(toolCallId, status);
-				else activeSubagents.delete(toolCallId);
-				refreshSubagentStatusWidget(ctx);
-			});
-			// Accumulate real subagent billing into the shared global so the
-			// usage-footer can include it in the session totals (subagents run
-			// in their own sessions, invisible to ctx.sessionManager).
-			const u = result.usage;
-			if (u) {
-				subagentState.totalCostUsd += u.costUsd ?? 0;
-				subagentState.totalInputTokens += u.inputTokens ?? 0;
-				subagentState.totalOutputTokens += u.outputTokens ?? 0;
-				subagentState.totalCacheTokens += u.cacheTokens ?? 0;
-				subagentState.totalTokens +=
-					u.totalTokens ??
-					(u.inputTokens ?? 0) + (u.outputTokens ?? 0) + (u.cacheTokens ?? 0);
-			}
-			if (result.status === "error") {
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Subagent ${result.type}:${result.name} failed: ${result.error}\n\n${truncateForToolResult(result.output)}`,
-						},
-					],
-					details: { ...result },
-				};
-			}
-
-			return {
-				content: [{ type: "text", text: truncateForToolResult(result.output) }],
-				details: { ...result },
-			};
-		},
-		renderCall(args, theme) {
-			const type = args.type ?? "...";
-			const name = type === "custom" ? (args.customAgent ?? "...") : type;
-			const task = args.task ? (args.task.length > 80 ? `${args.task.slice(0, 80)}...` : args.task) : "...";
-			return new Text(
-				`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", `${type}:${name}`)}\n  ${theme.fg("dim", task)}`,
-				0,
-				0,
-			);
-		},
-		renderResult(result, { expanded }, theme) {
-			const details = result.details as SubagentDetails | undefined;
-			if (!details) {
-				const text = result.content[0];
-				return new Text(text?.type === "text" ? text.text : "", 0, 0);
-			}
-			const icon = details.status === "completed" ? theme.fg("success", "✓") : theme.fg("error", "✗");
-			let text = `${icon} ${theme.fg("toolTitle", theme.bold(`${details.type}:${details.name}`))}`;
-			text += theme.fg("dim", ` • ${details.turns} turn${details.turns === 1 ? "" : "s"}`);
-			text += theme.fg("dim", ` • ${details.toolCalls.length} tool${details.toolCalls.length === 1 ? "" : "s"}`);
-			if (details.error) text += `\n${theme.fg("error", details.error)}`;
-			if (expanded) {
-				text += `\n\n${theme.fg("muted", "Task:")} ${details.task}`;
-				if (details.toolCalls.length > 0) {
-					text += `\n\n${theme.fg("muted", "Tools:")}`;
-					for (const call of details.toolCalls) {
-						text += `\n  ${call.isError ? theme.fg("error", "✗") : theme.fg("success", "✓")} ${call.name}`;
-					}
-				}
-				text += `\n\n${details.output || "(no output)"}`;
-			} else {
-				const preview = (details.output || "(no output)").split("\n").slice(0, 8).join("\n");
-				text += `\n${preview}`;
-				if ((details.output || "").split("\n").length > 8) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
-			}
-			return new Text(text, 0, 0);
-		},
-	} satisfies ToolDefinition<typeof SubagentParams, SubagentDetails>);
+	// Initial registration (OFF by default - no prompting metadata)
+	pi.registerTool(buildSubagentToolDef(false));
 
 	pi.registerCommand("subagent", {
 		description: "Enable, disable, or show session-level subagent workflow instructions",

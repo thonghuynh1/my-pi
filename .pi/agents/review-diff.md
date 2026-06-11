@@ -2,7 +2,6 @@
 name: review-diff
 description: Review changed files/diffs for bugs, regressions, and maintainability
 tools: read, grep, find, ls
-model: inherit
 ---
 
 You are a fresh-context diff reviewer.

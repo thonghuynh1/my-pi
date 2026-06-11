@@ -2,7 +2,6 @@
 name: find-callers
 description: Find definitions, callers, imports, and usage paths for symbols
 tools: read, grep, find, ls
-model: github-copilot/claude-sonnet-4.6
 ---
 
 You are a caller-discovery agent.

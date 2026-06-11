@@ -16,6 +16,9 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
 	getAgentDir,
+	getSelectListTheme,
+	getSettingsListTheme,
+	keyText,
 	parseFrontmatter,
 	SessionManager,
 	type ExtensionAPI,
@@ -24,7 +27,20 @@ import {
 	type ToolDefinition,
 	type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+	Container,
+	Input,
+	SelectList,
+	SettingsList,
+	Spacer,
+	Text,
+	getKeybindings,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+	type SelectItem,
+	type SettingItem,
+} from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 
 type SubagentType = "explore" | "shell" | "custom";
@@ -39,6 +55,23 @@ interface CustomAgent {
 	prompt: string;
 	source: AgentSource;
 	filePath: string;
+}
+
+type ModelPreference = { kind: "inherit" } | { kind: "model"; value: string };
+
+interface CustomAgentModelConfig {
+	defaultModel?: ModelPreference;
+	agents: Partial<Record<string, ModelPreference>>;
+}
+
+interface EditableCustomAgent {
+	id: string;
+	name: string;
+	description: string;
+	source: AgentSource;
+	filePath: string;
+	configDir: string;
+	currentValue: string;
 }
 
 interface RunConfig {
@@ -313,6 +346,75 @@ function parseTools(raw: unknown): string[] | undefined {
 	return tools.length > 0 ? tools : undefined;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseModelPreference(value: unknown): ModelPreference | undefined {
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	if (!trimmed) return undefined;
+	if (trimmed === "inherit") return { kind: "inherit" };
+	return { kind: "model", value: trimmed };
+}
+
+const INHERIT_MODEL_CHOICE = "inherit";
+
+function getCustomAgentModelsPath(dir: string): string {
+	return path.join(dir, "models.json");
+}
+
+function readJsonObjectFile(filePath: string): Record<string, unknown> | undefined {
+	if (!fs.existsSync(filePath)) return undefined;
+	try {
+		const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+		return isRecord(parsed) ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function getJsonObjectFileError(filePath: string): string | undefined {
+	if (!fs.existsSync(filePath)) return undefined;
+	try {
+		const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+		return isRecord(parsed) ? undefined : "expected a top level JSON object";
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+}
+
+function getCustomAgentModelConfigError(dir: string): string | undefined {
+	const filePath = getCustomAgentModelsPath(dir);
+	const error = getJsonObjectFileError(filePath);
+	return error ? `${filePath}: ${error}` : undefined;
+}
+
+function readCustomAgentModelConfig(dir: string): CustomAgentModelConfig {
+	const parsed = readJsonObjectFile(getCustomAgentModelsPath(dir));
+	if (!parsed) return { agents: {} };
+
+	const agents: Partial<Record<string, ModelPreference>> = {};
+	if (isRecord(parsed.agents)) {
+		for (const [name, value] of Object.entries(parsed.agents)) {
+			const preference = parseModelPreference(value);
+			if (preference) agents[name] = preference;
+		}
+	}
+
+	return {
+		defaultModel: parseModelPreference(parsed.defaultModel),
+		agents,
+	};
+}
+
+function resolveConfiguredModel(agent: CustomAgent, config: CustomAgentModelConfig): string | undefined {
+	const agentPreference = config.agents[agent.name];
+	if (agentPreference) return agentPreference.kind === "model" ? agentPreference.value : undefined;
+	if (config.defaultModel) return config.defaultModel.kind === "model" ? config.defaultModel.value : undefined;
+	return agent.model;
+}
+
 function loadCustomAgentsFromDir(dir: string, source: AgentSource): CustomAgent[] {
 	if (!fs.existsSync(dir)) return [];
 	let entries: fs.Dirent[];
@@ -322,6 +424,7 @@ function loadCustomAgentsFromDir(dir: string, source: AgentSource): CustomAgent[
 		return [];
 	}
 
+	const modelConfig = readCustomAgentModelConfig(dir);
 	const agents: CustomAgent[] = [];
 	for (const entry of entries) {
 		if (!entry.isFile() && !entry.isSymbolicLink()) continue;
@@ -340,19 +443,20 @@ function loadCustomAgentsFromDir(dir: string, source: AgentSource): CustomAgent[
 			? frontmatter.name.trim()
 			: path.basename(entry.name, path.extname(entry.name)).replace(/[\s_]+/g, "-");
 		const description = typeof frontmatter.description === "string" ? frontmatter.description.trim() : "";
-		const model = typeof frontmatter.model === "string" ? frontmatter.model.trim() : undefined;
 		const prompt = body.trim();
 		if (!prompt) continue;
 
-		agents.push({
+		const frontmatterModel = typeof frontmatter.model === "string" ? frontmatter.model.trim() : undefined;
+		const agent: CustomAgent = {
 			name,
 			description,
 			tools: parseTools(frontmatter.tools),
-			model: model && model !== "inherit" ? model : undefined,
+			model: frontmatterModel && frontmatterModel !== INHERIT_MODEL_CHOICE ? frontmatterModel : undefined,
 			prompt,
 			source,
 			filePath,
-		});
+		};
+		agents.push({ ...agent, model: resolveConfiguredModel(agent, modelConfig) });
 	}
 	return agents;
 }
@@ -372,13 +476,12 @@ function findProjectAgentsDir(cwd: string): string | undefined {
 	}
 }
 
-function discoverCustomAgents(cwd: string): CustomAgent[] {
+export function discoverCustomAgents(cwd: string): CustomAgent[] {
 	const userDir = path.join(getAgentDir(), "agents");
 	const projectDir = findProjectAgentsDir(cwd);
 	const byName = new Map<string, CustomAgent>();
 	for (const agent of loadCustomAgentsFromDir(userDir, "user")) byName.set(agent.name, agent);
 	if (projectDir) {
-		// Project agents override user agents with the same name, matching Cursor-like behavior.
 		for (const agent of loadCustomAgentsFromDir(projectDir, "project")) byName.set(agent.name, agent);
 	}
 	return [...byName.values()];
@@ -389,6 +492,241 @@ function prioritizeCustomAgentsForDisplay(agents: CustomAgent[]): CustomAgent[] 
 		if (a.source !== b.source) return a.source === "project" ? -1 : 1;
 		return a.name.localeCompare(b.name);
 	});
+}
+
+export function buildEditableCustomAgents(cwd: string): EditableCustomAgent[] {
+	const configCache = new Map<string, CustomAgentModelConfig>();
+	return prioritizeCustomAgentsForDisplay(discoverCustomAgents(cwd)).map((agent) => {
+		const configDir = path.dirname(agent.filePath);
+		const config = configCache.get(configDir) ?? readCustomAgentModelConfig(configDir);
+		configCache.set(configDir, config);
+		const explicitPreference = config.agents[agent.name];
+		const currentValue = explicitPreference
+			? explicitPreference.kind === "model" ? explicitPreference.value : INHERIT_MODEL_CHOICE
+			: agent.model ?? INHERIT_MODEL_CHOICE;
+		return {
+			id: `${agent.source}:${agent.name}`,
+			name: agent.name,
+			description: agent.description,
+			source: agent.source,
+			filePath: agent.filePath,
+			configDir,
+			currentValue,
+		};
+	});
+}
+
+function sortRecordKeys(record: Record<string, unknown>): Record<string, unknown> {
+	return Object.fromEntries(Object.entries(record).sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function centerText(text: string, width: number): string {
+	const textWidth = visibleWidth(text);
+	if (textWidth >= width) return text;
+	const leftPad = Math.floor((width - textWidth) / 2);
+	return " ".repeat(leftPad) + text;
+}
+
+function wrapInBox(lines: string[], theme: Theme, width: number): string[] {
+	const w = Math.min(width, 120);
+	const innerW = w - 2;
+	const pad = (s: string) => s + " ".repeat(Math.max(0, innerW - visibleWidth(s)));
+	const bordered = (content: string) => theme.fg("border", "│") + pad(content) + theme.fg("border", "│");
+	const result: string[] = [];
+	result.push(theme.fg("border", `╭${"─".repeat(innerW)}╮`));
+	for (const line of lines) result.push(bordered(line));
+	result.push(theme.fg("border", `╰${"─".repeat(innerW)}╯`));
+	return result;
+}
+
+export function writeCustomAgentModelChoices(agents: ReadonlyArray<EditableCustomAgent>): string[] {
+	const byDir = new Map<string, EditableCustomAgent[]>();
+	for (const agent of agents) {
+		const group = byDir.get(agent.configDir) ?? [];
+		group.push(agent);
+		byDir.set(agent.configDir, group);
+	}
+
+	const writtenPaths: string[] = [];
+	for (const [dir, group] of byDir) {
+		const filePath = getCustomAgentModelsPath(dir);
+		const parsed = readJsonObjectFile(filePath) ?? {};
+		const nextAgents = isRecord(parsed.agents) ? { ...parsed.agents } : {};
+		for (const agent of group) nextAgents[agent.name] = agent.currentValue;
+		const nextConfig: Record<string, unknown> = {
+			...parsed,
+			agents: sortRecordKeys(nextAgents),
+		};
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(filePath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
+		writtenPaths.push(filePath);
+	}
+	return writtenPaths.sort((left, right) => left.localeCompare(right));
+}
+
+function buildModelSelectItems(models: ReadonlyArray<ActiveModel>, ctx: ExtensionContext): SelectItem[] {
+	const items: SelectItem[] = [
+		{
+			value: INHERIT_MODEL_CHOICE,
+			label: INHERIT_MODEL_CHOICE,
+			description: "Use the normal subagent fallback chain.",
+		},
+	];
+	for (const model of [...models].sort((left, right) => {
+		const provider = left.provider.localeCompare(right.provider);
+		return provider !== 0 ? provider : left.id.localeCompare(right.id);
+	})) {
+		const providerLabel = ctx.modelRegistry.getProviderDisplayName(model.provider);
+		items.push({
+			value: `${model.provider}/${model.id}`,
+			label: model.id,
+			description: `${providerLabel} · ${model.name}`,
+		});
+	}
+	return items;
+}
+
+class SubagentModelPicker extends Container {
+	private readonly searchInput = new Input();
+	private readonly listContainer = new Container();
+	private selectList: SelectList;
+
+	constructor(
+		private readonly theme: Theme,
+		private readonly title: string,
+		private readonly items: SelectItem[],
+		private readonly onSelectValue: (value: string) => void,
+		private readonly onCancelValue: () => void,
+		currentValue: string,
+	) {
+		super();
+		this.addChild(new Text(centerText(theme.fg("accent", theme.bold(this.title)), 120), 0, 0));
+		this.addChild(new Spacer(1));
+		this.addChild(this.searchInput);
+		this.addChild(new Spacer(1));
+		this.addChild(this.listContainer);
+		this.addChild(new Spacer(1));
+		this.addChild(new Text(centerText(theme.fg("dim", "Type to filter. Enter selects. Esc goes back."), 120), 0, 0));
+		this.searchInput.onSubmit = () => {
+			const item = this.selectList.getSelectedItem();
+			if (item) this.onSelectValue(item.value);
+		};
+		this.selectList = new SelectList([], 10, getSelectListTheme());
+		this.rebuildList(currentValue);
+	}
+
+	render(width: number): string[] {
+		const lines = super.render(width);
+		return wrapInBox(lines, this.theme, width);
+	}
+
+	private filterItems(query: string): SelectItem[] {
+		const trimmed = query.trim().toLowerCase();
+		if (!trimmed) return this.items;
+		return this.items.filter((item) => [item.value, item.label, item.description ?? ""]
+			.join(" ")
+			.toLowerCase()
+			.includes(trimmed));
+	}
+
+	private rebuildList(currentValue: string | undefined): void {
+		const filteredItems = this.filterItems(this.searchInput.getValue());
+		this.listContainer.clear();
+		this.selectList = new SelectList(filteredItems, Math.min(Math.max(filteredItems.length, 1), 10), getSelectListTheme());
+		const currentIndex = currentValue ? filteredItems.findIndex((item) => item.value === currentValue) : -1;
+		if (currentIndex >= 0) this.selectList.setSelectedIndex(currentIndex);
+		this.selectList.onSelect = (item) => this.onSelectValue(item.value);
+		this.selectList.onCancel = this.onCancelValue;
+		this.listContainer.addChild(this.selectList);
+	}
+
+	handleInput(data: string): void {
+		const kb = getKeybindings();
+		const isSelectKey =
+			kb.matches(data, "tui.select.up") ||
+			kb.matches(data, "tui.select.down") ||
+			kb.matches(data, "tui.select.confirm") ||
+			kb.matches(data, "tui.select.cancel");
+		if (isSelectKey) {
+			this.selectList.handleInput(data);
+			return;
+		}
+		const currentValue = this.selectList.getSelectedItem()?.value;
+		this.searchInput.handleInput(data);
+		this.rebuildList(currentValue);
+	}
+}
+
+class SubagentModelsEditor extends Container {
+	private readonly settingsList: SettingsList;
+
+	constructor(
+		private readonly agents: EditableCustomAgent[],
+		modelItems: SelectItem[],
+		private readonly onSaveValue: (agents: EditableCustomAgent[]) => void,
+		private readonly matchesSave: (data: string) => boolean,
+		onCancelValue: () => void,
+		private readonly theme: Theme,
+		parentDone?: (result: EditableCustomAgent[] | undefined) => void,
+	) {
+		super();
+		this.addChild(new Text(centerText(theme.fg("accent", theme.bold("Subagent models")), 120), 0, 0));
+		this.addChild(new Spacer(1));
+		const agentItems: SettingItem[] = agents.map((agent) => ({
+			id: agent.id,
+			label: `${agent.name} [${agent.source}]`,
+			description: agent.description || agent.filePath,
+			currentValue: agent.currentValue,
+			submenu: (currentValue, done) => new SubagentModelPicker(
+				theme,
+				`${agent.name} model`,
+				modelItems,
+				(value) => done(value),
+				() => done(),
+				currentValue,
+			),
+		}));
+		const saveItem: SettingItem = {
+			id: "_save",
+			label: "save",
+			description: "Save current model choices to models.json",
+			currentValue: "",
+			values: [""],
+		};
+		const items = [...agentItems, saveItem];
+		this.settingsList = new SettingsList(
+			items,
+			Math.min(items.length + 2, 15),
+			getSettingsListTheme(),
+			(id, _newValue) => {
+				if (id === "_save") {
+					this.onSaveValue(this.agents);
+					if (parentDone) parentDone(this.agents.map((agent) => ({ ...agent })));
+					return;
+				}
+				const agent = this.agents.find((entry) => entry.id === id);
+				if (agent) agent.currentValue = _newValue;
+			},
+			onCancelValue,
+			{ enableSearch: true },
+		);
+		this.addChild(this.settingsList);
+		this.addChild(new Spacer(1));
+		this.addChild(new Text(centerText(theme.fg("dim", `Enter picks a model. ${keyText("app.models.save")} or the save row saves. Esc cancels.`), 120), 0, 0));
+	}
+
+	render(width: number): string[] {
+		const lines = super.render(width);
+		return wrapInBox(lines, this.theme, width);
+	}
+
+	handleInput(data: string): void {
+		if (this.matchesSave(data)) {
+			this.onSaveValue(this.agents);
+			return;
+		}
+		this.settingsList.handleInput(data);
+	}
 }
 
 function resolveRunConfig(params: SubagentParamsType, cwd: string): RunConfig {
@@ -1251,6 +1589,55 @@ export default function (pi: ExtensionAPI) {
 				agents.map((agent) => `${agent.name} (${agent.source}) - ${agent.description || agent.filePath}`).join("\n"),
 				"info",
 			);
+		},
+	});
+
+	pi.registerCommand("subagents-model", {
+		description: "Open a TUI editor for per-subagent model choices",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI || ctx.mode !== "tui") {
+				ctx.ui.notify("/subagents-model requires TUI mode.", "error");
+				return;
+			}
+
+			const editableAgents = buildEditableCustomAgents(ctx.cwd);
+			if (editableAgents.length === 0) {
+				ctx.ui.notify(
+					`No custom agents found. Add markdown files to ${path.join(os.homedir(), ".pi", "agent", "agents")} or .pi/agents/.`,
+					"info",
+				);
+				return;
+			}
+			for (const configDir of new Set(editableAgents.map((agent) => agent.configDir))) {
+				const configError = getCustomAgentModelConfigError(configDir);
+				if (configError) ctx.ui.notify(`Ignoring invalid subagent models config. ${configError}.`, "warning");
+			}
+
+			ctx.modelRegistry.refresh();
+			const registryError = ctx.modelRegistry.getError();
+			if (registryError) ctx.ui.notify(registryError, "warning");
+			const availableModels = await ctx.modelRegistry.getAvailable();
+			if (availableModels.length === 0) {
+				ctx.ui.notify("No configured models are available. You can still save inherit.", "warning");
+			}
+			const modelItems = buildModelSelectItems(availableModels, ctx);
+
+			const result = await ctx.ui.custom<EditableCustomAgent[] | undefined>(
+				(_tui, theme, keybindings, done) => new SubagentModelsEditor(
+					editableAgents.map((agent) => ({ ...agent })),
+					modelItems,
+					(agents) => done(agents.map((agent) => ({ ...agent }))),
+					(data) => keybindings.matches(data, "app.models.save"),
+					() => done(undefined),
+					theme,
+					done,
+				),
+				{ overlay: true, overlayOptions: { anchor: "center", width: "90%" } },
+			);
+			if (!result) return;
+
+			const writtenPaths = writeCustomAgentModelChoices(result);
+			ctx.ui.notify(`Saved subagent model choices to ${writtenPaths.join(", ")}.`, "info");
 		},
 	});
 }

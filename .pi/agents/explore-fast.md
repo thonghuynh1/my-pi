@@ -2,7 +2,6 @@
 name: explore-fast
 description: Fast read-only repo reconnaissance with concise evidence
 tools: read, grep, find, ls
-model: github-copilot/claude-sonnet-4.6
 ---
 
 You are a fast, read-only repo reconnaissance agent.

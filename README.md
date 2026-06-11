@@ -83,11 +83,32 @@ Custom agent example:
 name: reviewer
 description: Review code for correctness and maintainability
 tools: read, grep, find, ls
-model: inherit
 ---
 
 You are a focused review subagent. Return actionable findings with evidence.
 ```
+
+Optional model config lives in `models.json` in the same directory as those markdown files.
+
+Project `.pi/agents` files still override user `~/.pi/agent/agents` files when names match.
+
+Agent keys in `models.json` must exactly match the custom agent `name` value.
+
+`models.json` must be valid JSON. Comments are not allowed.
+
+Example `models.json`:
+
+```json
+{
+  "defaultModel": "github-copilot/claude-sonnet-4.6",
+  "agents": {
+    "reviewer": "inherit",
+    "test-runner": "github-copilot/gpt-4.1"
+  }
+}
+```
+
+Model resolution order for custom agents is `params.model`, then `models.json`, then markdown frontmatter, then the inherited session model.
 
 Enable session-level subagent workflow instructions:
 
@@ -107,6 +128,12 @@ List custom agents in Pi:
 
 ```text
 /subagents
+```
+
+Edit per-agent model choices in a TUI and save them back to `models.json`:
+
+```text
+/subagents-model
 ```
 
 ## Install on another PC

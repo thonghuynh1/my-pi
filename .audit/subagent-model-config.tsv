@@ -1,0 +1,11 @@
+ts	phase	decision	why	evidence	result
+2026-06-11T16:29:42Z	frame	Use a repo local JSON file for custom subagent model defaults	smallest reversible change, reuse existing JSON patterns, keep frontmatter as fallback	extensions/subagents.ts	open
+2026-06-11T16:33:20Z	implement	Add models.json support beside custom agent markdown files	keep one editable source of truth for custom subagent models without removing frontmatter fallback	extensions/subagents.ts	done
+2026-06-11T16:33:20Z	implement	Move repo custom agent model choices into .pi/agents/models.json	dogfood the new path and remove per file hard coding	.pi/agents/models.json	done
+2026-06-11T16:33:20Z	verify	Run TypeScript compile check	prove the extension still builds after the loader change	npm run check	green
+2026-06-11T16:33:59Z	review	Clarify models.json location and project override behavior in README	fresh-context review found small doc ambiguity that was cheap to fix	README.md	done
+2026-06-11T16:35:31Z	implement	Export discoverCustomAgents for direct runtime verification	needed a small scriptable lever to prove the actual models.json resolution path	extensions/subagents.ts	done
+2026-06-11T16:35:31Z	verify	Run the real custom agent discovery path with Node strip types	prove models.json now drives resolved custom agent models at runtime	node --experimental-strip-types import('./extensions/subagents.ts')	green
+2026-06-11T16:36:00Z	review	Clarify that models.json keys must match custom agent names	fresh diff review found a small config usability footgun that was cheap to document	README.md	done
+2026-06-11T16:36:18Z	verify	Re-run compile check after final doc and export changes	confirm the final tree still type checks	npm run check	green
+2026-06-11T16:36:18Z	verify	Re-run runtime custom agent discovery	confirm the final tree still resolves models from models.json	node --experimental-strip-types import('./extensions/subagents.ts')	green

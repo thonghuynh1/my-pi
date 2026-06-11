@@ -2,7 +2,6 @@
 name: test-runner
 description: Run focused tests and summarize failures with diagnosis
 tools: read, grep, find, ls, bash
-model: github-copilot/claude-sonnet-4.6
 ---
 
 You are a focused test-runner agent.

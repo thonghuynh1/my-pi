@@ -1,0 +1,10 @@
+ts	phase	decision	why	evidence	result
+2026-06-11T16:55:25Z	frame	Use one overlay with an agent list and per-row model picker	matches the user flow and keeps persistence in the existing models.json file	extensions/subagents.ts	open
+2026-06-11T17:00:45Z	implement	Add a /subagents-model TUI command with a per-agent model picker	keep one editor flow inside the existing subagents extension and save back to models.json	extensions/subagents.ts	done
+2026-06-11T17:00:45Z	implement	Reuse models.json as the only persistence layer for per-agent choices	avoid a second settings store and make the next default come from the same file runtime already reads	extensions/subagents.ts, README.md	done
+2026-06-11T17:00:45Z	verify	Run TypeScript compile check	prove the extension still builds after the new command and TUI components	npm run check	green
+2026-06-11T17:00:45Z	verify	Round-trip save and reload on a temp project using the real helper code	prove saved models.json choices become the next editor defaults and runtime custom agent models	npx tsc -> .scratch/ts-out/subagents.js	green
+2026-06-11T17:03:17Z	implement	Warn in the command when a custom agent models.json file is invalid	silent fallback is safe but a warning makes the editor less confusing	extensions/subagents.ts	done
+2026-06-11T17:03:17Z	review	Document that models.json must be valid JSON with no comments	the command now warns, so the docs should say the same thing	README.md	done
+2026-06-11T17:03:17Z	verify	Re-run compile check after the warning path change	confirm the final tree still builds	npm run check	green
+2026-06-11T17:03:17Z	verify	Re-run the temp project round-trip after the warning path change	confirm saved models.json choices still become the next editor defaults and runtime models	npx tsc -> .scratch/ts-out/subagents.js	green

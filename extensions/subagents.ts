@@ -476,11 +476,23 @@ function findProjectAgentsDir(cwd: string): string | undefined {
 	}
 }
 
+function getPackageAgentsDir(): string {
+	// Resolve the agents/ directory bundled with this package (sibling to extensions/)
+	// Works whether loaded via jiti (__dirname) or native ESM (import.meta)
+	const thisDir = typeof __dirname !== "undefined" ? __dirname : path.dirname(new URL(import.meta.url).pathname);
+	return path.resolve(thisDir, "..", "agents");
+}
+
 export function discoverCustomAgents(cwd: string): CustomAgent[] {
+	const packageDir = getPackageAgentsDir();
 	const userDir = path.join(getAgentDir(), "agents");
 	const projectDir = findProjectAgentsDir(cwd);
 	const byName = new Map<string, CustomAgent>();
+	// Package-bundled agents (lowest priority — overridable by user or project)
+	for (const agent of loadCustomAgentsFromDir(packageDir, "user")) byName.set(agent.name, agent);
+	// User-global agents (~/.pi/agent/agents/)
 	for (const agent of loadCustomAgentsFromDir(userDir, "user")) byName.set(agent.name, agent);
+	// Project-local agents (.pi/agents/)
 	if (projectDir) {
 		for (const agent of loadCustomAgentsFromDir(projectDir, "project")) byName.set(agent.name, agent);
 	}

@@ -16,7 +16,7 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.78.0",
+    "@earendil-works/pi-coding-agent": "^0.79.0",
     "@types/node": "^20.0.0",
     "@types/ws": "^8.18.1",
     "typescript": "^5.0.0"

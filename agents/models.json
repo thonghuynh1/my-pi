@@ -1,0 +1,9 @@
+{
+  "defaultModel": "github-copilot/claude-sonnet-4.6",
+  "agents": {
+    "explore-fast": "github-copilot/claude-sonnet-4.6",
+    "find-callers": "github-copilot/claude-sonnet-4.6",
+    "review-diff": "inherit",
+    "test-runner": "github-copilot/claude-sonnet-4.6"
+  }
+}

@@ -20,13 +20,17 @@ import {
   promptRoleSession,
   type PairUsageSummary,
   type RoleSession,
-} from "./agent-session-utils.ts";
+} from "./lib/agent-session-utils.ts";
 import {
+  buildTranscriptBasename,
   runPairProtocolDryRun,
+  parseChangedFilesFromGitStatus,
   type FinalVerification,
+  type NavigatorDecisionValue,
+  type PairCycleRecord,
   type PairProtocolEvent,
   type WorkspaceSnapshot,
-} from "./pair-protocol.ts";
+} from "./lib/pair-protocol.ts";
 
 // ---------------------------------------------------------------------------
 // Parameter schema (MICRO-001, MICRO-003)
@@ -76,15 +80,40 @@ const DEFAULT_DRY_RUN = true;
 interface PairProgramDetails {
   status: "success" | "blocked" | "incomplete" | "error";
   summary: string;
-  transcriptPath?: string;
+  finalNavigatorDecision?: NavigatorDecisionValue;
+  changedFiles: string[];
+  finalVerification?: FinalVerification;
+  transcriptMarkdownPath?: string;
+  transcriptJsonPath?: string;
+  usage?: PairUsageSummary;
   error?: string;
   stopReason?: string;
   cyclesCompleted?: number;
   driverTools?: string[];
   navigatorTools?: string[];
-  usage?: PairUsageSummary;
   initialWorkspace?: WorkspaceSnapshot;
+  finalWorkspace?: WorkspaceSnapshot;
+}
+
+interface PairTranscript {
+  task: string;
+  mode: "tdd";
+  status: "success" | "blocked" | "incomplete" | "error";
+  startedAt: string;
+  endedAt?: string;
+  cycles: PairCycleRecord[];
+  initialWorkspace?: WorkspaceSnapshot;
+  finalWorkspace?: WorkspaceSnapshot;
   finalVerification?: FinalVerification;
+  finalNavigatorDecision?: NavigatorDecisionValue;
+  changedFiles: string[];
+  stopReason?: string;
+  cyclesCompleted?: number;
+  malformedDecisionRepairs?: number;
+  driverTools?: string[];
+  navigatorTools?: string[];
+  error?: string;
+  usage?: PairUsageSummary;
 }
 
 type PairProgramUpdate = (partial: { content: Array<{ type: "text"; text: string }>; details?: Partial<PairProgramDetails> }) => void;
@@ -93,8 +122,10 @@ type PairProgramUpdate = (partial: { content: Array<{ type: "text"; text: string
 // Transcript helpers
 // ---------------------------------------------------------------------------
 
+const TRANSCRIPT_DIR_NAME = "pair-runs";
+
 function transcriptDir(cwd: string): string {
-  return path.join(cwd, ".scratch", "pair-program");
+  return path.join(cwd, ".scratch", TRANSCRIPT_DIR_NAME);
 }
 
 function ensureTranscriptDir(cwd: string): string {
@@ -103,25 +134,26 @@ function ensureTranscriptDir(cwd: string): string {
   return dir;
 }
 
-function createTranscriptPath(cwd: string, task: string): string {
+interface TranscriptPaths {
+  markdown: string;
+  json: string;
+}
+
+function createTranscriptPaths(cwd: string, task: string, startedAt: Date): TranscriptPaths {
   const dir = ensureTranscriptDir(cwd);
-  const slug = task
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 60);
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const filePath = path.join(dir, `${timestamp}-${slug}.md`);
+  const base = buildTranscriptBasename(task, startedAt);
+  const markdown = path.join(dir, `${base}.md`);
+  const json = path.join(dir, `${base}.json`);
   fs.writeFileSync(
-    filePath,
+    markdown,
     `# Pair Program Transcript\n\n` +
       `- Task: ${task}\n` +
-      `- Started: ${new Date().toISOString()}\n` +
+      `- Started: ${startedAt.toISOString()}\n` +
       `- Mode: ${DEFAULT_MODE}\n\n` +
       `---\n\n`,
     "utf8",
   );
-  return filePath;
+  return { markdown, json };
 }
 
 function appendTranscript(filePath: string, event: PairProtocolEvent): void {
@@ -130,6 +162,21 @@ function appendTranscript(filePath: string, event: PairProtocolEvent): void {
     `## ${event.role}: ${event.phase}\n\n${event.text.trim()}\n\n---\n\n`,
     "utf8",
   );
+}
+
+function writeJsonTranscript(filePath: string, transcript: PairTranscript): void {
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(transcript, null, 2), "utf8");
+  } catch {
+    // Best-effort: failing to persist a partial transcript must not crash the run.
+  }
+}
+
+/** Live UI gets a compact descriptor; full bodies go only to the persisted transcript. */
+function compactEventSummary(event: PairProtocolEvent): string {
+  const preview = event.text.split("\n").find((line) => line.trim().length > 0)?.trim() ?? "";
+  const head = preview.length > 160 ? `${preview.slice(0, 160)}...` : preview;
+  return `${event.role} ${event.phase}${head ? `: ${head}` : ""}`;
 }
 
 function buildRoleSystemPrompt(role: "driver" | "navigator", dryRun: boolean = true): string {
@@ -322,6 +369,7 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
         const errorResult: PairProgramDetails = {
           status: "error",
           summary: `Unsupported mode "${normalized.mode}". MVP only supports "tdd" mode.`,
+          changedFiles: [],
           error: `Unsupported mode: ${normalized.mode}`,
         };
         return {
@@ -336,6 +384,7 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
         const errorResult: PairProgramDetails = {
           status: "error",
           summary: "A pair-program run is already active in this Pi session. Wait for it to finish or error out.",
+          changedFiles: [],
           error: "Already active",
         };
         return {
@@ -353,6 +402,7 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
             summary:
               "TDD mode requires the engineering-skills MCP server with skill-tdd. " +
               "Run /engineering-skill <repo-path> to configure it first.",
+            changedFiles: [],
             error: "engineering-skills MCP not configured",
           };
           return {
@@ -362,12 +412,25 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
           };
         }
 
-        // --- Create transcript (AC #7) ---
+        // --- Create transcript files (AC #7, AC: JSON transcript) ---
         const cwd = ctx.cwd;
-        const transcriptPath = createTranscriptPath(cwd, normalized.task);
+        const startedAt = new Date();
+        const { markdown: transcriptMarkdownPath, json: transcriptJsonPath } =
+          createTranscriptPaths(cwd, normalized.task, startedAt);
         const driverMode = normalized.dryRun ? "dryRun" : "work";
         let driverSession: RoleSession | undefined;
         let navigatorSession: RoleSession | undefined;
+
+        // Live transcript scaffold so partial state can be persisted on abort/error.
+        const liveTranscript: PairTranscript = {
+          task: normalized.task,
+          mode: "tdd",
+          status: "incomplete",
+          startedAt: startedAt.toISOString(),
+          cycles: [],
+          changedFiles: [],
+        };
+        writeJsonTranscript(transcriptJsonPath, liveTranscript);
 
         try {
           driverSession = await createRoleSession(
@@ -403,15 +466,17 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
               maxCycles: normalized.maxCycles,
               testCommand: normalized.testCommand,
               collectEvidence: () => Promise.resolve(collectWorkspaceEvidence(cwd)),
+              collectFinalEvidence: () => Promise.resolve(collectWorkspaceEvidence(cwd)),
               runFinalVerification: (command) => Promise.resolve(runVerification(command, cwd)),
               onEvent: (event) => {
-                appendTranscript(transcriptPath, event);
+                appendTranscript(transcriptMarkdownPath, event);
                 publish?.({
-                  content: [{ type: "text", text: `${event.role} ${event.phase}\n\n${event.text}` }],
+                  content: [{ type: "text", text: compactEventSummary(event) }],
                   details: {
                     status: "incomplete",
-                    summary: `${event.role} ${event.phase}`,
-                    transcriptPath,
+                    summary: compactEventSummary(event),
+                    transcriptMarkdownPath,
+                    transcriptJsonPath,
                     driverTools: driver.tools,
                     navigatorTools: navigator.tools,
                   },
@@ -428,36 +493,109 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
           navigatorSession = undefined;
           const usage = buildPairUsageSummary(driverUsage, navigatorUsage);
 
+          const changedFiles = parseChangedFilesFromGitStatus(
+            protocolResult.finalWorkspace?.gitStatusShort
+              ?? protocolResult.initialWorkspace?.gitStatusShort
+              ?? "",
+          );
+
           const result: PairProgramDetails = {
             status: protocolResult.status,
             summary:
               `Pair program TDD ${normalized.dryRun ? "dry-run" : "work-mode"} finished.\n` +
               `- Task: ${normalized.task}\n` +
               `- Mode: ${normalized.mode}\n` +
-              `- Max cycles: ${normalized.maxCycles}\n` +
-              `- Dry run: ${normalized.dryRun}\n` +
               `- Status: ${protocolResult.status}\n` +
               `- Stop reason: ${protocolResult.stopReason}\n` +
               `- Cycles completed: ${protocolResult.cyclesCompleted}\n` +
-              `- Malformed decision repairs: ${protocolResult.malformedDecisionRepairs}\n` +
+              (protocolResult.finalNavigatorDecision
+                ? `- Final Navigator decision: ${protocolResult.finalNavigatorDecision}\n`
+                : "") +
+              `- Changed files: ${changedFiles.length ? changedFiles.join(", ") : "none"}\n` +
+              (protocolResult.finalVerification
+                ? `- Final verification: ${protocolResult.finalVerification.exitCode === 0 ? "passed" : "failed"} (${protocolResult.finalVerification.command})\n`
+                : "") +
               `- Driver tools: ${driverTools.join(", ")}\n` +
               `- Navigator tools: ${navigatorTools.join(", ")}\n` +
-              `- Transcript: ${transcriptPath}` +
-              (protocolResult.initialWorkspace ? `\n- Initial workspace captured: yes` : "") +
-              (protocolResult.finalVerification ? `\n- Final verification: ${protocolResult.finalVerification.exitCode === 0 ? "passed" : "failed"}` : ""),
-            transcriptPath,
+              `- Usage: driver ${driverUsage.totalTokens} tok / $${driverUsage.costUsd.toFixed(4)}, ` +
+              `navigator ${navigatorUsage.totalTokens} tok / $${navigatorUsage.costUsd.toFixed(4)}, ` +
+              `total ${usage.totalUsage.totalTokens} tok / $${usage.totalUsage.costUsd.toFixed(4)}\n` +
+              `- Transcript (md): ${transcriptMarkdownPath}\n` +
+              `- Transcript (json): ${transcriptJsonPath}`,
+            finalNavigatorDecision: protocolResult.finalNavigatorDecision,
+            changedFiles,
+            finalVerification: protocolResult.finalVerification,
+            transcriptMarkdownPath,
+            transcriptJsonPath,
             stopReason: protocolResult.stopReason,
             cyclesCompleted: protocolResult.cyclesCompleted,
             driverTools,
             navigatorTools,
             usage,
             initialWorkspace: protocolResult.initialWorkspace,
-            finalVerification: protocolResult.finalVerification,
+            finalWorkspace: protocolResult.finalWorkspace,
           };
+
+          // Persist final JSON transcript.
+          writeJsonTranscript(transcriptJsonPath, {
+            ...liveTranscript,
+            status: protocolResult.status,
+            endedAt: new Date().toISOString(),
+            cycles: protocolResult.cycles,
+            initialWorkspace: protocolResult.initialWorkspace,
+            finalWorkspace: protocolResult.finalWorkspace,
+            finalVerification: protocolResult.finalVerification,
+            finalNavigatorDecision: protocolResult.finalNavigatorDecision,
+            changedFiles,
+            stopReason: protocolResult.stopReason,
+            cyclesCompleted: protocolResult.cyclesCompleted,
+            malformedDecisionRepairs: protocolResult.malformedDecisionRepairs,
+            driverTools,
+            navigatorTools,
+            usage,
+          });
 
           return {
             content: [{ type: "text" as const, text: result.summary }],
             details: result,
+          };
+        } catch (err: unknown) {
+          // Persist partial transcript on abort/error so the run is not lost.
+          const message = err instanceof Error ? err.message : String(err);
+          const aborted = ctx.signal?.aborted === true;
+          let driverUsageSnapshot: ReturnType<typeof disposeRoleSession> | undefined;
+          let navigatorUsageSnapshot: ReturnType<typeof disposeRoleSession> | undefined;
+          if (driverSession) {
+            driverUsageSnapshot = disposeRoleSession(driverSession);
+            driverSession = undefined;
+          }
+          if (navigatorSession) {
+            navigatorUsageSnapshot = disposeRoleSession(navigatorSession);
+            navigatorSession = undefined;
+          }
+          const partialUsage = driverUsageSnapshot && navigatorUsageSnapshot
+            ? buildPairUsageSummary(driverUsageSnapshot, navigatorUsageSnapshot)
+            : undefined;
+          writeJsonTranscript(transcriptJsonPath, {
+            ...liveTranscript,
+            status: aborted ? "incomplete" : "error",
+            endedAt: new Date().toISOString(),
+            error: message,
+            usage: partialUsage,
+          });
+          const errorResult: PairProgramDetails = {
+            status: aborted ? "incomplete" : "error",
+            summary: `Pair program ${aborted ? "aborted" : "errored"}: ${message}\n- Transcript (md): ${transcriptMarkdownPath}\n- Transcript (json): ${transcriptJsonPath}`,
+            changedFiles: [],
+            transcriptMarkdownPath,
+            transcriptJsonPath,
+            usage: partialUsage,
+            error: message,
+          };
+          return {
+            content: [{ type: "text" as const, text: errorResult.summary }],
+            details: errorResult,
+            isError: !aborted,
           };
         } finally {
           if (driverSession) disposeRoleSession(driverSession);

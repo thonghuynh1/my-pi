@@ -34,13 +34,25 @@ export interface PairProtocolEvent {
 	text: string;
 }
 
+export interface PairCycleRecord {
+	cycle: number;
+	driverReport?: string;
+	navigatorReview?: string;
+	navigatorDecision?: NavigatorDecisionValue | "malformed";
+	correctionReport?: string;
+	clarificationAnswer?: string;
+}
+
 export interface PairProtocolResult {
 	status: PairRuntimeStatus;
 	stopReason: string;
 	memory: PairRunMemory;
 	cyclesCompleted: number;
 	malformedDecisionRepairs: number;
+	cycles: PairCycleRecord[];
+	finalNavigatorDecision?: NavigatorDecisionValue;
 	initialWorkspace?: WorkspaceSnapshot;
+	finalWorkspace?: WorkspaceSnapshot;
 	finalVerification?: FinalVerification;
 }
 
@@ -62,6 +74,7 @@ export interface RunPairProtocolOptions {
 	testCommand?: string;
 	onEvent?: (event: PairProtocolEvent) => void;
 	collectEvidence?: () => Promise<WorkspaceSnapshot>;
+	collectFinalEvidence?: () => Promise<WorkspaceSnapshot>;
 	runFinalVerification?: (command: string) => Promise<FinalVerification>;
 	currentWorkspace?: WorkspaceSnapshot;
 }
@@ -276,7 +289,19 @@ export async function runPairProtocolDryRun(
 	let memory = createInitialPairRunMemory(options.task);
 	let malformedDecisionRepairs = 0;
 	let initialWorkspace: WorkspaceSnapshot | undefined;
+	let finalWorkspace: WorkspaceSnapshot | undefined;
 	let finalVerification: FinalVerification | undefined;
+	let finalNavigatorDecision: NavigatorDecisionValue | undefined;
+	const cycles: PairCycleRecord[] = [];
+
+	const cycleRecord = (n: number): PairCycleRecord => {
+		let rec = cycles.find((c) => c.cycle === n);
+		if (!rec) {
+			rec = { cycle: n };
+			cycles.push(rec);
+		}
+		return rec;
+	};
 
 	options.onEvent?.({ role: "coordinator", phase: "start", text: "skill-tdd prerequisite verified" });
 
@@ -303,6 +328,7 @@ export async function runPairProtocolDryRun(
 			buildDriverCyclePrompt(memory, memory.lastNavigatorReview, options.testCommand, currentWorkspaceEvidence),
 		);
 		memory = updateMemoryAfterDriver(memory, driverReport);
+		cycleRecord(memory.currentCycle).driverReport = driverReport;
 		options.onEvent?.({ role: "driver", phase: `cycle_${memory.currentCycle}`, text: driverReport });
 
 		while (true) {
@@ -316,11 +342,16 @@ export async function runPairProtocolDryRun(
 			}
 
 			memory = updateMemoryAfterNavigator(memory, review);
+			const rec = cycleRecord(memory.currentCycle);
+			rec.navigatorReview = review;
+			rec.navigatorDecision = decision.kind === "valid" ? decision.value : "malformed";
 			options.onEvent?.({ role: "navigator", phase: `review_${memory.currentCycle}`, text: review });
 
 			if (decision.kind === "malformed") {
-				return finish("malformed_decision_after_repair", memory, malformedDecisionRepairs, initialWorkspace, finalVerification);
+				return finish("malformed_decision_after_repair", memory, malformedDecisionRepairs, cycles, finalNavigatorDecision, initialWorkspace, finalWorkspace, finalVerification);
 			}
+
+			finalNavigatorDecision = decision.value;
 
 			const mappedStatus = statusFromNavigatorDecision(decision.value);
 			if (mappedStatus) {
@@ -333,11 +364,14 @@ export async function runPairProtocolDryRun(
 						const classification = await sessions.navigatorClarification(classificationPrompt);
 						const classificationDecision = parseNavigatorDecision(classification);
 						if (classificationDecision.kind === "valid" && classificationDecision.value === "blocked") {
-							return finish("navigator_blocked", memory, malformedDecisionRepairs, initialWorkspace, finalVerification);
+							finalNavigatorDecision = "blocked";
+							if (options.collectFinalEvidence) finalWorkspace = await options.collectFinalEvidence();
+							return finish("navigator_blocked", memory, malformedDecisionRepairs, cycles, finalNavigatorDecision, initialWorkspace, finalWorkspace, finalVerification);
 						}
 					}
 				}
-				return finish(decision.value === "blocked" ? "navigator_blocked" : "navigator_final_approve", memory, malformedDecisionRepairs, initialWorkspace, finalVerification);
+				if (options.collectFinalEvidence) finalWorkspace = await options.collectFinalEvidence();
+				return finish(decision.value === "blocked" ? "navigator_blocked" : "navigator_final_approve", memory, malformedDecisionRepairs, cycles, finalNavigatorDecision, initialWorkspace, finalWorkspace, finalVerification);
 			}
 
 			if (decision.value === "approve_next") {
@@ -346,7 +380,7 @@ export async function runPairProtocolDryRun(
 			}
 
 			if (correctionUsed) {
-				return finish("repeated_revision_request", memory, malformedDecisionRepairs, initialWorkspace, finalVerification);
+				return finish("repeated_revision_request", memory, malformedDecisionRepairs, cycles, finalNavigatorDecision, initialWorkspace, finalWorkspace, finalVerification);
 			}
 
 			correctionUsed = true;
@@ -355,6 +389,7 @@ export async function runPairProtocolDryRun(
 			if (extractHeadingBody(correctionReport, "Clarification Needed") && sessions.navigatorClarification) {
 				const clarificationPrompt = `The Driver needs clarification before addressing the correction packet.\n\nDriver report:\n${correctionReport}\n\nProvide a targeted answer to unblock the Driver.`;
 				const clarificationAnswer = await sessions.navigatorClarification(clarificationPrompt);
+				cycleRecord(memory.currentCycle).clarificationAnswer = clarificationAnswer;
 				options.onEvent?.({ role: "navigator", phase: `clarification_${memory.currentCycle}`, text: clarificationAnswer });
 				correctionReport = await sessions.driverCorrection(
 					`Navigator clarification:\n${clarificationAnswer}\n\nNow address the correction packet.` + buildDriverCorrectionPrompt(memory, review, options.testCommand, currentWorkspaceEvidence),
@@ -363,21 +398,35 @@ export async function runPairProtocolDryRun(
 			}
 
 			memory = updateMemoryAfterDriver(memory, correctionReport);
+			cycleRecord(memory.currentCycle).correctionReport = correctionReport;
 			options.onEvent?.({ role: "driver", phase: `correction_${memory.currentCycle}`, text: correctionReport });
 		}
 	}
 
-	return finish("max_cycles_without_final_approval", memory, malformedDecisionRepairs, initialWorkspace, finalVerification);
+	if (options.collectFinalEvidence) finalWorkspace = await options.collectFinalEvidence();
+	return finish("max_cycles_without_final_approval", memory, malformedDecisionRepairs, cycles, finalNavigatorDecision, initialWorkspace, finalWorkspace, finalVerification);
 }
 
-function finish(stopReason: string, memory: PairRunMemory, malformedDecisionRepairs: number, initialWorkspace?: WorkspaceSnapshot, finalVerification?: FinalVerification): PairProtocolResult {
+function finish(
+	stopReason: string,
+	memory: PairRunMemory,
+	malformedDecisionRepairs: number,
+	cycles: PairCycleRecord[],
+	finalNavigatorDecision: NavigatorDecisionValue | undefined,
+	initialWorkspace?: WorkspaceSnapshot,
+	finalWorkspace?: WorkspaceSnapshot,
+	finalVerification?: FinalVerification,
+): PairProtocolResult {
 	return {
 		status: statusFromStopReason(stopReason),
 		stopReason,
 		memory,
 		cyclesCompleted: Math.max(0, memory.currentCycle - 1),
 		malformedDecisionRepairs,
+		cycles,
+		finalNavigatorDecision,
 		initialWorkspace,
+		finalWorkspace,
 		finalVerification,
 	};
 }
@@ -446,4 +495,37 @@ function formatFinalVerification(verification: FinalVerification): string {
 		`exit code: ${verification.exitCode}`,
 		`summary: ${verification.summary}`,
 	].join("\n");
+}
+
+/**
+ * Parse changed file paths from `git status --short` output.
+ *
+ * Each line has a 2-char status code, a space, then the path. Renames use
+ * `R old -> new` and we keep the new path. Unchanged or empty input returns [].
+ */
+export function parseChangedFilesFromGitStatus(gitStatusShort: string): string[] {
+	if (!gitStatusShort) return [];
+	const out: string[] = [];
+	for (const raw of gitStatusShort.split(/\r?\n/)) {
+		const line = raw.replace(/\r$/, "");
+		if (line.length < 4) continue;
+		const rest = line.slice(3).trim();
+		if (!rest) continue;
+		const arrow = rest.indexOf(" -> ");
+		const path = arrow >= 0 ? rest.slice(arrow + 4).trim() : rest;
+		const unquoted = path.startsWith("\"") && path.endsWith("\"") ? path.slice(1, -1) : path;
+		if (unquoted) out.push(unquoted);
+	}
+	return out;
+}
+
+/** Build the shared base filename for a transcript pair (`.md` and `.json`). */
+export function buildTranscriptBasename(task: string, now: Date = new Date()): string {
+	const slug = task
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-|-$/g, "")
+		.slice(0, 60) || "task";
+	const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+	return `${timestamp}-${slug}`;
 }

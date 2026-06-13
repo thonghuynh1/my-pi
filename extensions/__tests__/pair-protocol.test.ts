@@ -1,11 +1,13 @@
 import {
 	buildDriverCyclePrompt,
+	buildTranscriptBasename,
 	createInitialPairRunMemory,
+	parseChangedFilesFromGitStatus,
 	parseNavigatorDecision,
 	runPairProtocolDryRun,
 	statusFromNavigatorDecision,
 	truncateText,
-} from "../pair-protocol.ts";
+} from "../lib/pair-protocol.ts";
 
 let passed = 0;
 let failed = 0;
@@ -328,6 +330,149 @@ console.log("blocked only from Navigator");
 		{ task: "demo not blocked", maxCycles: 1 },
 	);
 	assert(result.status !== "blocked", "status is not blocked when Navigator does not say blocked");
+}
+
+console.log("cycles + finalNavigatorDecision");
+
+{
+	const result = await runPairProtocolDryRun(
+		{
+			navigatorPreflight: async () => "## Acceptance Checklist\n- done\n## Risks\n- none\n## First Cycle Objective\ninspect",
+			driverCycle: async () => "## Summary\nchecked\n## Changed Files\nnone\n## Tests Run\nnone\n## Evidence\ndry run\n## Acceptance Checklist Progress\ncovered\n## Next Intent\nfinish",
+			navigatorReview: async () => "DECISION: final_approve",
+			navigatorDecisionRepair: async () => "should not be called",
+			driverCorrection: async () => "should not be called",
+		},
+		{ task: "structured cycles", maxCycles: 1 },
+	);
+	assertEqual(result.cycles.length, 1, "exactly one cycle record on single-cycle final_approve");
+	assertEqual(result.cycles[0].cycle, 1, "cycle record numbered 1");
+	assert(typeof result.cycles[0].driverReport === "string" && result.cycles[0].driverReport!.includes("## Summary"), "cycle record captures driver report");
+	assert(typeof result.cycles[0].navigatorReview === "string" && result.cycles[0].navigatorReview!.includes("DECISION: final_approve"), "cycle record captures navigator review");
+	assertEqual(result.cycles[0].navigatorDecision, "final_approve", "cycle record captures decision value");
+	assertEqual(result.finalNavigatorDecision, "final_approve", "result records final_approve as final decision");
+}
+
+{
+	const result = await runPairProtocolDryRun(
+		{
+			navigatorPreflight: async () => "## Acceptance Checklist\n- done\n## Risks\n- none\n## First Cycle Objective\ninspect",
+			driverCycle: async () => "## Summary\nchecked\n## Changed Files\nnone\n## Tests Run\nnone\n## Evidence\ndry run\n## Acceptance Checklist Progress\ncovered\n## Next Intent\nfinish",
+			navigatorReview: async () => "DECISION: blocked",
+			navigatorDecisionRepair: async () => "should not be called",
+			driverCorrection: async () => "should not be called",
+		},
+		{ task: "blocked decision", maxCycles: 1 },
+	);
+	assertEqual(result.finalNavigatorDecision, "blocked", "result records blocked as final decision");
+}
+
+{
+	const result = await runPairProtocolDryRun(
+		{
+			navigatorPreflight: async () => "## Acceptance Checklist\n- done\n## Risks\n- none\n## First Cycle Objective\ninspect",
+			driverCycle: async () => "## Summary\nchecked\n## Changed Files\nnone\n## Tests Run\nnone\n## Evidence\ndry run\n## Acceptance Checklist Progress\ncovered\n## Next Intent\nfinish",
+			navigatorReview: async () => "No decision here.",
+			navigatorDecisionRepair: async () => "Still no decision.",
+			driverCorrection: async () => "should not be called",
+		},
+		{ task: "malformed final", maxCycles: 1 },
+	);
+	assertEqual(result.cycles.length, 1, "malformed result still produces a cycle record");
+	assertEqual(result.cycles[0].navigatorDecision, "malformed", "malformed decision recorded as 'malformed'");
+	assertEqual(result.finalNavigatorDecision, undefined, "no finalNavigatorDecision when last review is malformed");
+}
+
+console.log("collectFinalEvidence");
+
+{
+	let initialCalls = 0;
+	let finalCalls = 0;
+	const result = await runPairProtocolDryRun(
+		{
+			navigatorPreflight: async () => "## Acceptance Checklist\n- done\n## Risks\n- none\n## First Cycle Objective\ninspect",
+			driverCycle: async () => "## Summary\nchecked\n## Changed Files\nnone\n## Tests Run\nnone\n## Evidence\ndry run\n## Acceptance Checklist Progress\ncovered\n## Next Intent\nfinish",
+			navigatorReview: async () => "DECISION: final_approve",
+			navigatorDecisionRepair: async () => "should not be called",
+			driverCorrection: async () => "should not be called",
+		},
+		{
+			task: "with final evidence",
+			maxCycles: 1,
+			collectEvidence: async () => {
+				initialCalls++;
+				return { gitStatusShort: "", gitDiffStat: "", gitDiff: "" };
+			},
+			collectFinalEvidence: async () => {
+				finalCalls++;
+				return { gitStatusShort: " M extensions/foo.ts", gitDiffStat: "1 file changed", gitDiff: "+ added" };
+			},
+		},
+	);
+	assertEqual(initialCalls, 1, "initial collectEvidence called once");
+	assertEqual(finalCalls, 1, "collectFinalEvidence called once on final_approve");
+	assert(result.finalWorkspace !== undefined, "result includes finalWorkspace");
+	assertEqual(result.finalWorkspace?.gitStatusShort, " M extensions/foo.ts", "finalWorkspace captured");
+}
+
+{
+	let finalCalls = 0;
+	const result = await runPairProtocolDryRun(
+		{
+			navigatorPreflight: async () => "## Acceptance Checklist\n- done\n## Risks\n- none\n## First Cycle Objective\ninspect",
+			driverCycle: async () => "## Summary\nchecked\n## Changed Files\nnone\n## Tests Run\nnone\n## Evidence\ndry run\n## Acceptance Checklist Progress\npartial\n## Next Intent\ncontinue",
+			navigatorReview: async () => "DECISION: approve_next",
+			navigatorDecisionRepair: async () => "should not be called",
+			driverCorrection: async () => "should not be called",
+		},
+		{
+			task: "max cycles final evidence",
+			maxCycles: 1,
+			collectFinalEvidence: async () => {
+				finalCalls++;
+				return { gitStatusShort: "", gitDiffStat: "", gitDiff: "" };
+			},
+		},
+	);
+	assertEqual(finalCalls, 1, "collectFinalEvidence called once on max-cycles exit");
+	assertEqual(result.status, "incomplete", "max-cycles still maps to incomplete");
+}
+
+console.log("parseChangedFilesFromGitStatus");
+
+assertEqual(parseChangedFilesFromGitStatus("").length, 0, "empty status yields empty list");
+{
+	const files = parseChangedFilesFromGitStatus(" M src/a.ts\nM  src/b.ts\n?? new.txt");
+	assertEqual(files.length, 3, "three changed paths parsed");
+	assertEqual(files[0], "src/a.ts", "modified path captured");
+	assertEqual(files[1], "src/b.ts", "staged-modified path captured");
+	assertEqual(files[2], "new.txt", "untracked path captured");
+}
+{
+	const files = parseChangedFilesFromGitStatus("R  old.ts -> new.ts");
+	assertEqual(files.length, 1, "rename produces one path");
+	assertEqual(files[0], "new.ts", "rename keeps new path");
+}
+{
+	const files = parseChangedFilesFromGitStatus("D  removed.ts\n");
+	assertEqual(files[0], "removed.ts", "deleted path captured");
+}
+
+console.log("buildTranscriptBasename");
+
+{
+	const base = buildTranscriptBasename("Implement transcripts!", new Date("2025-06-01T12:34:56.789Z"));
+	assertEqual(base, "2025-06-01T12-34-56-implement-transcripts", "produces timestamp + slug");
+}
+
+{
+	const base = buildTranscriptBasename("", new Date("2025-06-01T12:34:56.789Z"));
+	assertEqual(base, "2025-06-01T12-34-56-task", "empty task slug falls back to 'task'");
+}
+
+{
+	const base = buildTranscriptBasename("a".repeat(120), new Date("2025-06-01T12:34:56.789Z"));
+	assert(base.endsWith("-" + "a".repeat(60)), "long task is truncated to 60 chars");
 }
 
 console.log("");

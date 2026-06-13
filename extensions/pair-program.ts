@@ -250,6 +250,7 @@ function releaseRun(): void {
 function collectWorkspaceEvidence(cwd: string): WorkspaceSnapshot {
   let gitStatusShort = "";
   let gitDiffStat = "";
+  let gitDiff = "";
   try {
     gitStatusShort = execSync("git status --short", { cwd, encoding: "utf8", timeout: 5000 }).trim();
   } catch {
@@ -260,7 +261,13 @@ function collectWorkspaceEvidence(cwd: string): WorkspaceSnapshot {
   } catch {
     gitDiffStat = "(git diff --stat failed)";
   }
-  return { gitStatusShort, gitDiffStat };
+  try {
+    const raw = execSync("git diff", { cwd, encoding: "utf8", timeout: 5000 }).trim();
+    gitDiff = raw.length > 4000 ? raw.slice(0, 4000) + "\n...(truncated)" : raw;
+  } catch {
+    gitDiff = "";
+  }
+  return { gitStatusShort, gitDiffStat, gitDiff };
 }
 
 function runVerification(command: string, cwd: string): FinalVerification {
@@ -389,6 +396,7 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
               navigatorReview: (prompt) => runRolePrompt(navigator, prompt),
               navigatorDecisionRepair: (prompt) => runRolePrompt(navigator, prompt),
               driverCorrection: (prompt) => runRolePrompt(driver, prompt),
+              navigatorClarification: (prompt) => runRolePrompt(navigator, prompt),
             },
             {
               task: normalized.task,

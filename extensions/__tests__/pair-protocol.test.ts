@@ -4,6 +4,7 @@ import {
 	parseNavigatorDecision,
 	runPairProtocolDryRun,
 	statusFromNavigatorDecision,
+	truncateText,
 } from "../pair-protocol.ts";
 
 let passed = 0;
@@ -190,7 +191,7 @@ console.log("collectEvidence + finalVerification");
 			testCommand: "npm test",
 			collectEvidence: async () => {
 				evidenceCalls++;
-				return { gitStatusShort: "M file.ts", gitDiffStat: "1 file changed" };
+				return { gitStatusShort: "M file.ts", gitDiffStat: "1 file changed", gitDiff: "+line1\n+line2" };
 			},
 			runFinalVerification: async (cmd) => {
 				verificationCommand = cmd;
@@ -202,6 +203,7 @@ console.log("collectEvidence + finalVerification");
 	assertEqual(verificationCommand, "npm test", "final verification uses testCommand");
 	assert(result.initialWorkspace !== undefined, "result includes initialWorkspace");
 	assertEqual(result.initialWorkspace?.gitStatusShort, "M file.ts", "workspace snapshot has git status");
+	assertEqual(result.initialWorkspace?.gitDiff, "+line1\n+line2", "workspace snapshot has git diff");
 	assert(result.finalVerification !== undefined, "result includes finalVerification when final_approve");
 	assertEqual(result.finalVerification?.exitCode, 0, "final verification exit code captured");
 }
@@ -228,6 +230,104 @@ console.log("collectEvidence + finalVerification");
 	);
 	assertEqual(verificationCalled, false, "final verification not called on approve_next (max cycles)");
 	assertEqual(result.finalVerification, undefined, "no finalVerification in result when not final_approve");
+}
+
+console.log("truncateText");
+
+{
+	const result = truncateText("short", 100);
+	assertEqual(result, "short", "returns text unchanged when under max length");
+}
+
+{
+	const result = truncateText("a".repeat(100), 50);
+	assert(result.length < 100, "truncates text exceeding max length");
+	assert(result.endsWith("...(truncated)"), "truncated text ends with indicator");
+	assertEqual(result.length, 50, "truncated text equals max length");
+}
+
+{
+	const result = truncateText("exact", 5);
+	assertEqual(result, "exact", "returns text unchanged when exactly at max length");
+}
+
+console.log("clarification flow");
+
+{
+	let clarificationCalls = 0;
+	let correctionCalls = 0;
+	let correctionResolved = false;
+	const result = await runPairProtocolDryRun(
+		{
+			navigatorPreflight: async () => "## Acceptance Checklist\n- done\n## Risks\n- none\n## First Cycle Objective\ninspect",
+			driverCycle: async () => "## Summary\nchecked\n## Changed Files\nnone\n## Tests Run\nnone\n## Evidence\ndry run\n## Acceptance Checklist Progress\npartial\n## Next Intent\nrevise",
+			navigatorReview: async () => correctionResolved
+				? "DECISION: final_approve"
+				: "DECISION: request_revision\n## Correction Packet\nfix this\n## Required Evidence\nshow that",
+			navigatorDecisionRepair: async () => "should not be called",
+			driverCorrection: async () => {
+				correctionCalls++;
+				if (correctionCalls === 1) return "## Clarification Needed\nwhat exactly?";
+				correctionResolved = true;
+				return "## Correction Packet Addressed\nfixed\n## Changed Files\nnone\n## Tests Run\nnone\n## Evidence\nreported\n## Remaining Risk\nnone";
+			},
+			navigatorClarification: async (prompt) => {
+				clarificationCalls++;
+				assert(prompt.includes("Driver needs clarification"), "clarification prompt mentions Driver need");
+				return "The answer is X.";
+			},
+		},
+		{ task: "demo with clarification", maxCycles: 1 },
+	);
+	assertEqual(clarificationCalls, 1, "navigator clarification called once");
+	assertEqual(correctionCalls, 2, "driver correction called twice (clarification + correction)");
+	assertEqual(result.status, "success", "flow completes successfully after clarification");
+}
+
+console.log("verification failure sent to Navigator");
+
+{
+	let classificationCalls = 0;
+	const result = await runPairProtocolDryRun(
+		{
+			navigatorPreflight: async () => "## Acceptance Checklist\n- done\n## Risks\n- none\n## First Cycle Objective\ninspect",
+			driverCycle: async () => "## Summary\nchecked\n## Changed Files\nnone\n## Tests Run\nnone\n## Evidence\ndry run\n## Acceptance Checklist Progress\ncovered\n## Next Intent\nfinish",
+			navigatorReview: async () => "DECISION: final_approve",
+			navigatorDecisionRepair: async () => "should not be called",
+			driverCorrection: async () => "should not be called",
+			navigatorClarification: async (prompt) => {
+				classificationCalls++;
+				assert(prompt.includes("Final verification failed"), "classification prompt mentions verification failure");
+				assert(prompt.includes("exit code 1"), "classification prompt includes exit code");
+				return "DECISION: blocked";
+			},
+		},
+		{
+			task: "demo with failed verification",
+			maxCycles: 1,
+			testCommand: "npm test",
+			runFinalVerification: async () => ({ command: "npm test", exitCode: 1, summary: "tests failed" }),
+		},
+	);
+	assertEqual(classificationCalls, 1, "Navigator classification called on verification failure");
+	assertEqual(result.status, "blocked", "blocked when Navigator classifies verification failure as blocker");
+	assertEqual(result.stopReason, "navigator_blocked", "stop reason is navigator_blocked");
+}
+
+console.log("blocked only from Navigator");
+
+{
+	const result = await runPairProtocolDryRun(
+		{
+			navigatorPreflight: async () => "## Acceptance Checklist\n- done\n## Risks\n- none\n## First Cycle Objective\ninspect",
+			driverCycle: async () => "## Summary\nchecked\n## Changed Files\nnone\n## Tests Run\nnone\n## Evidence\ndry run\n## Acceptance Checklist Progress\npartial\n## Next Intent\ncontinue",
+			navigatorReview: async () => "DECISION: approve_next",
+			navigatorDecisionRepair: async () => "should not be called",
+			driverCorrection: async () => "should not be called",
+		},
+		{ task: "demo not blocked", maxCycles: 1 },
+	);
+	assert(result.status !== "blocked", "status is not blocked when Navigator does not say blocked");
 }
 
 console.log("");

@@ -5,6 +5,27 @@ import { positiveModulo } from "./utils.js";
 
 export type AsciiAnimationStyle = "static" | "animated";
 
+// Render a hex color directly to truecolor ANSI. Used for mascot tones that
+// are stored as raw hex values (not as Pi theme color keys) because they
+// live in the theme's `vars` block, which `theme.fg()` cannot resolve.
+function fgHex(hex: string, text: string): string {
+	const cleaned = hex.replace("#", "");
+	if (cleaned.length !== 6) return text;
+	const r = parseInt(cleaned.substring(0, 2), 16);
+	const g = parseInt(cleaned.substring(2, 4), 16);
+	const b = parseInt(cleaned.substring(4, 6), 16);
+	if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return text;
+	return `\x1b[38;2;${r};${g};${b}m${text}\x1b[39m`;
+}
+
+function applyToneColor(
+	theme: SimpleTheme,
+	color: string,
+	text: string,
+): string {
+	return color.startsWith("#") ? fgHex(color, text) : theme.fg(color, text);
+}
+
 const ANIMATION_OVERRIDE_MAP: Record<string, AnimationMode> = {
 	"0": "off",
 	"1": "continuous",
@@ -85,12 +106,13 @@ export function animateAsciiLineWithToneMap(
 				return char;
 			}
 			const baseColor = palette[tone];
-			if (style === "static") return theme.fg(baseColor, char);
+			if (style === "static") return applyToneColor(theme, baseColor, char);
 			const wave = positiveModulo(charIndex + lineIndex * 2 - frame * 5, 44);
 			const highlightColor =
 				tone === "b" || tone === "h" || tone === "p" ? palette.h : palette.l;
 			const trailColor = tone === "d" ? palette.m : palette.b;
-			return theme.fg(
+			return applyToneColor(
+				theme,
 				getAnimatedAsciiColor(wave, baseColor, highlightColor, trailColor),
 				char,
 			);

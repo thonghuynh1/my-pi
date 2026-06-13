@@ -188,12 +188,12 @@ const OSDY_THEME_MASCOT_PALETTE: HeaderPalette = {
 };
 
 const HTML_MASCOT_TONES: MascotTonePalette = {
-  b: "mascotBg",
-  h: "mascotBright",
-  l: "mascotLight",
-  m: "mascotMid",
-  d: "mascotDark",
-  p: "htmlPink",
+  b: "#F9F7F2",
+  h: "#F0E5D7",
+  l: "#C7B4A1",
+  m: "#7D6F67",
+  d: "#2A2321",
+  p: "#FF2E8C",
   c: "mdLink",
   v: "mdHeading",
 };

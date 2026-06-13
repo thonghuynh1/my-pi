@@ -14,7 +14,13 @@
     "cyanBlue": "#38BDF8",
     "ferrari": "#FF2800",
     "ember": "#FF5A36",
-    "roseRed": "#E11D48"
+    "roseRed": "#E11D48",
+    "mascotBg": "#F4EEE5",
+    "mascotBright": "#E6D8C8",
+    "mascotLight": "#BFA998",
+    "mascotMid": "#7A6B63",
+    "mascotDark": "#241F1D",
+    "htmlPink": "#FF2E8C"
   },
   "colors": {
     "accent": "ferrari",
@@ -61,12 +67,6 @@
     "syntaxType": "royalBlue",
     "syntaxOperator": "ember",
     "syntaxPunctuation": "steel",
-    "mascotBg": "#F4EEE5",
-    "mascotBright": "#E6D8C8",
-    "mascotLight": "#BFA998",
-    "mascotMid": "#7A6B63",
-    "mascotDark": "#241F1D",
-    "htmlPink": "#FF2E8C",
     "thinkingOff": "slate600",
     "thinkingMinimal": "steel",
     "thinkingLow": "royalBlue",

@@ -15,7 +15,13 @@
     "dimPurple": "#9B86AA",
     "mint": "#0F8F68",
     "gold": "#9E7414",
-    "coral": "#D63D68"
+    "coral": "#D63D68",
+    "mascotBg": "#8F7E73",
+    "mascotBright": "#E8DACB",
+    "mascotLight": "#B79F8E",
+    "mascotMid": "#74665F",
+    "mascotDark": "#2E2725",
+    "htmlPink": "#FF2E8C"
   },
   "colors": {
     "accent": "pink",
@@ -62,12 +68,6 @@
     "syntaxType": "violet",
     "syntaxOperator": "hotPink",
     "syntaxPunctuation": "lavenderGray",
-    "mascotBg": "#8F7E73",
-    "mascotBright": "#E8DACB",
-    "mascotLight": "#B79F8E",
-    "mascotMid": "#74665F",
-    "mascotDark": "#2E2725",
-    "htmlPink": "#FF2E8C",
     "thinkingOff": "dimPurple",
     "thinkingMinimal": "lavenderGray",
     "thinkingLow": "purple",

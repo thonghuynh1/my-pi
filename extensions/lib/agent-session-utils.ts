@@ -2,7 +2,7 @@
  * Reusable child-session runtime helpers for Driver and Navigator roles.
  *
  * Provides:
- * - Role-specific tool allowlists (driver dry-run, work, navigator)
+ * - Role-specific tool allowlists (driver, navigator)
  * - Model resolution with fail-fast for explicit role overrides
  * - Persistent child session creation (in-memory sessions, multiple prompts)
  * - Final assistant text extraction from session messages
@@ -25,7 +25,7 @@ import type { Message } from "@earendil-works/pi-ai";
 
 type ActiveModel = NonNullable<ExtensionContext["model"]>;
 
-export type DriverMode = "dryRun" | "work";
+
 
 export interface RoleSession {
 	session: Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"];
@@ -69,18 +69,23 @@ type AssistantUsage = {
 };
 
 // ---------------------------------------------------------------------------
-// Tool allowlists (decision artifact: MICRO-004, MICRO-006)
+// Tool allowlists (decision artifact: MESO-003, MICRO-001)
+//
+// Driver gets edit/write tools only when the pair run was explicitly invoked
+// with dryRun: false. Default (dryRun: true) is read/inspect-only so a
+// runaway Driver cannot mutate the workspace.
 // ---------------------------------------------------------------------------
 
 export const DRIVER_DRY_RUN_TOOLS: readonly string[] = ["read", "grep", "find", "ls", "bash"];
 export const DRIVER_WORK_TOOLS: readonly string[] = ["read", "grep", "find", "ls", "bash", "edit", "write"];
 export const NAVIGATOR_TOOLS: readonly string[] = ["read", "grep", "find", "ls", "bash"];
 
-export function getRoleTools(role: "driver", mode?: DriverMode): string[];
+export function getRoleTools(role: "driver", opts?: { dryRun?: boolean }): string[];
 export function getRoleTools(role: "navigator"): string[];
-export function getRoleTools(role: "driver" | "navigator", mode?: DriverMode): string[] {
+export function getRoleTools(role: "driver" | "navigator", opts?: { dryRun?: boolean }): string[] {
 	if (role === "driver") {
-		return mode === "dryRun" ? [...DRIVER_DRY_RUN_TOOLS] : [...DRIVER_WORK_TOOLS];
+		const dryRun = opts?.dryRun ?? true;
+		return dryRun ? [...DRIVER_DRY_RUN_TOOLS] : [...DRIVER_WORK_TOOLS];
 	}
 	return [...NAVIGATOR_TOOLS];
 }
@@ -245,13 +250,15 @@ export async function createRoleSession(
 	ctx: ExtensionContext,
 	role: "driver" | "navigator",
 	modelOverride?: string,
-	mode?: DriverMode,
 	extraSystemPrompt?: string[],
+	options?: { dryRun?: boolean },
 ): Promise<RoleSession> {
 	const cwd = ctx.cwd;
 	const model = resolveRoleModel(modelOverride, ctx.model, ctx.modelRegistry);
 	const modelId = `${model.provider}/${model.id}`;
-	const tools = role === "driver" ? getRoleTools("driver", mode) : getRoleTools("navigator");
+	const tools = role === "driver"
+		? getRoleTools("driver", { dryRun: options?.dryRun ?? true })
+		: getRoleTools("navigator");
 
 	const services = await createAgentSessionServices({
 		cwd,

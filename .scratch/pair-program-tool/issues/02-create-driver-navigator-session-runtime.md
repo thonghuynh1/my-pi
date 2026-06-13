@@ -2,7 +2,7 @@
 
 Status: ready-for-agent
 Type: AFK
-Source PRD: `F:/MyWork/my-pi/.scratch/pair-program-tool-prd.md`
+Source PRD: `F:/MyWork/my-pi/.scratch/pair-program-tool/PRD.md`
 
 ## What to build
 

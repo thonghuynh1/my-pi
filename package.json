@@ -32,9 +32,6 @@
       "./node_modules/pi-mcp-adapter/index.ts",
       "./extensions"
     ],
-    "themes": [
-      "./themes"
-    ],
     "prompts": [
       "./prompts"
     ]

@@ -10,5 +10,5 @@
     "types": ["node"]
   },
   "include": ["extensions/**/*.ts"],
-  "exclude": ["extensions/__tests__", "extensions/osdy-pi.ts", "extensions/osdy-pi"]
+  "exclude": ["extensions/__tests__"]
 }

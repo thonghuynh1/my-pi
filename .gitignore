@@ -6,3 +6,6 @@ node_modules/
 # These live wherever pi was launched from; this entry just covers the
 # common case of launching from the repo root.
 .frontend-coach/
+
+.scratch/
+.ralph-loop/

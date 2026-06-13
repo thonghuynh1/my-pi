@@ -1,11 +1,8 @@
 /**
- * Pair Program Tool — deterministic coordinator shell for autonomous
- * pair-programming runs (Driver + Navigator). MVP slice: parameter
- * normalization, one-active-run enforcement, skill-tdd prerequisite
- * verification, and structured result with transcript path.
- *
- * The full Driver/Navigator cycle loop is not implemented yet; this
- * slice returns `incomplete` after prerequisite checks pass.
+ * Pair Program Tool — deterministic coordinator for autonomous
+ * pair-programming runs (Driver + Navigator). Dry-run slice: prerequisite
+ * verification, persistent role sessions, one Navigator/Driver protocol loop,
+ * compact memory handoff, and structured result with transcript path.
  */
 
 import * as fs from "node:fs";
@@ -15,6 +12,18 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
+import {
+  buildPairUsageSummary,
+  createRoleSession,
+  disposeRoleSession,
+  promptRoleSession,
+  type PairUsageSummary,
+  type RoleSession,
+} from "./agent-session-utils.ts";
+import {
+  runPairProtocolDryRun,
+  type PairProtocolEvent,
+} from "./pair-protocol.ts";
 
 // ---------------------------------------------------------------------------
 // Parameter schema (MICRO-001, MICRO-003)
@@ -66,7 +75,14 @@ interface PairProgramDetails {
   summary: string;
   transcriptPath?: string;
   error?: string;
+  stopReason?: string;
+  cyclesCompleted?: number;
+  driverTools?: string[];
+  navigatorTools?: string[];
+  usage?: PairUsageSummary;
 }
+
+type PairProgramUpdate = (partial: { content: Array<{ type: "text"; text: string }>; details?: Partial<PairProgramDetails> }) => void;
 
 // ---------------------------------------------------------------------------
 // Transcript helpers
@@ -101,6 +117,36 @@ function createTranscriptPath(cwd: string, task: string): string {
     "utf8",
   );
   return filePath;
+}
+
+function appendTranscript(filePath: string, event: PairProtocolEvent): void {
+  fs.appendFileSync(
+    filePath,
+    `## ${event.role}: ${event.phase}\n\n${event.text.trim()}\n\n---\n\n`,
+    "utf8",
+  );
+}
+
+function buildRoleSystemPrompt(role: "driver" | "navigator"): string {
+  if (role === "driver") {
+    return [
+      "You are the Driver Agent in a deterministic Pair Program Tool run.",
+      "You own implementation planning and evidence reporting for the current cycle.",
+      "This slice is dry-run only. Do not edit or write files.",
+      "Do not run workspace-mutating shell commands such as npm install, npm ci, formatters, generators, or cleanup commands.",
+      "Use skill-tdd before implementation planning and report TDD evidence.",
+    ].join("\n");
+  }
+  return [
+    "You are the Navigator Agent in a deterministic Pair Program Tool run.",
+    "You review Driver reports, TDD evidence, risks, and acceptance checklist coverage.",
+    "Do not edit or write files.",
+    "When reviewing a cycle, include exactly one DECISION line from the coordinator contract.",
+  ].join("\n");
+}
+
+async function runRolePrompt(roleSession: RoleSession, prompt: string): Promise<string> {
+  return promptRoleSession(roleSession, prompt);
 }
 
 // ---------------------------------------------------------------------------
@@ -188,7 +234,7 @@ function releaseRun(): void {
 // Tool definition builder
 // ---------------------------------------------------------------------------
 
-function buildPairProgramToolDef() {
+function buildPairProgramToolDef(pi: ExtensionAPI) {
   return {
     name: "pair_program",
     label: "Pair Program",
@@ -208,10 +254,11 @@ function buildPairProgramToolDef() {
       _toolCallId: string,
       params: PairProgramParamsType,
       _signal: AbortSignal | undefined,
-      _onUpdate: unknown,
+      onUpdate: unknown,
       ctx: ExtensionContext,
     ) => {
       const normalized = normalizeParams(params);
+      const publish = onUpdate as PairProgramUpdate | undefined;
 
       // --- Reject unsupported modes (AC #3) ---
       if (normalized.mode !== "tdd") {
@@ -261,26 +308,96 @@ function buildPairProgramToolDef() {
         // --- Create transcript (AC #7) ---
         const cwd = ctx.cwd;
         const transcriptPath = createTranscriptPath(cwd, normalized.task);
+        let driverSession: RoleSession | undefined;
+        let navigatorSession: RoleSession | undefined;
 
-        // --- MVP: return incomplete — full loop not implemented yet (AC #7) ---
-        const incompleteResult: PairProgramDetails = {
-          status: "incomplete",
-          summary:
-            `Pair program TDD run initialized.\n` +
-            `- Task: ${normalized.task}\n` +
-            `- Mode: ${normalized.mode}\n` +
-            `- Max cycles: ${normalized.maxCycles}\n` +
-            `- Dry run: ${normalized.dryRun}\n` +
-            `- Transcript: ${transcriptPath}\n\n` +
-            `The full Driver/Navigator cycle loop is not implemented in this slice. ` +
-            `Transcript has been created and prerequisites verified.`,
-          transcriptPath,
-        };
+        try {
+          driverSession = await createRoleSession(
+            pi,
+            ctx,
+            "driver",
+            normalized.driverModel,
+            "dryRun",
+            [buildRoleSystemPrompt("driver")],
+          );
+          navigatorSession = await createRoleSession(
+            pi,
+            ctx,
+            "navigator",
+            normalized.navigatorModel,
+            undefined,
+            [buildRoleSystemPrompt("navigator")],
+          );
+          const driver = driverSession;
+          const navigator = navigatorSession;
 
-        return {
-          content: [{ type: "text" as const, text: incompleteResult.summary }],
-          details: incompleteResult,
-        };
+          const protocolResult = await runPairProtocolDryRun(
+            {
+              navigatorPreflight: (prompt) => runRolePrompt(navigator, prompt),
+              driverCycle: (prompt) => runRolePrompt(driver, prompt),
+              navigatorReview: (prompt) => runRolePrompt(navigator, prompt),
+              navigatorDecisionRepair: (prompt) => runRolePrompt(navigator, prompt),
+              driverCorrection: (prompt) => runRolePrompt(driver, prompt),
+            },
+            {
+              task: normalized.task,
+              maxCycles: normalized.maxCycles,
+              testCommand: normalized.testCommand,
+              onEvent: (event) => {
+                appendTranscript(transcriptPath, event);
+                publish?.({
+                  content: [{ type: "text", text: `${event.role} ${event.phase}\n\n${event.text}` }],
+                  details: {
+                    status: "incomplete",
+                    summary: `${event.role} ${event.phase}`,
+                    transcriptPath,
+                    driverTools: driver.tools,
+                    navigatorTools: navigator.tools,
+                  },
+                });
+              },
+            },
+          );
+
+          const driverTools = [...driver.tools];
+          const navigatorTools = [...navigator.tools];
+          const driverUsage = disposeRoleSession(driver);
+          driverSession = undefined;
+          const navigatorUsage = disposeRoleSession(navigator);
+          navigatorSession = undefined;
+          const usage = buildPairUsageSummary(driverUsage, navigatorUsage);
+
+          const result: PairProgramDetails = {
+            status: protocolResult.status,
+            summary:
+              `Pair program TDD dry-run finished.\n` +
+              `- Task: ${normalized.task}\n` +
+              `- Mode: ${normalized.mode}\n` +
+              `- Max cycles: ${normalized.maxCycles}\n` +
+              `- Dry run: true\n` +
+              `- Status: ${protocolResult.status}\n` +
+              `- Stop reason: ${protocolResult.stopReason}\n` +
+              `- Cycles completed: ${protocolResult.cyclesCompleted}\n` +
+              `- Malformed decision repairs: ${protocolResult.malformedDecisionRepairs}\n` +
+              `- Driver tools: ${driverTools.join(", ")}\n` +
+              `- Navigator tools: ${navigatorTools.join(", ")}\n` +
+              `- Transcript: ${transcriptPath}`,
+            transcriptPath,
+            stopReason: protocolResult.stopReason,
+            cyclesCompleted: protocolResult.cyclesCompleted,
+            driverTools,
+            navigatorTools,
+            usage,
+          };
+
+          return {
+            content: [{ type: "text" as const, text: result.summary }],
+            details: result,
+          };
+        } finally {
+          if (driverSession) disposeRoleSession(driverSession);
+          if (navigatorSession) disposeRoleSession(navigatorSession);
+        }
       } finally {
         releaseRun();
       }
@@ -336,5 +453,5 @@ export default function pairProgramExtension(pi: ExtensionAPI) {
     activeRunId = undefined;
   });
 
-  pi.registerTool(buildPairProgramToolDef());
+  pi.registerTool(buildPairProgramToolDef(pi));
 }

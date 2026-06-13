@@ -8,6 +8,7 @@ export interface PairRunMemory {
 	lastDriverReport: string | null;
 	lastNavigatorReview: string | null;
 	evidenceSummaries: string[];
+	initialWorkspace?: WorkspaceSnapshot;
 }
 
 export type PairRuntimeStatus = "success" | "blocked" | "incomplete";
@@ -24,6 +25,7 @@ export interface PairProtocolSessions {
 	navigatorReview(prompt: string): Promise<string>;
 	navigatorDecisionRepair(prompt: string): Promise<string>;
 	driverCorrection(prompt: string): Promise<string>;
+	navigatorClarification?(prompt: string): Promise<string>;
 }
 
 export interface PairProtocolEvent {
@@ -45,6 +47,7 @@ export interface PairProtocolResult {
 export interface WorkspaceSnapshot {
 	gitStatusShort: string;
 	gitDiffStat: string;
+	gitDiff: string;
 }
 
 export interface FinalVerification {
@@ -60,6 +63,7 @@ export interface RunPairProtocolOptions {
 	onEvent?: (event: PairProtocolEvent) => void;
 	collectEvidence?: () => Promise<WorkspaceSnapshot>;
 	runFinalVerification?: (command: string) => Promise<FinalVerification>;
+	currentWorkspace?: WorkspaceSnapshot;
 }
 
 const VALID_NAVIGATOR_DECISIONS: ReadonlySet<NavigatorDecisionValue> = new Set([
@@ -135,6 +139,9 @@ export function statusFromStopReason(stopReason: string): PairRuntimeStatus {
 }
 
 export function buildNavigatorPreflightPrompt(memory: PairRunMemory, testCommand: string | undefined): string {
+	const workspaceSection = memory.initialWorkspace
+		? `\nWorkspace snapshot at run start:\n${formatWorkspaceSnapshot(memory.initialWorkspace)}\n`
+		: "";
 	return `You are the Navigator Agent for a deterministic Pair Program Tool run.
 
 Task:
@@ -142,7 +149,7 @@ ${memory.task}
 
 Mode: TDD dry-run.
 Test command: ${testCommand ?? "not specified"}
-
+${workspaceSection}
 Define the acceptance checklist, main risks, and the first Driver cycle objective.
 
 Return Markdown with these headings:
@@ -154,7 +161,10 @@ If you need to change the checklist later, include:
 ## Checklist Amendment`;
 }
 
-export function buildDriverCyclePrompt(memory: PairRunMemory, latestNavigatorHandoff: string | null, testCommand: string | undefined): string {
+export function buildDriverCyclePrompt(memory: PairRunMemory, latestNavigatorHandoff: string | null, testCommand: string | undefined, currentWorkspace?: WorkspaceSnapshot): string {
+	const workspaceSection = currentWorkspace
+		? `\nCurrent workspace evidence:\n${formatWorkspaceSnapshot(currentWorkspace)}\n`
+		: "";
 	return `You are the Driver Agent in a dry-run TDD pair-programming session.
 
 Before implementation planning, call or use skill-tdd and follow red-green-refactor discipline.
@@ -169,7 +179,7 @@ ${formatMemoryForPrompt(memory)}
 
 Latest Navigator handoff:
 ${latestNavigatorHandoff ?? "Navigator preflight is the current handoff."}
-
+${workspaceSection}
 Test command: ${testCommand ?? "not specified"}
 
 Return only Markdown with these exact headings:
@@ -181,7 +191,10 @@ Return only Markdown with these exact headings:
 ## Next Intent`;
 }
 
-export function buildDriverCorrectionPrompt(memory: PairRunMemory, navigatorReview: string, testCommand: string | undefined): string {
+export function buildDriverCorrectionPrompt(memory: PairRunMemory, navigatorReview: string, testCommand: string | undefined, currentWorkspace?: WorkspaceSnapshot): string {
+	const workspaceSection = currentWorkspace
+		? `\nCurrent workspace evidence:\n${formatWorkspaceSnapshot(currentWorkspace)}\n`
+		: "";
 	return `You are the Driver Agent handling one correction packet for the current dry-run TDD cycle.
 
 Use skill-tdd discipline. You are still in dry-run mode and must not edit files, write files, install dependencies, generate files, run formatters, or run cleanup commands.
@@ -194,7 +207,7 @@ ${formatMemoryForPrompt(memory)}
 
 Navigator review and correction packet:
 ${navigatorReview}
-
+${workspaceSection}
 Test command: ${testCommand ?? "not specified"}
 
 Return only Markdown with these exact headings:
@@ -208,7 +221,10 @@ If you cannot proceed safely, return only:
 ## Clarification Needed`;
 }
 
-export function buildNavigatorReviewPrompt(memory: PairRunMemory, driverReport: string): string {
+export function buildNavigatorReviewPrompt(memory: PairRunMemory, driverReport: string, currentWorkspace?: WorkspaceSnapshot): string {
+	const workspaceSection = currentWorkspace
+		? `\nCurrent workspace evidence:\n${formatWorkspaceSnapshot(currentWorkspace)}\n`
+		: "";
 	return `You are the Navigator Agent reviewing the Driver Agent's current dry-run TDD cycle.
 
 Compact Pair Run Memory:
@@ -216,7 +232,7 @@ ${formatMemoryForPrompt(memory)}
 
 Driver report:
 ${driverReport}
-
+${workspaceSection}
 Compact TDD review rubric:
 ${TDD_REVIEW_RUBRIC.map((item) => `- ${item}`).join("\n")}
 
@@ -266,6 +282,7 @@ export async function runPairProtocolDryRun(
 
 	if (options.collectEvidence) {
 		initialWorkspace = await options.collectEvidence();
+		memory = { ...memory, initialWorkspace };
 		options.onEvent?.({ role: "coordinator", phase: "initial_workspace", text: formatWorkspaceSnapshot(initialWorkspace) });
 	}
 
@@ -281,14 +298,15 @@ export async function runPairProtocolDryRun(
 
 	while (memory.currentCycle <= options.maxCycles) {
 		let correctionUsed = false;
+		let currentWorkspaceEvidence = options.currentWorkspace ?? initialWorkspace;
 		let driverReport = await sessions.driverCycle(
-			buildDriverCyclePrompt(memory, memory.lastNavigatorReview, options.testCommand),
+			buildDriverCyclePrompt(memory, memory.lastNavigatorReview, options.testCommand, currentWorkspaceEvidence),
 		);
 		memory = updateMemoryAfterDriver(memory, driverReport);
 		options.onEvent?.({ role: "driver", phase: `cycle_${memory.currentCycle}`, text: driverReport });
 
 		while (true) {
-			let review = await sessions.navigatorReview(buildNavigatorReviewPrompt(memory, driverReport));
+			let review = await sessions.navigatorReview(buildNavigatorReviewPrompt(memory, driverReport, currentWorkspaceEvidence));
 			let decision = parseNavigatorDecision(review);
 
 			if (decision.kind === "malformed") {
@@ -309,6 +327,15 @@ export async function runPairProtocolDryRun(
 				if (decision.value === "final_approve" && options.runFinalVerification && options.testCommand) {
 					finalVerification = await options.runFinalVerification(options.testCommand);
 					options.onEvent?.({ role: "coordinator", phase: "final_verification", text: formatFinalVerification(finalVerification) });
+
+					if (finalVerification.exitCode !== 0 && sessions.navigatorClarification) {
+						const classificationPrompt = `Final verification failed with exit code ${finalVerification.exitCode}.\n\nCommand: ${finalVerification.command}\nOutput:\n${truncateText(finalVerification.summary, 2000)}\n\nClassify this failure: is it a blocker (DECISION: blocked) or should the Driver retry (DECISION: request_revision with ## Correction Packet and ## Required Evidence)?`;
+						const classification = await sessions.navigatorClarification(classificationPrompt);
+						const classificationDecision = parseNavigatorDecision(classification);
+						if (classificationDecision.kind === "valid" && classificationDecision.value === "blocked") {
+							return finish("navigator_blocked", memory, malformedDecisionRepairs, initialWorkspace, finalVerification);
+						}
+					}
 				}
 				return finish(decision.value === "blocked" ? "navigator_blocked" : "navigator_final_approve", memory, malformedDecisionRepairs, initialWorkspace, finalVerification);
 			}
@@ -323,9 +350,20 @@ export async function runPairProtocolDryRun(
 			}
 
 			correctionUsed = true;
-			driverReport = await sessions.driverCorrection(buildDriverCorrectionPrompt(memory, review, options.testCommand));
-			memory = updateMemoryAfterDriver(memory, driverReport);
-			options.onEvent?.({ role: "driver", phase: `correction_${memory.currentCycle}`, text: driverReport });
+			let correctionReport = await sessions.driverCorrection(buildDriverCorrectionPrompt(memory, review, options.testCommand, currentWorkspaceEvidence));
+
+			if (extractHeadingBody(correctionReport, "Clarification Needed") && sessions.navigatorClarification) {
+				const clarificationPrompt = `The Driver needs clarification before addressing the correction packet.\n\nDriver report:\n${correctionReport}\n\nProvide a targeted answer to unblock the Driver.`;
+				const clarificationAnswer = await sessions.navigatorClarification(clarificationPrompt);
+				options.onEvent?.({ role: "navigator", phase: `clarification_${memory.currentCycle}`, text: clarificationAnswer });
+				correctionReport = await sessions.driverCorrection(
+					`Navigator clarification:\n${clarificationAnswer}\n\nNow address the correction packet.` + buildDriverCorrectionPrompt(memory, review, options.testCommand, currentWorkspaceEvidence),
+				);
+				correctionUsed = false;
+			}
+
+			memory = updateMemoryAfterDriver(memory, correctionReport);
+			options.onEvent?.({ role: "driver", phase: `correction_${memory.currentCycle}`, text: correctionReport });
 		}
 	}
 
@@ -386,11 +424,18 @@ function extractHeadingBody(markdown: string, heading: string): string | null {
 	return body.join("\n").trim() || null;
 }
 
+export function truncateText(text: string, maxLength: number): string {
+	if (text.length <= maxLength) return text;
+	const suffix = "\n...(truncated)";
+	return text.slice(0, maxLength - suffix.length) + suffix;
+}
+
 function formatWorkspaceSnapshot(snapshot: WorkspaceSnapshot): string {
 	return [
 		"Initial workspace snapshot:",
 		snapshot.gitStatusShort ? `git status:\n${snapshot.gitStatusShort}` : "git status: (clean)",
 		snapshot.gitDiffStat ? `git diff stat:\n${snapshot.gitDiffStat}` : "git diff stat: (no changes)",
+		snapshot.gitDiff ? `git diff (truncated):\n${snapshot.gitDiff}` : "git diff: (no changes)",
 	].join("\n");
 }
 

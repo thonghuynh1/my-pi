@@ -1,9 +1,9 @@
 {
   "defaultModel": "github-copilot/claude-sonnet-4.6",
   "agents": {
-    "explore-fast": "github-copilot/claude-sonnet-4.6",
-    "find-callers": "github-copilot/claude-sonnet-4.6",
+    "explore-fast": "opencode/mimo-v2.5-free",
+    "find-callers": "opencode/mimo-v2.5-free",
     "review-diff": "inherit",
-    "test-runner": "github-copilot/claude-sonnet-4.6"
+    "test-runner": "opencode/mimo-v2.5-free"
   }
 }

@@ -318,5 +318,73 @@
     "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_04-add-evidence-final-verification-and-status-handling_attempt-3\\2c9f976ef0af.md",
     "sha256": "2c9f976ef0aff3c2c05e9ad3dc14026d6c220902b041f1cc8e8af351d438f272",
     "createdAt": "2026-06-13T16:39:19.140Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "04-add-evidence-final-verification-and-status-handling",
+    "attempt": 3,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_04-add-evidence-final-verification-and-status-handling_attempt-3\\2c9f976ef0af.md",
+    "sha256": "2c9f976ef0aff3c2c05e9ad3dc14026d6c220902b041f1cc8e8af351d438f272",
+    "createdAt": "2026-06-13T16:51:43.813Z"
+  },
+  {
+    "phase": "verify",
+    "issueId": "04-add-evidence-final-verification-and-status-handling",
+    "attempt": 3,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\verify_04-add-evidence-final-verification-and-status-handling_attempt-3\\46682ac7e68e.md",
+    "sha256": "46682ac7e68e30a2f54ddf3d7e6e14153ee36a8276cf45d41f6d2ff8e1d851eb",
+    "createdAt": "2026-06-13T16:58:46.443Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "04-add-evidence-final-verification-and-status-handling",
+    "attempt": 4,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_04-add-evidence-final-verification-and-status-handling_attempt-4\\cad4fcbdda76.md",
+    "sha256": "cad4fcbdda76aa873e7f4f6be0e6ef5547b72469347c99bb34360416fb72a524",
+    "createdAt": "2026-06-13T17:01:03.351Z"
+  },
+  {
+    "phase": "verify",
+    "issueId": "04-add-evidence-final-verification-and-status-handling",
+    "attempt": 4,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\verify_04-add-evidence-final-verification-and-status-handling_attempt-4\\4c76977643e0.md",
+    "sha256": "4c76977643e0cb669200422ce23b2cb2d12fac2d9ca443c3b8c1cf6852ac945e",
+    "createdAt": "2026-06-13T17:05:04.945Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "05-persist-transcripts-and-report-usage",
+    "attempt": 1,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_05-persist-transcripts-and-report-usage_attempt-1\\bc91ee897596.md",
+    "sha256": "bc91ee8975964e86ba86af90cdfecde771d5712e182240e08b936f11a89486d4",
+    "createdAt": "2026-06-13T17:06:42.404Z"
+  },
+  {
+    "phase": "verify",
+    "issueId": "05-persist-transcripts-and-report-usage",
+    "attempt": 1,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\verify_05-persist-transcripts-and-report-usage_attempt-1\\cfe9bfaec8d7.md",
+    "sha256": "cfe9bfaec8d7a80579ccaa2b88d42e8dc3c4582c43d597a63370fbae9b858896",
+    "createdAt": "2026-06-13T17:12:40.647Z"
+  },
+  {
+    "phase": "review",
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\review\\f561e9fb6d14.md",
+    "sha256": "f561e9fb6d14a06ea44193a5800903222e3fd6b99ed8e601633a98a9454b2426",
+    "createdAt": "2026-06-13T17:15:33.346Z"
   }
 ]

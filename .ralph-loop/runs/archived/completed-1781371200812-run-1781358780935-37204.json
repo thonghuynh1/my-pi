@@ -1,16 +1,16 @@
 {
   "runId": "run-1781358780935-37204",
-  "revision": 969,
+  "revision": 1187,
   "repoCwd": "F:\\MyWork\\my-pi",
   "startCommit": "1b7b2ec2c5ac3fb9ee5931403335d6e743104618",
-  "status": "running",
+  "status": "completed",
   "owner": {
-    "pid": 26876,
-    "heartbeatAt": "2026-06-13T16:39:18.535Z"
+    "pid": 6232,
+    "heartbeatAt": "2026-06-13T17:19:54.700Z"
   },
   "scheduler": {
     "maxIterations": 25,
-    "iterationsStarted": 4,
+    "iterationsStarted": 5,
     "maxParallel": 5,
     "skippedIds": []
   },
@@ -55,22 +55,36 @@
       "issueId": "04-add-evidence-final-verification-and-status-handling",
       "title": "Add workspace evidence, final verification, and completion status handling",
       "body": "# Add workspace evidence, final verification, and completion status handling\r\n\r\nStatus: ready-for-agent\r\nType: AFK\r\nSource PRD: `F:/MyWork/my-pi/.scratch/pair-program-tool/PRD.md`\r\n\r\n## What to build\r\n\r\nExtend the dry-run pair loop into a practical TDD coordinator: collect neutral workspace evidence, pass git evidence to Navigator reviews, support one correction packet per cycle, support one Driver clarification path, run final verification when configured or requested, and produce correct `success | blocked | incomplete | error` statuses.\r\n\r\nDecision IDs: `MESO-006`, `MESO-008`, `MESO-009`, `MESO-011`, `MESO-012`, `MESO-013`, `MICRO-002`, `MICRO-003`, `MICRO-004`, `MICRO-005`.\r\n\r\n## Implementation map\r\n\r\n### Area: Workspace Evidence, Final Verification, and Transcripts\r\n\r\n- **Decision IDs**: `MESO-010`, `MESO-011`, `MESO-012`, `MESO-013`, `MICRO-004`, `MICRO-005`\r\n- **Current code anchors**:\r\n  - `extensions/subagents.ts`: uses `onUpdate` to stream child-agent progress.\r\n  - `extensions/subagents.ts`: returns `content` and `details` from a tool.\r\n  - `extensions/subagents.ts`: listens to `ctx.signal`.\r\n  - `extensions/tool-panel.ts`: shows compact usage/status patterns for tool UI.\r\n  - `.scratch/` exists and is already used by project workflows.\r\n- **Existing behavior**: `subagent` streams progress but does not save pair transcripts. Tool panel and usage footer already display tool/session usage patterns.\r\n- **Required edits**:\r\n  - At run start, snapshot initial workspace state:\r\n    - `git status --short`\r\n    - `git diff --stat`\r\n    - optionally truncated `git diff` if small enough.\r\n  - Before Navigator review, collect current neutral evidence:\r\n    - `git status --short`\r\n    - `git diff --stat`\r\n    - truncated `git diff`.\r\n  - Do not attempt exact attribution of pair-created vs pre-existing changes in MVP.\r\n  - Driver owns per-cycle test runs. Coordinator runs `testCommand` only for final verification or when Navigator requests verification.\r\n  - Choose final verification command by priority:\r\n    1. `pair_program({ testCommand })`\r\n    2. task metadata if later provided\r\n    3. Navigator preflight recommendation\r\n    4. repo default detection, such as `package.json` scripts.\r\n  - Tool result returns practical summary only, not full cycle audit.\r\n- **Snippet(s)**:\r\n\r\n```ts\r\n// current code anchor - live update and tool result pattern, illustrative\r\nexecute: async (toolCallId, params, _signal, onUpdate, ctx) => {\r\n  const result = await runSubagent(pi, ctx, toolCallId, params, onUpdate as any, (status) => {\r\n    if (status) activeSubagents.set(toolCallId, status);\r\n    else activeSubagents.delete(toolCallId);\r\n    refreshSubagentStatusWidget(ctx);\r\n  });\r\n\r\n  if (result.status === \"error\") {\r\n    return {\r\n      content: [{ type: \"text\", text: `Subagent ${result.type}:${result.name} failed: ${result.error}` }],\r\n      details: { ...result },\r\n    };\r\n  }\r\n\r\n  return {\r\n    content: [{ type: \"text\", text: truncateForToolResult(result.output) }],\r\n    details: { ...result },\r\n  };\r\n}\r\n```\r\n\r\n```ts\r\n// decision artifact - transcript result, normative shape\r\ninterface PairProgramResult {\r\n  status: \"success\" | \"blocked\" | \"incomplete\" | \"error\";\r\n  summary: string;\r\n  finalNavigatorDecision?: string;\r\n  changedFiles: string[];\r\n  finalVerification?: {\r\n    command: string;\r\n    exitCode: number;\r\n    summary: string;\r\n  };\r\n  transcriptMarkdownPath: string;\r\n  transcriptJsonPath: string;\r\n  usage: PairUsageSummary;\r\n}\r\n```\r\n\r\n- **Tests to extend**:\r\n  - Unit tests for git evidence truncation helpers.\r\n  - Unit tests for final verification status mapping.\r\n  - Manual verification that abort writes partial transcript once issue 05 transcript files exist.\r\n- **Wiring/build notes**:\r\n  - Use safe command execution for git/test evidence; avoid destructive commands.\r\n\r\n### Area: Pair Protocol, Memory, and Prompt Contracts\r\n\r\n- **Decision IDs**: `MESO-004`, `MESO-005`, `MESO-006`, `MESO-007`, `MESO-008`, `MESO-009`, `MESO-016`, `MICRO-002`\r\n- **Current code anchors**:\r\n  - `extensions/subagents.ts`: one-shot prompt assembly and `session.prompt(prompt)` usage.\r\n- **Existing behavior**: Issue 03 should provide the basic dry-run loop.\r\n- **Required edits**:\r\n  - Implement `DECISION: request_revision` correction flow:\r\n    - require `## Correction Packet` and `## Required Evidence`;\r\n    - send one correction turn to Driver;\r\n    - send revised evidence to Navigator once.\r\n  - Implement Driver `## Clarification Needed` flow:\r\n    - send one targeted clarification to Navigator;\r\n    - allow `## Checklist Amendment` only when explicitly marked.\r\n  - If final verification fails, send the failure to Navigator for classification.\r\n  - Do not infer `blocked`; only Navigator can declare `blocked`.\r\n\r\n## Acceptance criteria\r\n\r\n- [ ] Initial git status/diff snapshot is captured and included in pair memory/prompts.\r\n- [ ] Current git status/diff snapshot is captured before Navigator review.\r\n- [ ] Evidence is truncated/summarized so large diffs do not flood prompts.\r\n- [ ] One correction packet per cycle is enforced.\r\n- [ ] Driver clarification path allows one Navigator answer and then continues the same cycle.\r\n- [ ] Final verification runs from `testCommand` when provided.\r\n- [ ] Failed final verification is sent to Navigator for classification.\r\n- [ ] `blocked` only occurs when Navigator says `DECISION: blocked`.\r\n- [ ] Abort returns `incomplete` or `error` and does not leave child sessions running.\r\n- [ ] Runtime evidence captured: `npm run check`; plus manual dry-run and one work-mode tiny task showing evidence collection and final verification behavior.\r\n\r\n## Blocked by\r\n\r\n- 03-implement-dry-run-pair-loop\r\n",
-      "phase": "implementing",
-      "attempt": 3,
+      "phase": "done",
+      "attempt": 4,
       "worktreePath": "F:\\MyWork\\.ralph-wt-my-pi\\04-add-evidence-final-verification-and-status-handling",
       "branchName": "ralph/04-add-evidence-final-verification-and-status-handling",
-      "baseCommit": "e23adb8459117036d7a83c92adfa4c896ede5d4e"
+      "baseCommit": "cf3e8fefa144d0b2a7dbe93e4a6ec140e788f16d",
+      "preMergeHead": "cf3e8fefa144d0b2a7dbe93e4a6ec140e788f16d",
+      "integratedHead": "48b453cfee238f7582a2d243ca16bbafb76a5576"
+    },
+    "05-persist-transcripts-and-report-usage": {
+      "issueId": "05-persist-transcripts-and-report-usage",
+      "title": "Persist full transcripts and report role usage/live handoffs",
+      "body": "# Persist full transcripts and report role usage/live handoffs\r\n\r\nStatus: ready-for-agent\r\nType: AFK\r\nSource PRD: `F:/MyWork/my-pi/.scratch/pair-program-tool/PRD.md`\r\n\r\n## What to build\r\n\r\nFinish the MVP observability surface: persist full Markdown and JSON transcripts, stream important handoffs live through Pi tool updates/status UI, report practical final results, and include Driver/Navigator/total usage without double-counting existing subagent usage.\r\n\r\nDecision IDs: `MESO-010`, `MESO-013`, `MESO-014`, `MICRO-004`.\r\n\r\n## Implementation map\r\n\r\n### Area: Workspace Evidence, Final Verification, and Transcripts\r\n\r\n- **Decision IDs**: `MESO-010`, `MESO-011`, `MESO-012`, `MESO-013`, `MICRO-004`, `MICRO-005`\r\n- **Current code anchors**:\r\n  - `extensions/subagents.ts`: uses `onUpdate` to stream child-agent progress.\r\n  - `extensions/subagents.ts`: returns `content` and `details` from a tool.\r\n  - `extensions/subagents.ts`: listens to `ctx.signal`.\r\n  - `extensions/tool-panel.ts`: shows compact usage/status patterns for tool UI.\r\n  - `.scratch/` exists and is already used by project workflows.\r\n- **Existing behavior**: `subagent` streams progress but does not save pair transcripts.\r\n- **Required edits**:\r\n  - Persist full transcript to:\r\n    - `.scratch/pair-runs/<task-id-or-timestamp>.md`\r\n    - `.scratch/pair-runs/<task-id-or-timestamp>.json`\r\n  - Create `.scratch/pair-runs` lazily.\r\n  - Save partial transcripts on abort/error where possible.\r\n  - Tool result returns practical summary only, not full cycle audit.\r\n- **Snippet(s)**:\r\n\r\n```ts\r\n// decision artifact - transcript JSON, illustrative shape\r\ninterface PairTranscript {\r\n  task: string;\r\n  mode: \"tdd\";\r\n  status: \"success\" | \"blocked\" | \"incomplete\" | \"error\";\r\n  startedAt: string;\r\n  endedAt?: string;\r\n  cycles: PairCycleRecord[];\r\n  initialWorkspace: WorkspaceSnapshot;\r\n  finalWorkspace?: WorkspaceSnapshot;\r\n  finalVerification?: FinalVerificationRecord;\r\n  usage: PairUsageSummary;\r\n}\r\n```\r\n\r\n```ts\r\n// decision artifact - transcript result, normative shape\r\ninterface PairProgramResult {\r\n  status: \"success\" | \"blocked\" | \"incomplete\" | \"error\";\r\n  summary: string;\r\n  finalNavigatorDecision?: string;\r\n  changedFiles: string[];\r\n  finalVerification?: {\r\n    command: string;\r\n    exitCode: number;\r\n    summary: string;\r\n  };\r\n  transcriptMarkdownPath: string;\r\n  transcriptJsonPath: string;\r\n  usage: PairUsageSummary;\r\n}\r\n```\r\n\r\n- **Tests to extend**:\r\n  - Unit tests for transcript path generation and JSON shape.\r\n  - Manual verification that abort writes partial transcript.\r\n- **Wiring/build notes**:\r\n  - Use native Node filesystem APIs for transcript writes.\r\n\r\n### Area: Usage Tracking and Live Display\r\n\r\n- **Decision IDs**: `MESO-010`, `MESO-013`, `MESO-014`\r\n- **Current code anchors**:\r\n  - `extensions/subagents.ts`: `applyAssistantUsage()` aggregates assistant message usage into child status.\r\n  - `extensions/subagents.ts`: `SubagentUsage` shape includes tokens, cost, and model id.\r\n  - `extensions/subagents.ts`: global `__subagent` state contributes child usage to footer totals.\r\n  - `extensions/tool-panel.ts`: records subagent usage from tool result details.\r\n- **Existing behavior**: The existing subagent tool reports usage per child run and contributes totals to the footer/tool panel.\r\n- **Required edits**:\r\n  - Track Driver and Navigator usage separately across their persistent sessions.\r\n  - Report usage by role and total in final result:\r\n    - input tokens\r\n    - output tokens\r\n    - cache tokens\r\n    - total tokens\r\n    - cost USD\r\n    - model id\r\n  - Consider adding global `__pairProgram` state or extending existing usage footer integration only if needed for live totals.\r\n  - Live UI should show compact phase/cycle/role status and important handoffs, not raw full transcripts.\r\n  - Avoid double-counting pair child usage with existing `__subagent` totals.\r\n- **Snippet(s)**:\r\n\r\n```ts\r\n// current code anchor - subagent total accumulation, illustrative\r\nif (u) {\r\n  subagentState.totalCostUsd += u.costUsd ?? 0;\r\n  subagentState.totalInputTokens += u.inputTokens ?? 0;\r\n  subagentState.totalOutputTokens += u.outputTokens ?? 0;\r\n  subagentState.totalCacheTokens += u.cacheTokens ?? 0;\r\n  subagentState.totalTokens +=\r\n    u.totalTokens ??\r\n    (u.inputTokens ?? 0) + (u.outputTokens ?? 0) + (u.cacheTokens ?? 0);\r\n}\r\n```\r\n\r\n```ts\r\n// decision artifact - pair usage summary, normative shape\r\ninterface PairUsageSummary {\r\n  driverUsage: RoleUsage;\r\n  navigatorUsage: RoleUsage;\r\n  totalUsage: {\r\n    totalTokens: number;\r\n    costUsd: number;\r\n  };\r\n}\r\n\r\ninterface RoleUsage {\r\n  inputTokens: number;\r\n  outputTokens: number;\r\n  cacheTokens: number;\r\n  totalTokens: number;\r\n  costUsd: number;\r\n  modelId: string;\r\n}\r\n```\r\n\r\n## Acceptance criteria\r\n\r\n- [ ] Markdown transcript is saved for each run.\r\n- [ ] JSON transcript is saved for each run.\r\n- [ ] Partial transcript is saved on abort/error when possible.\r\n- [ ] Live Pi output streams important handoffs: Navigator preflight, Driver evidence, Navigator decisions, correction packets, blockers, final result.\r\n- [ ] Final tool result includes status, summary, final Navigator decision, changed files, final verification result, transcript paths, usage by role, and total usage.\r\n- [ ] Driver and Navigator usage are reported separately.\r\n- [ ] Pair usage does not double-count with existing `__subagent` totals.\r\n- [ ] Runtime evidence captured: `npm run check`; plus a manual `pair_program` run showing transcript files exist, contain cycle records, and final output includes usage.\r\n\r\n## Blocked by\r\n\r\n- 04-add-evidence-final-verification-and-status-handling\r\n",
+      "phase": "done",
+      "attempt": 1,
+      "worktreePath": "F:\\MyWork\\.ralph-wt-my-pi\\05-persist-transcripts-and-report-usage",
+      "branchName": "ralph/05-persist-transcripts-and-report-usage",
+      "baseCommit": "cf3e8fefa144d0b2a7dbe93e4a6ec140e788f16d",
+      "preMergeHead": "48b453cfee238f7582a2d243ca16bbafb76a5576",
+      "integratedHead": "48b453cfee238f7582a2d243ca16bbafb76a5576"
     }
   },
   "review": {
-    "phase": "pending"
+    "phase": "done"
   },
   "rollbackSnapshotId": "F:\\MyWork\\my-pi\\.ralph-loop\\snapshots\\snapshot-1781358780724",
   "promptTranscripts": {
     "enabled": true,
     "manifest": {
       "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\manifest.json",
-      "sha256": "f29db93f1b8e177b8d9234443265169c1d609391efe3dc3f6d847795eced00af"
+      "sha256": "42012809cf440918054f2bc1d894a592aec8a0da632b673bbaf2172562276e75"
     }
   },
   "usageLedger": [
@@ -489,16 +503,126 @@
       "reasoningTokens": 1104,
       "totalTokens": 340680,
       "costUsd": 0
+    },
+    {
+      "executionId": 27,
+      "phase": "implement",
+      "issueId": "04-add-evidence-final-verification-and-status-handling",
+      "attempt": 3,
+      "client": "opencode",
+      "model": "opencode/mimo-v2.5-free",
+      "outcome": "succeeded",
+      "inputTokens": 51555,
+      "outputTokens": 10578,
+      "cacheReadTokens": 1765504,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 3366,
+      "totalTokens": 1831003,
+      "costUsd": 0
+    },
+    {
+      "executionId": 28,
+      "phase": "verify",
+      "issueId": "04-add-evidence-final-verification-and-status-handling",
+      "attempt": 3,
+      "client": "opencode",
+      "model": "opencode/mimo-v2.5-free",
+      "outcome": "succeeded",
+      "inputTokens": 71032,
+      "outputTokens": 1619,
+      "cacheReadTokens": 232640,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 853,
+      "totalTokens": 306144,
+      "costUsd": 0
+    },
+    {
+      "executionId": 29,
+      "phase": "implement",
+      "issueId": "04-add-evidence-final-verification-and-status-handling",
+      "attempt": 4,
+      "client": "opencode",
+      "model": "opencode/mimo-v2.5-free",
+      "outcome": "succeeded",
+      "inputTokens": 42059,
+      "outputTokens": 5776,
+      "cacheReadTokens": 925632,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 3697,
+      "totalTokens": 977164,
+      "costUsd": 0
+    },
+    {
+      "executionId": 30,
+      "phase": "verify",
+      "issueId": "04-add-evidence-final-verification-and-status-handling",
+      "attempt": 4,
+      "client": "opencode",
+      "model": "opencode/mimo-v2.5-free",
+      "outcome": "succeeded",
+      "inputTokens": 25800,
+      "outputTokens": 2174,
+      "cacheReadTokens": 228352,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 1311,
+      "totalTokens": 257637,
+      "costUsd": 0
+    },
+    {
+      "executionId": 31,
+      "phase": "implement",
+      "issueId": "05-persist-transcripts-and-report-usage",
+      "attempt": 1,
+      "client": "opencode",
+      "model": "opencode/mimo-v2.5-free",
+      "outcome": "succeeded",
+      "inputTokens": 71147,
+      "outputTokens": 7893,
+      "cacheReadTokens": 1633664,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 1511,
+      "totalTokens": 1714215,
+      "costUsd": 0
+    },
+    {
+      "executionId": 32,
+      "phase": "verify",
+      "issueId": "05-persist-transcripts-and-report-usage",
+      "attempt": 1,
+      "client": "opencode",
+      "model": "opencode/mimo-v2.5-free",
+      "outcome": "succeeded",
+      "inputTokens": 44878,
+      "outputTokens": 1865,
+      "cacheReadTokens": 839424,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 2152,
+      "totalTokens": 888319,
+      "costUsd": 0
+    },
+    {
+      "executionId": 33,
+      "phase": "review",
+      "client": "opencode",
+      "model": "opencode/mimo-v2.5-free",
+      "outcome": "succeeded",
+      "inputTokens": 424469,
+      "outputTokens": 4411,
+      "cacheReadTokens": 1952320,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 3446,
+      "totalTokens": 2384646,
+      "costUsd": 0
     }
   ],
   "usageSummary": {
     "run": {
-      "inputTokens": 1338374,
-      "outputTokens": 111592,
-      "cacheReadTokens": 22529984,
+      "inputTokens": 2069314,
+      "outputTokens": 145908,
+      "cacheReadTokens": 30107520,
       "cacheWriteTokens": 0,
-      "reasoningTokens": 61077,
-      "totalTokens": 24041027,
+      "reasoningTokens": 77413,
+      "totalTokens": 32400155,
       "costUsd": 0,
       "hasUnknownTokens": false,
       "hasUnknownCost": false
@@ -538,12 +662,23 @@
         "hasUnknownCost": false
       },
       "04-add-evidence-final-verification-and-status-handling": {
-        "inputTokens": 335671,
-        "outputTokens": 26634,
-        "cacheReadTokens": 5107712,
+        "inputTokens": 526117,
+        "outputTokens": 46781,
+        "cacheReadTokens": 8259840,
         "cacheWriteTokens": 0,
-        "reasoningTokens": 9028,
-        "totalTokens": 5479045,
+        "reasoningTokens": 18255,
+        "totalTokens": 8850993,
+        "costUsd": 0,
+        "hasUnknownTokens": false,
+        "hasUnknownCost": false
+      },
+      "05-persist-transcripts-and-report-usage": {
+        "inputTokens": 116025,
+        "outputTokens": 9758,
+        "cacheReadTokens": 2473088,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 3663,
+        "totalTokens": 2602534,
         "costUsd": 0,
         "hasUnknownTokens": false,
         "hasUnknownCost": false
@@ -551,23 +686,23 @@
     },
     "byPhase": {
       "implement": {
-        "inputTokens": 873927,
-        "outputTokens": 86401,
-        "cacheReadTokens": 17499328,
+        "inputTokens": 1038688,
+        "outputTokens": 110648,
+        "cacheReadTokens": 21824128,
         "cacheWriteTokens": 0,
-        "reasoningTokens": 28815,
-        "totalTokens": 18488471,
+        "reasoningTokens": 37389,
+        "totalTokens": 23010853,
         "costUsd": 0,
         "hasUnknownTokens": false,
         "hasUnknownCost": false
       },
       "verify": {
-        "inputTokens": 464447,
-        "outputTokens": 25191,
-        "cacheReadTokens": 5030656,
+        "inputTokens": 606157,
+        "outputTokens": 30849,
+        "cacheReadTokens": 6331072,
         "cacheWriteTokens": 0,
-        "reasoningTokens": 32262,
-        "totalTokens": 5552556,
+        "reasoningTokens": 36578,
+        "totalTokens": 7004656,
         "costUsd": 0,
         "hasUnknownTokens": false,
         "hasUnknownCost": false
@@ -584,12 +719,12 @@
         "hasUnknownCost": false
       },
       "review": {
-        "inputTokens": 0,
-        "outputTokens": 0,
-        "cacheReadTokens": 0,
+        "inputTokens": 424469,
+        "outputTokens": 4411,
+        "cacheReadTokens": 1952320,
         "cacheWriteTokens": 0,
-        "reasoningTokens": 0,
-        "totalTokens": 0,
+        "reasoningTokens": 3446,
+        "totalTokens": 2384646,
         "costUsd": 0,
         "hasUnknownTokens": false,
         "hasUnknownCost": false

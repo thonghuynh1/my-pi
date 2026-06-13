@@ -12,7 +12,6 @@
 
 import {
 	__resetActiveRunForTests,
-	DEFAULT_DRY_RUN,
 	DEFAULT_MAX_CYCLES,
 	DEFAULT_MODE,
 	isRunActive,
@@ -61,8 +60,6 @@ console.log("normalizeParams");
 	assertEqual(result.mode, "tdd", "mode default literal is tdd");
 	assertEqual(result.maxCycles, DEFAULT_MAX_CYCLES, "maxCycles defaults to 4");
 	assertEqual(result.maxCycles, 4, "maxCycles default literal is 4");
-	assertEqual(result.dryRun, DEFAULT_DRY_RUN, "dryRun defaults to safe value");
-	assertEqual(result.dryRun, true, "dryRun default literal is true");
 	assertEqual(result.testCommand, undefined, "testCommand stays undefined when omitted");
 	assertEqual(result.driverModel, undefined, "driverModel stays undefined when omitted");
 	assertEqual(result.navigatorModel, undefined, "navigatorModel stays undefined when omitted");
@@ -74,13 +71,11 @@ console.log("normalizeParams");
 		mode: "tdd",
 		maxCycles: 7,
 		testCommand: "npm test",
-		dryRun: false,
 		driverModel: "openai/gpt-4",
 		navigatorModel: "anthropic/claude-3",
 	});
 	assertEqual(result.mode, "tdd", "explicit tdd is preserved");
 	assertEqual(result.maxCycles, 7, "explicit maxCycles is preserved");
-	assertEqual(result.dryRun, false, "explicit dryRun=false is preserved");
 	assertEqual(result.testCommand, "npm test", "explicit testCommand preserved");
 	assertEqual(result.driverModel, "openai/gpt-4", "driverModel preserved");
 	assertEqual(result.navigatorModel, "anthropic/claude-3", "navigatorModel preserved");

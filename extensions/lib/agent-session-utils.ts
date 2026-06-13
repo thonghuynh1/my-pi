@@ -70,22 +70,16 @@ type AssistantUsage = {
 
 // ---------------------------------------------------------------------------
 // Tool allowlists (decision artifact: MESO-003, MICRO-001)
-//
-// Driver gets edit/write tools only when the pair run was explicitly invoked
-// with dryRun: false. Default (dryRun: true) is read/inspect-only so a
-// runaway Driver cannot mutate the workspace.
 // ---------------------------------------------------------------------------
 
-export const DRIVER_DRY_RUN_TOOLS: readonly string[] = ["read", "grep", "find", "ls", "bash"];
-export const DRIVER_WORK_TOOLS: readonly string[] = ["read", "grep", "find", "ls", "bash", "edit", "write"];
+export const DRIVER_TOOLS: readonly string[] = ["read", "grep", "find", "ls", "bash", "edit", "write"];
 export const NAVIGATOR_TOOLS: readonly string[] = ["read", "grep", "find", "ls", "bash"];
 
-export function getRoleTools(role: "driver", opts?: { dryRun?: boolean }): string[];
+export function getRoleTools(role: "driver"): string[];
 export function getRoleTools(role: "navigator"): string[];
-export function getRoleTools(role: "driver" | "navigator", opts?: { dryRun?: boolean }): string[] {
+export function getRoleTools(role: "driver" | "navigator"): string[] {
 	if (role === "driver") {
-		const dryRun = opts?.dryRun ?? true;
-		return dryRun ? [...DRIVER_DRY_RUN_TOOLS] : [...DRIVER_WORK_TOOLS];
+		return [...DRIVER_TOOLS];
 	}
 	return [...NAVIGATOR_TOOLS];
 }
@@ -251,13 +245,12 @@ export async function createRoleSession(
 	role: "driver" | "navigator",
 	modelOverride?: string,
 	extraSystemPrompt?: string[],
-	options?: { dryRun?: boolean },
 ): Promise<RoleSession> {
 	const cwd = ctx.cwd;
 	const model = resolveRoleModel(modelOverride, ctx.model, ctx.modelRegistry);
 	const modelId = `${model.provider}/${model.id}`;
 	const tools = role === "driver"
-		? getRoleTools("driver", { dryRun: options?.dryRun ?? true })
+		? getRoleTools("driver")
 		: getRoleTools("navigator");
 
 	const services = await createAgentSessionServices({

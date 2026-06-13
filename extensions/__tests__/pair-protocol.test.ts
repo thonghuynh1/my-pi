@@ -87,8 +87,7 @@ console.log("buildDriverCyclePrompt");
 {
 	const prompt = buildDriverCyclePrompt(createInitialPairRunMemory("demo"), "handoff", "npm run check", undefined, true);
 	assert(prompt.includes("call or use skill-tdd"), "Driver prompt instructs Driver to use skill-tdd");
-	assert(prompt.includes("must not edit files"), "dry-run Driver prompt forbids editing files");
-	assert(prompt.includes("install dependencies"), "dry-run Driver prompt forbids dependency installation");
+	assert(prompt.includes("may edit and write files"), "Driver prompt allows editing files");
 	assert(prompt.includes("## Summary"), "Driver prompt requires Summary heading");
 	assert(prompt.includes("## Next Intent"), "Driver prompt requires Next Intent heading");
 }

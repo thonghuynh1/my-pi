@@ -1,15 +1,13 @@
 /**
  * Pair Program Tool — deterministic coordinator for autonomous
- * pair-programming runs (Driver + Navigator). Issue 01 slice:
- * registration, MVP parameter contract, single-active-run guard,
- * skill-tdd prerequisite verification, transcript scaffolding, and a
- * structured incomplete/blocked/error result. The Driver/Navigator
- * orchestration loop runs after all prerequisites pass; per the issue,
- * a fully exercised happy-path loop is deferred to later issues.
+ * pair-programming runs (Driver + Navigator). Dry-run slice: prerequisite
+ * verification, persistent role sessions, one Navigator/Driver protocol loop,
+ * compact memory handoff, and structured result with transcript path.
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { homedir } from "node:os";
 import { execSync } from "node:child_process";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -33,16 +31,6 @@ import {
   type PairProtocolEvent,
   type WorkspaceSnapshot,
 } from "./lib/pair-protocol.ts";
-import {
-  DEFAULT_MAX_CYCLES,
-  DEFAULT_MODE,
-  isEngineeringSkillsConfigured,
-  normalizeParams,
-  releaseRun,
-  tryAcquireRun,
-  verifySkillTddAvailable,
-  __resetActiveRunForTests,
-} from "./lib/pair-program-helpers.ts";
 
 // ---------------------------------------------------------------------------
 // Parameter schema (MICRO-001, MICRO-003)
@@ -64,12 +52,7 @@ const PairProgramParams = Type.Object({
   testCommand: Type.Optional(
     Type.String({ description: "Test command to run during TDD red phase." }),
   ),
-  dryRun: Type.Optional(
-    Type.Boolean({
-      description:
-        "When true (default), Driver cannot edit or write files. Set to false to allow real edits.",
-    }),
-  ),
+
   driverModel: Type.Optional(
     Type.String({ description: "Model override for the Driver agent." }),
   ),
@@ -80,7 +63,12 @@ const PairProgramParams = Type.Object({
 
 type PairProgramParamsType = Static<typeof PairProgramParams>;
 
-// Defaults are sourced from pair-program-helpers so they are unit-testable.
+// ---------------------------------------------------------------------------
+// Defaults (MESO-014)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_MODE = "tdd";
+const DEFAULT_MAX_CYCLES = 4;
 // ---------------------------------------------------------------------------
 // Pair-program tool details type (for renderResult)
 // ---------------------------------------------------------------------------
@@ -210,15 +198,84 @@ async function runRolePrompt(roleSession: RoleSession, prompt: string): Promise<
 
 // ---------------------------------------------------------------------------
 // skill-tdd prerequisite verification (MESO-016, MICRO-002)
-//
-// Verification mechanism choice is implemented in
-// extensions/lib/pair-program-helpers.ts. Summary:
-//   Preferred: pi.getAllTools() lookup for any tool whose name contains
-//              "skill-tdd" / "skill_tdd" (server-prefixed by the MCP adapter).
-//   Fallback:  engineering-skills MCP config presence in well-known
-//              mcp.json files (covers lazy-connect race after a fresh start).
-// No SKILL.md filesystem path appears in this code.
 // ---------------------------------------------------------------------------
+
+// Fallback: check that the engineering-skills MCP server is configured.
+// The preferred approach would be pi.getAllTools() to detect skill-tdd
+// directly, but that API surface is not yet verified for extension use.
+// This config-check is a safe MVP proxy: if engineering-skills MCP is
+// configured, skill-tdd is expected to be available at runtime.
+// FUTURE: replace with pi.getAllTools() detection once the API is stable.
+
+const SERVER_NAME = "engineering-skills";
+const GLOBAL_MCP_CONFIG = path.join(homedir(), ".config", "mcp", "mcp.json");
+
+interface McpConfigFile {
+  mcpServers?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+function readJsonFile(filePath: string): McpConfigFile {
+  if (!fs.existsSync(filePath)) return {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function isEngineeringSkillsConfigured(): boolean {
+  const candidates = [
+    GLOBAL_MCP_CONFIG,
+    path.join(homedir(), ".pi", "agent", "mcp.json"),
+    path.resolve(process.cwd(), ".mcp.json"),
+    path.resolve(process.cwd(), ".pi", "mcp.json"),
+  ];
+
+  for (const candidate of candidates) {
+    const config = readJsonFile(candidate);
+    if (
+      config.mcpServers &&
+      Object.prototype.hasOwnProperty.call(config.mcpServers, SERVER_NAME)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Parameter normalization (MESO-017)
+// ---------------------------------------------------------------------------
+
+function normalizeParams(raw: PairProgramParamsType) {
+  return {
+    task: raw.task,
+    mode: raw.mode ?? DEFAULT_MODE,
+    maxCycles: raw.maxCycles ?? DEFAULT_MAX_CYCLES,
+    testCommand: raw.testCommand,
+
+    driverModel: raw.driverModel,
+    navigatorModel: raw.navigatorModel,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Active-run guard (MESO-001)
+// ---------------------------------------------------------------------------
+
+let activeRunId: string | undefined;
+
+function tryAcquireRun(): boolean {
+  if (activeRunId) return false;
+  activeRunId = "active";
+  return true;
+}
+
+function releaseRun(): void {
+  activeRunId = undefined;
+}
 
 // ---------------------------------------------------------------------------
 // Git evidence collection (MESO-011, MESO-005)

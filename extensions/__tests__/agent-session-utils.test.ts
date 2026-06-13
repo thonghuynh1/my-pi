@@ -13,8 +13,7 @@
 // Reimplemented pure logic (must match agent-session-utils.ts exactly)
 // ---------------------------------------------------------------------------
 
-const DRIVER_DRY_RUN_TOOLS = ["read", "grep", "find", "ls", "bash"];
-const DRIVER_WORK_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
+const DRIVER_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
 const NAVIGATOR_TOOLS = ["read", "grep", "find", "ls", "bash"];
 
 interface RoleUsage {
@@ -63,12 +62,11 @@ function parseModelOverride(modelOverride: string | undefined, inheritedProvider
 	return { provider: inheritedProvider, modelId: value };
 }
 
-function getRoleTools(role: "driver", opts?: { dryRun?: boolean }): string[];
+function getRoleTools(role: "driver"): string[];
 function getRoleTools(role: "navigator"): string[];
-function getRoleTools(role: "driver" | "navigator", opts?: { dryRun?: boolean }): string[] {
+function getRoleTools(role: "driver" | "navigator"): string[] {
 	if (role === "driver") {
-		const dryRun = opts?.dryRun ?? true;
-		return dryRun ? [...DRIVER_DRY_RUN_TOOLS] : [...DRIVER_WORK_TOOLS];
+		return [...DRIVER_TOOLS];
 	}
 	return [...NAVIGATOR_TOOLS];
 }
@@ -218,26 +216,11 @@ console.log("resolveRoleModel");
 console.log("getRoleTools");
 
 {
-	const tools = getRoleTools("driver", { dryRun: true });
-	assertDeepEqual(tools, DRIVER_DRY_RUN_TOOLS, "driver dry-run tools exclude edit and write");
-	assert(!tools.includes("edit"), "dry-run driver excludes edit");
-	assert(!tools.includes("write"), "dry-run driver excludes write");
-	assert(tools.includes("bash"), "dry-run driver still has bash for verification");
-}
-
-{
-	const tools = getRoleTools("driver", { dryRun: false });
-	assertDeepEqual(tools, DRIVER_WORK_TOOLS, "driver work-mode tools include edit and write");
-	assert(tools.includes("edit"), "work-mode driver has edit");
-	assert(tools.includes("write"), "work-mode driver has write");
-}
-
-{
-	// Safe-by-default: omitting dryRun defaults to dry-run (no edit/write).
 	const tools = getRoleTools("driver");
-	assertDeepEqual(tools, DRIVER_DRY_RUN_TOOLS, "driver defaults to dry-run tools when dryRun omitted");
-	assert(!tools.includes("edit"), "default driver excludes edit");
-	assert(!tools.includes("write"), "default driver excludes write");
+	assertDeepEqual(tools, DRIVER_TOOLS, "driver tools include edit and write");
+	assert(tools.includes("edit"), "driver has edit");
+	assert(tools.includes("write"), "driver has write");
+	assert(tools.includes("bash"), "driver has bash");
 }
 
 {
@@ -248,8 +231,8 @@ console.log("getRoleTools");
 }
 
 {
-	const a = getRoleTools("driver", { dryRun: false });
-	const b = getRoleTools("driver", { dryRun: false });
+	const a = getRoleTools("driver");
+	const b = getRoleTools("driver");
 	a.push("rogue");
 	assert(!b.includes("rogue"), "driver tool arrays are independent copies");
 }

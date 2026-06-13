@@ -72,7 +72,6 @@ export interface RunPairProtocolOptions {
 	task: string;
 	maxCycles: number;
 	testCommand?: string;
-	dryRun?: boolean;
 	onEvent?: (event: PairProtocolEvent) => void;
 	collectEvidence?: () => Promise<WorkspaceSnapshot>;
 	collectFinalEvidence?: () => Promise<WorkspaceSnapshot>;
@@ -175,18 +174,15 @@ If you need to change the checklist later, include:
 ## Checklist Amendment`;
 }
 
-export function buildDriverCyclePrompt(memory: PairRunMemory, latestNavigatorHandoff: string | null, testCommand: string | undefined, currentWorkspace?: WorkspaceSnapshot, dryRun: boolean = true): string {
+export function buildDriverCyclePrompt(memory: PairRunMemory, latestNavigatorHandoff: string | null, testCommand: string | undefined, currentWorkspace?: WorkspaceSnapshot): string {
 	const workspaceSection = currentWorkspace
 		? `\nCurrent workspace evidence:\n${formatWorkspaceSnapshot(currentWorkspace)}\n`
 		: "";
-	const editPolicy = dryRun
-		? "You are in dry-run mode: you must not edit files, must not write files, and must not install dependencies. Use read-only tools to investigate and plan; report what you would change."
-		: "You may edit and write files. Run tests to verify your changes.";
 	return `You are the Driver Agent in a TDD pair-programming session.
 
 Before implementation planning, call or use skill-tdd and follow red-green-refactor discipline.
 
-${editPolicy}
+You may edit and write files. Run tests to verify your changes.
 
 Task:
 ${memory.task}
@@ -208,16 +204,13 @@ Return only Markdown with these exact headings:
 ## Next Intent`;
 }
 
-export function buildDriverCorrectionPrompt(memory: PairRunMemory, navigatorReview: string, testCommand: string | undefined, currentWorkspace?: WorkspaceSnapshot, dryRun: boolean = true): string {
+export function buildDriverCorrectionPrompt(memory: PairRunMemory, navigatorReview: string, testCommand: string | undefined, currentWorkspace?: WorkspaceSnapshot): string {
 	const workspaceSection = currentWorkspace
 		? `\nCurrent workspace evidence:\n${formatWorkspaceSnapshot(currentWorkspace)}\n`
 		: "";
-	const editPolicy = dryRun
-		? "You are in dry-run mode: you must not edit files, must not write files, and must not install dependencies."
-		: "You may edit and write files. Run tests to verify your changes.";
 	return `You are the Driver Agent handling one correction packet for the current TDD cycle.
 
-Use skill-tdd discipline. ${editPolicy}
+Use skill-tdd discipline. You may edit and write files. Run tests to verify your changes.
 
 Task:
 ${memory.task}
@@ -332,7 +325,7 @@ export async function runPairProtocolDryRun(
 		let correctionUsed = false;
 		let currentWorkspaceEvidence = options.currentWorkspace ?? initialWorkspace;
 		let driverReport = await sessions.driverCycle(
-			buildDriverCyclePrompt(memory, memory.lastNavigatorReview, options.testCommand, currentWorkspaceEvidence, options.dryRun ?? true),
+			buildDriverCyclePrompt(memory, memory.lastNavigatorReview, options.testCommand, currentWorkspaceEvidence),
 		);
 		memory = updateMemoryAfterDriver(memory, driverReport);
 		cycleRecord(memory.currentCycle).driverReport = driverReport;
@@ -391,7 +384,7 @@ export async function runPairProtocolDryRun(
 			}
 
 			correctionUsed = true;
-			let correctionReport = await sessions.driverCorrection(buildDriverCorrectionPrompt(memory, review, options.testCommand, currentWorkspaceEvidence, options.dryRun ?? true));
+			let correctionReport = await sessions.driverCorrection(buildDriverCorrectionPrompt(memory, review, options.testCommand, currentWorkspaceEvidence));
 
 			if (extractHeadingBody(correctionReport, "Clarification Needed") && sessions.navigatorClarification) {
 				const clarificationPrompt = `The Driver needs clarification before addressing the correction packet.\n\nDriver report:\n${correctionReport}\n\nProvide a targeted answer to unblock the Driver.`;
@@ -399,7 +392,7 @@ export async function runPairProtocolDryRun(
 				cycleRecord(memory.currentCycle).clarificationAnswer = clarificationAnswer;
 				options.onEvent?.({ role: "navigator", phase: `clarification_${memory.currentCycle}`, text: clarificationAnswer });
 				correctionReport = await sessions.driverCorrection(
-					`Navigator clarification:\n${clarificationAnswer}\n\nNow address the correction packet.` + buildDriverCorrectionPrompt(memory, review, options.testCommand, currentWorkspaceEvidence, options.dryRun ?? true),
+					`Navigator clarification:\n${clarificationAnswer}\n\nNow address the correction packet.` + buildDriverCorrectionPrompt(memory, review, options.testCommand, currentWorkspaceEvidence),
 				);
 				correctionUsed = false;
 			}

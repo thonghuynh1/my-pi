@@ -17,7 +17,6 @@ import { homedir } from "node:os";
 
 export const DEFAULT_MODE = "tdd" as const;
 export const DEFAULT_MAX_CYCLES = 4;
-export const DEFAULT_DRY_RUN = true;
 
 // ---------------------------------------------------------------------------
 // Parameter normalization (MICRO-001)
@@ -28,7 +27,6 @@ export interface PairProgramRawParams {
 	mode?: string;
 	maxCycles?: number;
 	testCommand?: string;
-	dryRun?: boolean;
 	driverModel?: string;
 	navigatorModel?: string;
 }
@@ -38,7 +36,6 @@ export interface PairProgramNormalizedParams {
 	mode: string;
 	maxCycles: number;
 	testCommand?: string;
-	dryRun: boolean;
 	driverModel?: string;
 	navigatorModel?: string;
 }
@@ -49,8 +46,6 @@ export interface PairProgramNormalizedParams {
  * - `mode` defaults to "tdd".
  * - `maxCycles` defaults to 4 (callers should still reject < 1 if needed; the
  *   TypeBox schema enforces `minimum: 1` for explicit values).
- * - `dryRun` defaults to true so Driver does not get edit/write tools unless
- *   the caller explicitly opts in by passing `dryRun: false`.
  */
 export function normalizeParams(raw: PairProgramRawParams): PairProgramNormalizedParams {
 	return {
@@ -58,7 +53,6 @@ export function normalizeParams(raw: PairProgramRawParams): PairProgramNormalize
 		mode: raw.mode ?? DEFAULT_MODE,
 		maxCycles: raw.maxCycles ?? DEFAULT_MAX_CYCLES,
 		testCommand: raw.testCommand,
-		dryRun: raw.dryRun ?? DEFAULT_DRY_RUN,
 		driverModel: raw.driverModel,
 		navigatorModel: raw.navigatorModel,
 	};

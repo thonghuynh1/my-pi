@@ -16,7 +16,6 @@ import {
 	SessionManager,
 	type ExtensionAPI,
 	type ExtensionContext,
-	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
 
@@ -52,12 +51,6 @@ export interface PairUsageSummary {
 		totalTokens: number;
 		costUsd: number;
 	};
-}
-
-interface ModelSelection {
-	model?: ActiveModel;
-	requestedModel?: string;
-	usedFallback: boolean;
 }
 
 type AssistantUsage = {

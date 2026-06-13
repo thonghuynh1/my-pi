@@ -1,0 +1,322 @@
+[
+  {
+    "phase": "implement",
+    "issueId": "01-register-pair-program-shell-and-verify-tdd",
+    "attempt": 1,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_01-register-pair-program-shell-and-verify-tdd_attempt-1\\0d9c53f47d15.md",
+    "sha256": "0d9c53f47d1545498151f300fcfbe3f5cfd6edd15f5d2a523b07e0f4a63aef0c",
+    "createdAt": "2026-06-13T13:53:01.352Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "02-create-driver-navigator-session-runtime",
+    "attempt": 1,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_02-create-driver-navigator-session-runtime_attempt-1\\2d01857c9639.md",
+    "sha256": "2d01857c96394055ff305b5e5ba67ed5cc4380e59ce06a859287ec6a9c0eeacf",
+    "createdAt": "2026-06-13T13:53:01.861Z"
+  },
+  {
+    "phase": "verify",
+    "issueId": "01-register-pair-program-shell-and-verify-tdd",
+    "attempt": 1,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\verify_01-register-pair-program-shell-and-verify-tdd_attempt-1\\03f5e293355e.md",
+    "sha256": "03f5e293355ec26691bed97ccafbd0174599014ed2dabf4c7bdb18ef3742e9fd",
+    "createdAt": "2026-06-13T13:55:20.094Z"
+  },
+  {
+    "phase": "verify",
+    "issueId": "02-create-driver-navigator-session-runtime",
+    "attempt": 1,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\verify_02-create-driver-navigator-session-runtime_attempt-1\\0b2a87ab2ab6.md",
+    "sha256": "0b2a87ab2ab6c65c22f27796bbd40424d9b6299febf9279d69292ed216c4a912",
+    "createdAt": "2026-06-13T13:57:55.589Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "01-register-pair-program-shell-and-verify-tdd",
+    "attempt": 2,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_01-register-pair-program-shell-and-verify-tdd_attempt-2\\7966115de05f.md",
+    "sha256": "7966115de05fc39d74fd219ac988faaf53ff7012f83b6dde5a4bb95e53723b56",
+    "createdAt": "2026-06-13T13:59:07.130Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "02-create-driver-navigator-session-runtime",
+    "attempt": 2,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_02-create-driver-navigator-session-runtime_attempt-2\\b567d462dfc4.md",
+    "sha256": "b567d462dfc441661eefc36fdd6ebc0294a9dd8e230ab65cced2b700df764c18",
+    "createdAt": "2026-06-13T14:02:04.758Z"
+  },
+  {
+    "phase": "verify",
+    "issueId": "02-create-driver-navigator-session-runtime",
+    "attempt": 2,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\verify_02-create-driver-navigator-session-runtime_attempt-2\\8df6cac3c70c.md",
+    "sha256": "8df6cac3c70cc0c9773aec5fdf8a0122d87f986aa601e523ec27c45cd8520ab7",
+    "createdAt": "2026-06-13T14:03:07.515Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "02-create-driver-navigator-session-runtime",
+    "attempt": 3,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_02-create-driver-navigator-session-runtime_attempt-3\\48ab8ab27683.md",
+    "sha256": "48ab8ab2768398a0f862764eeaa291c4cd3653fb55b756eb4e29a39165fe4b88",
+    "createdAt": "2026-06-13T14:04:59.482Z"
+  },
+  {
+    "phase": "verify",
+    "issueId": "02-create-driver-navigator-session-runtime",
+    "attempt": 3,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\verify_02-create-driver-navigator-session-runtime_attempt-3\\7b38b546b281.md",
+    "sha256": "7b38b546b28108906c9495759195ce6574aaee120af5ce19aded498cc10ed3e3",
+    "createdAt": "2026-06-13T14:07:28.280Z"
+  },
+  {
+    "phase": "verify",
+    "issueId": "01-register-pair-program-shell-and-verify-tdd",
+    "attempt": 2,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\verify_01-register-pair-program-shell-and-verify-tdd_attempt-2\\4d7419c6c5a2.md",
+    "sha256": "4d7419c6c5a2615fcdd0b7d8ecffc967656a321a4d1fa6621f01b00aace7668c",
+    "createdAt": "2026-06-13T14:09:06.131Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "03-implement-dry-run-pair-loop",
+    "attempt": 1,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_03-implement-dry-run-pair-loop_attempt-1\\18dae83fd7f1.md",
+    "sha256": "18dae83fd7f14ad2e1c5bac98ed72c62079d60233f0d6dc3e52550f33b2a774d",
+    "createdAt": "2026-06-13T14:11:29.418Z"
+  },
+  {
+    "phase": "verify",
+    "issueId": "03-implement-dry-run-pair-loop",
+    "attempt": 1,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\verify_03-implement-dry-run-pair-loop_attempt-1\\06d5f6b5654d.md",
+    "sha256": "06d5f6b5654da8603fc9b31b770da883d81f2d023514df44faf160f0f49f8e28",
+    "createdAt": "2026-06-13T14:12:47.049Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "03-implement-dry-run-pair-loop",
+    "attempt": 2,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_03-implement-dry-run-pair-loop_attempt-2\\774202fd16f5.md",
+    "sha256": "774202fd16f5dab016431bad3a257d50b27057e9f3dc0b4c87639738558abba2",
+    "createdAt": "2026-06-13T14:13:50.831Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "03-implement-dry-run-pair-loop",
+    "attempt": 1,
+    "model": "opencode/deepseek-v4-flash-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_03-implement-dry-run-pair-loop_attempt-1\\18dae83fd7f1.md",
+    "sha256": "18dae83fd7f14ad2e1c5bac98ed72c62079d60233f0d6dc3e52550f33b2a774d",
+    "createdAt": "2026-06-13T15:10:45.780Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "03-implement-dry-run-pair-loop",
+    "attempt": 1,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_03-implement-dry-run-pair-loop_attempt-1\\18dae83fd7f1.md",
+    "sha256": "18dae83fd7f14ad2e1c5bac98ed72c62079d60233f0d6dc3e52550f33b2a774d",
+    "createdAt": "2026-06-13T15:13:41.759Z"
+  },
+  {
+    "phase": "verify",
+    "issueId": "03-implement-dry-run-pair-loop",
+    "attempt": 1,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\verify_03-implement-dry-run-pair-loop_attempt-1\\42416a058f92.md",
+    "sha256": "42416a058f924d22683efc8417eaca929df3a17442e671ccff195b2806a2d5d1",
+    "createdAt": "2026-06-13T15:22:25.563Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "03-implement-dry-run-pair-loop",
+    "attempt": 2,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_03-implement-dry-run-pair-loop_attempt-2\\afd76fa8c96d.md",
+    "sha256": "afd76fa8c96d03902604f98dd9d2125076a122282c627e051bfa65815866d1ba",
+    "createdAt": "2026-06-13T15:27:47.843Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "03-implement-dry-run-pair-loop",
+    "attempt": 1,
+    "model": "openai/gpt-5.5-fast",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_03-implement-dry-run-pair-loop_attempt-1\\18dae83fd7f1.md",
+    "sha256": "18dae83fd7f14ad2e1c5bac98ed72c62079d60233f0d6dc3e52550f33b2a774d",
+    "createdAt": "2026-06-13T15:31:00.683Z"
+  },
+  {
+    "phase": "verify",
+    "issueId": "03-implement-dry-run-pair-loop",
+    "attempt": 1,
+    "model": "openai/gpt-5.5-fast",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\verify_03-implement-dry-run-pair-loop_attempt-1\\a2d789bc3325.md",
+    "sha256": "a2d789bc3325e0414526f12ef15d411018470c57d14ea70399066e0c4688dc62",
+    "createdAt": "2026-06-13T15:32:19.611Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "03-implement-dry-run-pair-loop",
+    "attempt": 2,
+    "model": "openai/gpt-5.5-fast",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_03-implement-dry-run-pair-loop_attempt-2\\3554475e64a8.md",
+    "sha256": "3554475e64a8ec5d7e57e93e1a3e66f26145a3db9b3c364ce158c3be0d223bd2",
+    "createdAt": "2026-06-13T15:34:14.426Z"
+  },
+  {
+    "phase": "verify",
+    "issueId": "03-implement-dry-run-pair-loop",
+    "attempt": 2,
+    "model": "openai/gpt-5.5-fast",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\verify_03-implement-dry-run-pair-loop_attempt-2\\888accca10f0.md",
+    "sha256": "888accca10f0b3a75dfbfac1b88a99e32a57a77cc3d8dfbf2fb627690165e096",
+    "createdAt": "2026-06-13T15:35:25.062Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "03-implement-dry-run-pair-loop",
+    "attempt": 3,
+    "model": "openai/gpt-5.5-fast",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_03-implement-dry-run-pair-loop_attempt-3\\4042109dd714.md",
+    "sha256": "4042109dd714b29c9112920942a6700a7829a3d11d2ff9d066cb91443e666d02",
+    "createdAt": "2026-06-13T15:37:01.765Z"
+  },
+  {
+    "phase": "verify",
+    "issueId": "03-implement-dry-run-pair-loop",
+    "attempt": 3,
+    "model": "openai/gpt-5.5-fast",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\verify_03-implement-dry-run-pair-loop_attempt-3\\e9b5d5b4e4da.md",
+    "sha256": "e9b5d5b4e4da3e7d8630a3ba587b0ec89a438530b78f065bf0ea7261376c8c94",
+    "createdAt": "2026-06-13T15:37:59.810Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "03-implement-dry-run-pair-loop",
+    "attempt": 4,
+    "model": "openai/gpt-5.5-fast",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_03-implement-dry-run-pair-loop_attempt-4\\5ef3a87f7134.md",
+    "sha256": "5ef3a87f713444ae7f5bd0c5e8bf5409d843f716945935e2042bd3e16cb34e99",
+    "createdAt": "2026-06-13T15:39:26.168Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "03-implement-dry-run-pair-loop",
+    "attempt": 4,
+    "model": "openai/gpt-5.5-fast",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_03-implement-dry-run-pair-loop_attempt-4\\18dae83fd7f1.md",
+    "sha256": "18dae83fd7f14ad2e1c5bac98ed72c62079d60233f0d6dc3e52550f33b2a774d",
+    "createdAt": "2026-06-13T15:52:51.453Z"
+  },
+  {
+    "phase": "verify",
+    "issueId": "03-implement-dry-run-pair-loop",
+    "attempt": 4,
+    "model": "openai/gpt-5.5-fast",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\verify_03-implement-dry-run-pair-loop_attempt-4\\a111a4ccd06d.md",
+    "sha256": "a111a4ccd06d726c24024ea7d6a26a00f583fdeb7e5bbad17e8ebc989d19cb63",
+    "createdAt": "2026-06-13T16:13:58.828Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "04-add-evidence-final-verification-and-status-handling",
+    "attempt": 1,
+    "model": "openai/gpt-5.5-fast",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_04-add-evidence-final-verification-and-status-handling_attempt-1\\2c9f976ef0af.md",
+    "sha256": "2c9f976ef0aff3c2c05e9ad3dc14026d6c220902b041f1cc8e8af351d438f272",
+    "createdAt": "2026-06-13T16:16:40.037Z"
+  },
+  {
+    "phase": "verify",
+    "issueId": "04-add-evidence-final-verification-and-status-handling",
+    "attempt": 1,
+    "model": "openai/gpt-5.5-fast",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\verify_04-add-evidence-final-verification-and-status-handling_attempt-1\\c79b78a58d66.md",
+    "sha256": "c79b78a58d665da038fa92684f34d8709fba13bb86b4e6ea70e049c2181c8470",
+    "createdAt": "2026-06-13T16:27:34.321Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "04-add-evidence-final-verification-and-status-handling",
+    "attempt": 2,
+    "model": "openai/gpt-5.5-fast",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_04-add-evidence-final-verification-and-status-handling_attempt-2\\960206fb6e5c.md",
+    "sha256": "960206fb6e5c46bc89357ea26cedcae6918cb882de4e55dad8b800d7b4b86f20",
+    "createdAt": "2026-06-13T16:29:14.751Z"
+  },
+  {
+    "phase": "verify",
+    "issueId": "04-add-evidence-final-verification-and-status-handling",
+    "attempt": 2,
+    "model": "openai/gpt-5.5-fast",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\verify_04-add-evidence-final-verification-and-status-handling_attempt-2\\1de1b42777bc.md",
+    "sha256": "1de1b42777bc53cefb6a708ee7c415169ceb11805bad88c0100eaca99c3bfbbb",
+    "createdAt": "2026-06-13T16:35:27.977Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "04-add-evidence-final-verification-and-status-handling",
+    "attempt": 3,
+    "model": "openai/gpt-5.5-fast",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_04-add-evidence-final-verification-and-status-handling_attempt-3\\62987f2a99ce.md",
+    "sha256": "62987f2a99ce32df1e0e816a3ed8a36f253206c0706260f3018d37782a8903f6",
+    "createdAt": "2026-06-13T16:37:05.276Z"
+  },
+  {
+    "phase": "implement",
+    "issueId": "04-add-evidence-final-verification-and-status-handling",
+    "attempt": 3,
+    "model": "opencode/mimo-v2.5-free",
+    "client": "opencode",
+    "path": ".ralph-loop\\prompts\\run-1781358780935-37204\\implement_04-add-evidence-final-verification-and-status-handling_attempt-3\\2c9f976ef0af.md",
+    "sha256": "2c9f976ef0aff3c2c05e9ad3dc14026d6c220902b041f1cc8e8af351d438f272",
+    "createdAt": "2026-06-13T16:39:19.140Z"
+  }
+]

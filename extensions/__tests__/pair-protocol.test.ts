@@ -171,6 +171,65 @@ console.log("runPairProtocolDryRun");
 	assertEqual(result.status, "success", "final approval after correction maps to success");
 }
 
+console.log("collectEvidence + finalVerification");
+
+{
+	let evidenceCalls = 0;
+	let verificationCommand = "";
+	const result = await runPairProtocolDryRun(
+		{
+			navigatorPreflight: async () => "## Acceptance Checklist\n- done\n## Risks\n- none\n## First Cycle Objective\ninspect",
+			driverCycle: async () => "## Summary\nchecked\n## Changed Files\nnone\n## Tests Run\nnone\n## Evidence\ndry run\n## Acceptance Checklist Progress\ncovered\n## Next Intent\nfinish",
+			navigatorReview: async () => "DECISION: final_approve",
+			navigatorDecisionRepair: async () => "should not be called",
+			driverCorrection: async () => "should not be called",
+		},
+		{
+			task: "demo with evidence",
+			maxCycles: 1,
+			testCommand: "npm test",
+			collectEvidence: async () => {
+				evidenceCalls++;
+				return { gitStatusShort: "M file.ts", gitDiffStat: "1 file changed" };
+			},
+			runFinalVerification: async (cmd) => {
+				verificationCommand = cmd;
+				return { command: cmd, exitCode: 0, summary: "all tests passed" };
+			},
+		},
+	);
+	assertEqual(evidenceCalls, 1, "collectEvidence called once at start");
+	assertEqual(verificationCommand, "npm test", "final verification uses testCommand");
+	assert(result.initialWorkspace !== undefined, "result includes initialWorkspace");
+	assertEqual(result.initialWorkspace?.gitStatusShort, "M file.ts", "workspace snapshot has git status");
+	assert(result.finalVerification !== undefined, "result includes finalVerification when final_approve");
+	assertEqual(result.finalVerification?.exitCode, 0, "final verification exit code captured");
+}
+
+{
+	let verificationCalled = false;
+	const result = await runPairProtocolDryRun(
+		{
+			navigatorPreflight: async () => "## Acceptance Checklist\n- done\n## Risks\n- none\n## First Cycle Objective\ninspect",
+			driverCycle: async () => "## Summary\nchecked\n## Changed Files\nnone\n## Tests Run\nnone\n## Evidence\ndry run\n## Acceptance Checklist Progress\ncovered\n## Next Intent\nfinish",
+			navigatorReview: async () => "DECISION: approve_next",
+			navigatorDecisionRepair: async () => "should not be called",
+			driverCorrection: async () => "should not be called",
+		},
+		{
+			task: "no verify on approve_next",
+			maxCycles: 1,
+			testCommand: "npm test",
+			runFinalVerification: async () => {
+				verificationCalled = true;
+				return { command: "npm test", exitCode: 0, summary: "ok" };
+			},
+		},
+	);
+	assertEqual(verificationCalled, false, "final verification not called on approve_next (max cycles)");
+	assertEqual(result.finalVerification, undefined, "no finalVerification in result when not final_approve");
+}
+
 console.log("");
 console.log(`Results: ${passed} passed, ${failed} failed`);
 if (failures.length > 0) {

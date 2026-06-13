@@ -38,6 +38,19 @@ export interface PairProtocolResult {
 	memory: PairRunMemory;
 	cyclesCompleted: number;
 	malformedDecisionRepairs: number;
+	initialWorkspace?: WorkspaceSnapshot;
+	finalVerification?: FinalVerification;
+}
+
+export interface WorkspaceSnapshot {
+	gitStatusShort: string;
+	gitDiffStat: string;
+}
+
+export interface FinalVerification {
+	command: string;
+	exitCode: number;
+	summary: string;
 }
 
 export interface RunPairProtocolOptions {
@@ -45,6 +58,8 @@ export interface RunPairProtocolOptions {
 	maxCycles: number;
 	testCommand?: string;
 	onEvent?: (event: PairProtocolEvent) => void;
+	collectEvidence?: () => Promise<WorkspaceSnapshot>;
+	runFinalVerification?: (command: string) => Promise<FinalVerification>;
 }
 
 const VALID_NAVIGATOR_DECISIONS: ReadonlySet<NavigatorDecisionValue> = new Set([
@@ -244,8 +259,15 @@ export async function runPairProtocolDryRun(
 ): Promise<PairProtocolResult> {
 	let memory = createInitialPairRunMemory(options.task);
 	let malformedDecisionRepairs = 0;
+	let initialWorkspace: WorkspaceSnapshot | undefined;
+	let finalVerification: FinalVerification | undefined;
 
 	options.onEvent?.({ role: "coordinator", phase: "start", text: "skill-tdd prerequisite verified" });
+
+	if (options.collectEvidence) {
+		initialWorkspace = await options.collectEvidence();
+		options.onEvent?.({ role: "coordinator", phase: "initial_workspace", text: formatWorkspaceSnapshot(initialWorkspace) });
+	}
 
 	const preflightPrompt = buildNavigatorPreflightPrompt(memory, options.testCommand);
 	const preflight = await sessions.navigatorPreflight(preflightPrompt);
@@ -279,12 +301,16 @@ export async function runPairProtocolDryRun(
 			options.onEvent?.({ role: "navigator", phase: `review_${memory.currentCycle}`, text: review });
 
 			if (decision.kind === "malformed") {
-				return finish("malformed_decision_after_repair", memory, malformedDecisionRepairs);
+				return finish("malformed_decision_after_repair", memory, malformedDecisionRepairs, initialWorkspace, finalVerification);
 			}
 
 			const mappedStatus = statusFromNavigatorDecision(decision.value);
 			if (mappedStatus) {
-				return finish(decision.value === "blocked" ? "navigator_blocked" : "navigator_final_approve", memory, malformedDecisionRepairs);
+				if (decision.value === "final_approve" && options.runFinalVerification && options.testCommand) {
+					finalVerification = await options.runFinalVerification(options.testCommand);
+					options.onEvent?.({ role: "coordinator", phase: "final_verification", text: formatFinalVerification(finalVerification) });
+				}
+				return finish(decision.value === "blocked" ? "navigator_blocked" : "navigator_final_approve", memory, malformedDecisionRepairs, initialWorkspace, finalVerification);
 			}
 
 			if (decision.value === "approve_next") {
@@ -293,7 +319,7 @@ export async function runPairProtocolDryRun(
 			}
 
 			if (correctionUsed) {
-				return finish("repeated_revision_request", memory, malformedDecisionRepairs);
+				return finish("repeated_revision_request", memory, malformedDecisionRepairs, initialWorkspace, finalVerification);
 			}
 
 			correctionUsed = true;
@@ -303,16 +329,18 @@ export async function runPairProtocolDryRun(
 		}
 	}
 
-	return finish("max_cycles_without_final_approval", memory, malformedDecisionRepairs);
+	return finish("max_cycles_without_final_approval", memory, malformedDecisionRepairs, initialWorkspace, finalVerification);
 }
 
-function finish(stopReason: string, memory: PairRunMemory, malformedDecisionRepairs: number): PairProtocolResult {
+function finish(stopReason: string, memory: PairRunMemory, malformedDecisionRepairs: number, initialWorkspace?: WorkspaceSnapshot, finalVerification?: FinalVerification): PairProtocolResult {
 	return {
 		status: statusFromStopReason(stopReason),
 		stopReason,
 		memory,
 		cyclesCompleted: Math.max(0, memory.currentCycle - 1),
 		malformedDecisionRepairs,
+		initialWorkspace,
+		finalVerification,
 	};
 }
 
@@ -356,4 +384,21 @@ function extractHeadingBody(markdown: string, heading: string): string | null {
 		body.push(lines[i]);
 	}
 	return body.join("\n").trim() || null;
+}
+
+function formatWorkspaceSnapshot(snapshot: WorkspaceSnapshot): string {
+	return [
+		"Initial workspace snapshot:",
+		snapshot.gitStatusShort ? `git status:\n${snapshot.gitStatusShort}` : "git status: (clean)",
+		snapshot.gitDiffStat ? `git diff stat:\n${snapshot.gitDiffStat}` : "git diff stat: (no changes)",
+	].join("\n");
+}
+
+function formatFinalVerification(verification: FinalVerification): string {
+	return [
+		"Final verification:",
+		`command: ${verification.command}`,
+		`exit code: ${verification.exitCode}`,
+		`summary: ${verification.summary}`,
+	].join("\n");
 }

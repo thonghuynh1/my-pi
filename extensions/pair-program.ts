@@ -8,6 +8,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { homedir } from "node:os";
+import { execSync } from "node:child_process";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -22,7 +23,9 @@ import {
 } from "./agent-session-utils.ts";
 import {
   runPairProtocolDryRun,
+  type FinalVerification,
   type PairProtocolEvent,
+  type WorkspaceSnapshot,
 } from "./pair-protocol.ts";
 
 // ---------------------------------------------------------------------------
@@ -80,6 +83,8 @@ interface PairProgramDetails {
   driverTools?: string[];
   navigatorTools?: string[];
   usage?: PairUsageSummary;
+  initialWorkspace?: WorkspaceSnapshot;
+  finalVerification?: FinalVerification;
 }
 
 type PairProgramUpdate = (partial: { content: Array<{ type: "text"; text: string }>; details?: Partial<PairProgramDetails> }) => void;
@@ -127,13 +132,21 @@ function appendTranscript(filePath: string, event: PairProtocolEvent): void {
   );
 }
 
-function buildRoleSystemPrompt(role: "driver" | "navigator"): string {
+function buildRoleSystemPrompt(role: "driver" | "navigator", dryRun: boolean = true): string {
   if (role === "driver") {
+    if (dryRun) {
+      return [
+        "You are the Driver Agent in a deterministic Pair Program Tool run.",
+        "You own implementation planning and evidence reporting for the current cycle.",
+        "This slice is dry-run only. Do not edit or write files.",
+        "Do not run workspace-mutating shell commands such as npm install, npm ci, formatters, generators, or cleanup commands.",
+        "Use skill-tdd before implementation planning and report TDD evidence.",
+      ].join("\n");
+    }
     return [
       "You are the Driver Agent in a deterministic Pair Program Tool run.",
-      "You own implementation planning and evidence reporting for the current cycle.",
-      "This slice is dry-run only. Do not edit or write files.",
-      "Do not run workspace-mutating shell commands such as npm install, npm ci, formatters, generators, or cleanup commands.",
+      "You own implementation planning, editing, and evidence reporting for the current cycle.",
+      "You may edit and write files. Run tests to verify your changes.",
       "Use skill-tdd before implementation planning and report TDD evidence.",
     ].join("\n");
   }
@@ -231,6 +244,43 @@ function releaseRun(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Git evidence collection (MESO-011, MESO-005)
+// ---------------------------------------------------------------------------
+
+function collectWorkspaceEvidence(cwd: string): WorkspaceSnapshot {
+  let gitStatusShort = "";
+  let gitDiffStat = "";
+  try {
+    gitStatusShort = execSync("git status --short", { cwd, encoding: "utf8", timeout: 5000 }).trim();
+  } catch {
+    gitStatusShort = "(git status failed)";
+  }
+  try {
+    gitDiffStat = execSync("git diff --stat", { cwd, encoding: "utf8", timeout: 5000 }).trim();
+  } catch {
+    gitDiffStat = "(git diff --stat failed)";
+  }
+  return { gitStatusShort, gitDiffStat };
+}
+
+function runVerification(command: string, cwd: string): FinalVerification {
+  let exitCode = 0;
+  let summary = "";
+  try {
+    summary = execSync(command, { cwd, encoding: "utf8", timeout: 60000 }).trim();
+  } catch (err: unknown) {
+    exitCode = 1;
+    if (err && typeof err === "object" && "stdout" in err) {
+      summary = String((err as { stdout: string }).stdout ?? "").trim();
+    }
+    if (!summary && err instanceof Error) {
+      summary = err.message;
+    }
+  }
+  return { command, exitCode, summary: summary.slice(0, 2000) };
+}
+
+// ---------------------------------------------------------------------------
 // Tool definition builder
 // ---------------------------------------------------------------------------
 
@@ -308,6 +358,7 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
         // --- Create transcript (AC #7) ---
         const cwd = ctx.cwd;
         const transcriptPath = createTranscriptPath(cwd, normalized.task);
+        const driverMode = normalized.dryRun ? "dryRun" : "work";
         let driverSession: RoleSession | undefined;
         let navigatorSession: RoleSession | undefined;
 
@@ -317,8 +368,8 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
             ctx,
             "driver",
             normalized.driverModel,
-            "dryRun",
-            [buildRoleSystemPrompt("driver")],
+            driverMode,
+            [buildRoleSystemPrompt("driver", normalized.dryRun)],
           );
           navigatorSession = await createRoleSession(
             pi,
@@ -343,6 +394,8 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
               task: normalized.task,
               maxCycles: normalized.maxCycles,
               testCommand: normalized.testCommand,
+              collectEvidence: () => Promise.resolve(collectWorkspaceEvidence(cwd)),
+              runFinalVerification: (command) => Promise.resolve(runVerification(command, cwd)),
               onEvent: (event) => {
                 appendTranscript(transcriptPath, event);
                 publish?.({
@@ -370,24 +423,28 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
           const result: PairProgramDetails = {
             status: protocolResult.status,
             summary:
-              `Pair program TDD dry-run finished.\n` +
+              `Pair program TDD ${normalized.dryRun ? "dry-run" : "work-mode"} finished.\n` +
               `- Task: ${normalized.task}\n` +
               `- Mode: ${normalized.mode}\n` +
               `- Max cycles: ${normalized.maxCycles}\n` +
-              `- Dry run: true\n` +
+              `- Dry run: ${normalized.dryRun}\n` +
               `- Status: ${protocolResult.status}\n` +
               `- Stop reason: ${protocolResult.stopReason}\n` +
               `- Cycles completed: ${protocolResult.cyclesCompleted}\n` +
               `- Malformed decision repairs: ${protocolResult.malformedDecisionRepairs}\n` +
               `- Driver tools: ${driverTools.join(", ")}\n` +
               `- Navigator tools: ${navigatorTools.join(", ")}\n` +
-              `- Transcript: ${transcriptPath}`,
+              `- Transcript: ${transcriptPath}` +
+              (protocolResult.initialWorkspace ? `\n- Initial workspace captured: yes` : "") +
+              (protocolResult.finalVerification ? `\n- Final verification: ${protocolResult.finalVerification.exitCode === 0 ? "passed" : "failed"}` : ""),
             transcriptPath,
             stopReason: protocolResult.stopReason,
             cyclesCompleted: protocolResult.cyclesCompleted,
             driverTools,
             navigatorTools,
             usage,
+            initialWorkspace: protocolResult.initialWorkspace,
+            finalVerification: protocolResult.finalVerification,
           };
 
           return {

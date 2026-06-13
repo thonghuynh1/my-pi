@@ -16,9 +16,9 @@ import {
 	SessionManager,
 	type ExtensionAPI,
 	type ExtensionContext,
-	type Message,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import type { Message } from "@earendil-works/pi-ai";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -258,7 +258,7 @@ export async function createRoleSession(
 	const cwd = ctx.cwd;
 	const model = resolveRoleModel(modelOverride, ctx.model, ctx.modelRegistry);
 	const modelId = `${model.provider}/${model.id}`;
-	const tools = getRoleTools(role as "driver" | "navigator", mode);
+	const tools = role === "driver" ? getRoleTools("driver", mode) : getRoleTools("navigator");
 
 	const services = await createAgentSessionServices({
 		cwd,

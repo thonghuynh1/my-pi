@@ -1,0 +1,359 @@
+export interface PairRunMemory {
+	task: string;
+	acceptedConstraints: string[];
+	unresolvedRisks: string[];
+	currentCycle: number;
+	currentObjective: string | null;
+	acceptanceChecklistText: string | null;
+	lastDriverReport: string | null;
+	lastNavigatorReview: string | null;
+	evidenceSummaries: string[];
+}
+
+export type PairRuntimeStatus = "success" | "blocked" | "incomplete";
+
+export type NavigatorDecisionValue = "approve_next" | "request_revision" | "blocked" | "final_approve";
+
+export type NavigatorDecision =
+	| { kind: "valid"; value: NavigatorDecisionValue }
+	| { kind: "malformed"; reason: string };
+
+export interface PairProtocolSessions {
+	navigatorPreflight(prompt: string): Promise<string>;
+	driverCycle(prompt: string): Promise<string>;
+	navigatorReview(prompt: string): Promise<string>;
+	navigatorDecisionRepair(prompt: string): Promise<string>;
+	driverCorrection(prompt: string): Promise<string>;
+}
+
+export interface PairProtocolEvent {
+	role: "coordinator" | "driver" | "navigator";
+	phase: string;
+	text: string;
+}
+
+export interface PairProtocolResult {
+	status: PairRuntimeStatus;
+	stopReason: string;
+	memory: PairRunMemory;
+	cyclesCompleted: number;
+	malformedDecisionRepairs: number;
+}
+
+export interface RunPairProtocolOptions {
+	task: string;
+	maxCycles: number;
+	testCommand?: string;
+	onEvent?: (event: PairProtocolEvent) => void;
+}
+
+const VALID_NAVIGATOR_DECISIONS: ReadonlySet<NavigatorDecisionValue> = new Set([
+	"approve_next",
+	"request_revision",
+	"blocked",
+	"final_approve",
+]);
+
+const TDD_REVIEW_RUBRIC = [
+	"one behavior at a time",
+	"RED before GREEN",
+	"RED failed for the intended reason",
+	"minimal implementation for the current behavior",
+	"public behavior tests",
+	"no horizontal slicing",
+	"failing-before and passing-after evidence",
+	"edge cases and checklist coverage reviewed",
+];
+
+export function createInitialPairRunMemory(task: string): PairRunMemory {
+	return {
+		task,
+		acceptedConstraints: [
+			"Mode is tdd.",
+			"Dry-run Driver tools only. Driver must not edit, write, install dependencies, generate files, or run cleanup commands in this slice.",
+			"Driver must call or use skill-tdd before implementation work.",
+		],
+		unresolvedRisks: [],
+		currentCycle: 1,
+		currentObjective: null,
+		acceptanceChecklistText: null,
+		lastDriverReport: null,
+		lastNavigatorReview: null,
+		evidenceSummaries: [],
+	};
+}
+
+export function parseNavigatorDecision(text: string): NavigatorDecision {
+	const matches = [...text.matchAll(/^\s*DECISION:\s*(\S+)\s*$/gim)];
+	if (matches.length === 0) return { kind: "malformed", reason: "Missing DECISION line." };
+	if (matches.length > 1) return { kind: "malformed", reason: "Multiple DECISION lines." };
+
+	const value = matches[0][1];
+	if (VALID_NAVIGATOR_DECISIONS.has(value as NavigatorDecisionValue)) {
+		return { kind: "valid", value: value as NavigatorDecisionValue };
+	}
+	return { kind: "malformed", reason: `Unsupported DECISION value: ${value}` };
+}
+
+export function statusFromNavigatorDecision(decision: NavigatorDecisionValue): PairRuntimeStatus | null {
+	switch (decision) {
+	case "blocked":
+		return "blocked";
+	case "final_approve":
+		return "success";
+	case "approve_next":
+	case "request_revision":
+		return null;
+	default: {
+		const _exhaustive: never = decision;
+		return _exhaustive;
+	}
+	}
+}
+
+export function statusFromStopReason(stopReason: string): PairRuntimeStatus {
+	if (stopReason === "navigator_blocked" || stopReason === "malformed_decision_after_repair" || stopReason === "repeated_revision_request") {
+		return "blocked";
+	}
+	if (stopReason === "navigator_final_approve") return "success";
+	return "incomplete";
+}
+
+export function buildNavigatorPreflightPrompt(memory: PairRunMemory, testCommand: string | undefined): string {
+	return `You are the Navigator Agent for a deterministic Pair Program Tool run.
+
+Task:
+${memory.task}
+
+Mode: TDD dry-run.
+Test command: ${testCommand ?? "not specified"}
+
+Define the acceptance checklist, main risks, and the first Driver cycle objective.
+
+Return Markdown with these headings:
+## Acceptance Checklist
+## Risks
+## First Cycle Objective
+
+If you need to change the checklist later, include:
+## Checklist Amendment`;
+}
+
+export function buildDriverCyclePrompt(memory: PairRunMemory, latestNavigatorHandoff: string | null, testCommand: string | undefined): string {
+	return `You are the Driver Agent in a dry-run TDD pair-programming session.
+
+Before implementation planning, call or use skill-tdd and follow red-green-refactor discipline.
+
+You are in dry-run mode. You may inspect and run safe read-only commands, but you must not edit files, write files, install dependencies, generate files, run formatters, or run cleanup commands.
+
+Task:
+${memory.task}
+
+Compact Pair Run Memory:
+${formatMemoryForPrompt(memory)}
+
+Latest Navigator handoff:
+${latestNavigatorHandoff ?? "Navigator preflight is the current handoff."}
+
+Test command: ${testCommand ?? "not specified"}
+
+Return only Markdown with these exact headings:
+## Summary
+## Changed Files
+## Tests Run
+## Evidence
+## Acceptance Checklist Progress
+## Next Intent`;
+}
+
+export function buildDriverCorrectionPrompt(memory: PairRunMemory, navigatorReview: string, testCommand: string | undefined): string {
+	return `You are the Driver Agent handling one correction packet for the current dry-run TDD cycle.
+
+Use skill-tdd discipline. You are still in dry-run mode and must not edit files, write files, install dependencies, generate files, run formatters, or run cleanup commands.
+
+Task:
+${memory.task}
+
+Compact Pair Run Memory:
+${formatMemoryForPrompt(memory)}
+
+Navigator review and correction packet:
+${navigatorReview}
+
+Test command: ${testCommand ?? "not specified"}
+
+Return only Markdown with these exact headings:
+## Correction Packet Addressed
+## Changed Files
+## Tests Run
+## Evidence
+## Remaining Risk
+
+If you cannot proceed safely, return only:
+## Clarification Needed`;
+}
+
+export function buildNavigatorReviewPrompt(memory: PairRunMemory, driverReport: string): string {
+	return `You are the Navigator Agent reviewing the Driver Agent's current dry-run TDD cycle.
+
+Compact Pair Run Memory:
+${formatMemoryForPrompt(memory)}
+
+Driver report:
+${driverReport}
+
+Compact TDD review rubric:
+${TDD_REVIEW_RUBRIC.map((item) => `- ${item}`).join("\n")}
+
+Decision contract. Include exactly one DECISION line:
+DECISION: approve_next
+DECISION: request_revision
+DECISION: blocked
+DECISION: final_approve
+
+Use DECISION: request_revision only when the issue is likely fixable in one correction packet. Then include:
+## Correction Packet
+## Required Evidence
+
+If you change the checklist, include:
+## Checklist Amendment`;
+}
+
+export function buildNavigatorDecisionRepairPrompt(previousReview: string, parseError: string): string {
+	return `Your previous Navigator review did not satisfy the decision contract.
+
+Problem: ${parseError}
+
+Previous review:
+${previousReview}
+
+Return the corrected review now. Include exactly one of these lines:
+DECISION: approve_next
+DECISION: request_revision
+DECISION: blocked
+DECISION: final_approve
+
+If you choose DECISION: request_revision, include:
+## Correction Packet
+## Required Evidence`;
+}
+
+export async function runPairProtocolDryRun(
+	sessions: PairProtocolSessions,
+	options: RunPairProtocolOptions,
+): Promise<PairProtocolResult> {
+	let memory = createInitialPairRunMemory(options.task);
+	let malformedDecisionRepairs = 0;
+
+	options.onEvent?.({ role: "coordinator", phase: "start", text: "skill-tdd prerequisite verified" });
+
+	const preflightPrompt = buildNavigatorPreflightPrompt(memory, options.testCommand);
+	const preflight = await sessions.navigatorPreflight(preflightPrompt);
+	memory = {
+		...memory,
+		acceptanceChecklistText: preflight,
+		currentObjective: extractHeadingBody(preflight, "First Cycle Objective") ?? preflight.trim(),
+		lastNavigatorReview: preflight,
+	};
+	options.onEvent?.({ role: "navigator", phase: "preflight", text: preflight });
+
+	while (memory.currentCycle <= options.maxCycles) {
+		let correctionUsed = false;
+		let driverReport = await sessions.driverCycle(
+			buildDriverCyclePrompt(memory, memory.lastNavigatorReview, options.testCommand),
+		);
+		memory = updateMemoryAfterDriver(memory, driverReport);
+		options.onEvent?.({ role: "driver", phase: `cycle_${memory.currentCycle}`, text: driverReport });
+
+		while (true) {
+			let review = await sessions.navigatorReview(buildNavigatorReviewPrompt(memory, driverReport));
+			let decision = parseNavigatorDecision(review);
+
+			if (decision.kind === "malformed") {
+				malformedDecisionRepairs += 1;
+				review = await sessions.navigatorDecisionRepair(buildNavigatorDecisionRepairPrompt(review, decision.reason));
+				decision = parseNavigatorDecision(review);
+			}
+
+			memory = updateMemoryAfterNavigator(memory, review);
+			options.onEvent?.({ role: "navigator", phase: `review_${memory.currentCycle}`, text: review });
+
+			if (decision.kind === "malformed") {
+				return finish("malformed_decision_after_repair", memory, malformedDecisionRepairs);
+			}
+
+			const mappedStatus = statusFromNavigatorDecision(decision.value);
+			if (mappedStatus) {
+				return finish(decision.value === "blocked" ? "navigator_blocked" : "navigator_final_approve", memory, malformedDecisionRepairs);
+			}
+
+			if (decision.value === "approve_next") {
+				memory = { ...memory, currentCycle: memory.currentCycle + 1 };
+				break;
+			}
+
+			if (correctionUsed) {
+				return finish("repeated_revision_request", memory, malformedDecisionRepairs);
+			}
+
+			correctionUsed = true;
+			driverReport = await sessions.driverCorrection(buildDriverCorrectionPrompt(memory, review, options.testCommand));
+			memory = updateMemoryAfterDriver(memory, driverReport);
+			options.onEvent?.({ role: "driver", phase: `correction_${memory.currentCycle}`, text: driverReport });
+		}
+	}
+
+	return finish("max_cycles_without_final_approval", memory, malformedDecisionRepairs);
+}
+
+function finish(stopReason: string, memory: PairRunMemory, malformedDecisionRepairs: number): PairProtocolResult {
+	return {
+		status: statusFromStopReason(stopReason),
+		stopReason,
+		memory,
+		cyclesCompleted: Math.max(0, memory.currentCycle - 1),
+		malformedDecisionRepairs,
+	};
+}
+
+function formatMemoryForPrompt(memory: PairRunMemory): string {
+	return [
+		`Task: ${memory.task}`,
+		`Accepted constraints: ${memory.acceptedConstraints.join(" | ")}`,
+		`Unresolved risks: ${memory.unresolvedRisks.length ? memory.unresolvedRisks.join(" | ") : "none recorded"}`,
+		`Current cycle: ${memory.currentCycle}`,
+		`Current objective: ${memory.currentObjective ?? "not set"}`,
+		`Acceptance checklist: ${memory.acceptanceChecklistText ?? "not set"}`,
+		`Evidence summaries: ${memory.evidenceSummaries.length ? memory.evidenceSummaries.join(" | ") : "none recorded"}`,
+	].join("\n");
+}
+
+function updateMemoryAfterDriver(memory: PairRunMemory, driverReport: string): PairRunMemory {
+	const evidence = extractHeadingBody(driverReport, "Evidence") ?? extractHeadingBody(driverReport, "Tests Run");
+	return {
+		...memory,
+		lastDriverReport: driverReport,
+		evidenceSummaries: evidence ? [...memory.evidenceSummaries, evidence.trim()] : memory.evidenceSummaries,
+	};
+}
+
+function updateMemoryAfterNavigator(memory: PairRunMemory, review: string): PairRunMemory {
+	const amendment = extractHeadingBody(review, "Checklist Amendment");
+	return {
+		...memory,
+		acceptanceChecklistText: amendment ? `${memory.acceptanceChecklistText ?? ""}\n\nChecklist amendment:\n${amendment}`.trim() : memory.acceptanceChecklistText,
+		lastNavigatorReview: review,
+	};
+}
+
+function extractHeadingBody(markdown: string, heading: string): string | null {
+	const lines = markdown.split(/\r?\n/);
+	const start = lines.findIndex((line) => line.trim().toLowerCase() === `## ${heading}`.toLowerCase());
+	if (start < 0) return null;
+	const body: string[] = [];
+	for (let i = start + 1; i < lines.length; i++) {
+		if (lines[i].startsWith("## ")) break;
+		body.push(lines[i]);
+	}
+	return body.join("\n").trim() || null;
+}

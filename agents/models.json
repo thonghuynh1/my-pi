@@ -1,9 +1,9 @@
 {
   "defaultModel": "github-copilot/claude-sonnet-4.6",
   "agents": {
-    "explore-fast": "opencode/mimo-v2.5-free",
-    "find-callers": "opencode/mimo-v2.5-free",
+    "explore-fast": "openai-codex/gpt-5.4-mini",
+    "find-callers": "openai-codex/gpt-5.4-mini",
     "review-diff": "inherit",
-    "test-runner": "opencode/mimo-v2.5-free"
+    "test-runner": "openai-codex/gpt-5.4-mini"
   }
 }

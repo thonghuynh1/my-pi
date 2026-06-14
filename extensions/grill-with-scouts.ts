@@ -20,6 +20,7 @@ import {
 	ARTIFACT_ROOT,
 	type SessionState,
 	type ScoutGate,
+	type ScoutRoomSubagentStatus,
 	determineBudgetAction,
 	recordScoutGate,
 	recordScoutResult,
@@ -74,8 +75,124 @@ function refreshWidget(ctx: ExtensionContext): void {
 		ctx.ui.setWidget(WIDGET_KEY, undefined);
 		return;
 	}
-	const lines = renderScoutRoomSummary(activeSession, { expanded: false }).split("\n");
+	const lines = renderScoutRoomSummary(activeSession, {
+		expanded: false,
+		runStatuses: buildScoutRoomRunStatuses(),
+	}).split("\n");
 	ctx.ui.setWidget(WIDGET_KEY, lines, { placement: "aboveEditor" });
+}
+
+function stringifyToolArgs(args: unknown): string {
+	if (typeof args === "string") return args;
+	try {
+		return JSON.stringify(args) ?? "";
+	} catch {
+		return "";
+	}
+}
+
+function inferScoutProfileFromSubagentArgs(args: unknown): string | null {
+	if (!activeSession) return null;
+	const activeGate = activeSession.scoutGates[activeSession.scoutGates.length - 1];
+	if (!activeGate || activeGate.selectedScoutProfiles.length === 0) return null;
+
+	const text = stringifyToolArgs(args).toLowerCase();
+	if (!text.includes("scout")) return null;
+
+	return activeGate.selectedScoutProfiles.find(profile =>
+		text.includes(profile.toLowerCase()),
+	) ?? null;
+}
+
+function markScoutRunStarted(toolCallId: string, args: unknown): boolean {
+	if (!activeSession) return false;
+	const activeGate = activeSession.scoutGates[activeSession.scoutGates.length - 1];
+	const profileName = inferScoutProfileFromSubagentArgs(args);
+	if (!activeGate || !profileName) return false;
+
+	const activeScoutRuns = activeSession.activeScoutRuns ?? [];
+	activeSession.activeScoutRuns = activeScoutRuns.filter(run => run.toolCallId !== toolCallId);
+	activeSession.activeScoutRuns.push({ toolCallId, gateId: activeGate.id, profileName });
+	return true;
+}
+
+function markScoutRunFinished(toolCallId: string): boolean {
+	if (!activeSession?.activeScoutRuns) return false;
+	const before = activeSession.activeScoutRuns.length;
+	activeSession.activeScoutRuns = activeSession.activeScoutRuns.filter(run => run.toolCallId !== toolCallId);
+	return activeSession.activeScoutRuns.length !== before;
+}
+
+function clearScoutRunForResult(gateId: string, profileName: string): void {
+	if (!activeSession?.activeScoutRuns) return;
+	activeSession.activeScoutRuns = activeSession.activeScoutRuns.filter(run =>
+		run.gateId !== gateId || run.profileName !== profileName,
+	);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | undefined {
+	const value = record[key];
+	return typeof value === "string" ? value : undefined;
+}
+
+function numberField(record: Record<string, unknown>, key: string): number | undefined {
+	const value = record[key];
+	return typeof value === "number" ? value : undefined;
+}
+
+function nullableNumberField(record: Record<string, unknown>, key: string): number | null | undefined {
+	const value = record[key];
+	if (value === null) return null;
+	return typeof value === "number" ? value : undefined;
+}
+
+function readLiveSubagentStatuses(): Record<string, Record<string, unknown>> {
+	const state = Reflect.get(globalThis, "__subagent");
+	if (!isRecord(state)) return {};
+	const statuses = state["statuses"];
+	if (!Array.isArray(statuses)) return {};
+
+	const byId: Record<string, Record<string, unknown>> = {};
+	for (const status of statuses) {
+		if (!isRecord(status)) continue;
+		const id = stringField(status, "id");
+		if (!id) continue;
+		byId[id] = status;
+	}
+	return byId;
+}
+
+function buildScoutRoomRunStatuses(): ScoutRoomSubagentStatus[] {
+	if (!activeSession?.activeScoutRuns) return [];
+	const liveStatuses = readLiveSubagentStatuses();
+	return activeSession.activeScoutRuns.map(run => {
+		const live = liveStatuses[run.toolCallId];
+		if (!live) return run;
+		const toolCalls = live["toolCalls"];
+		return {
+			...run,
+			type: stringField(live, "type"),
+			name: stringField(live, "name"),
+			startedAt: numberField(live, "startedAt"),
+			turns: numberField(live, "turns"),
+			toolCalls: Array.isArray(toolCalls) ? toolCalls.length : undefined,
+			currentTool: stringField(live, "currentTool"),
+			preview: stringField(live, "preview"),
+			model: stringField(live, "model"),
+			cost: numberField(live, "cost"),
+			contextTokens: nullableNumberField(live, "contextTokens"),
+			contextWindow: numberField(live, "contextWindow"),
+			contextPercent: nullableNumberField(live, "contextPercent"),
+		};
+	});
+}
+
+function hasActiveScoutRun(toolCallId: string): boolean {
+	return activeSession?.activeScoutRuns?.some(run => run.toolCallId === toolCallId) ?? false;
 }
 
 // ---------------------------------------------------------------------------
@@ -259,10 +376,30 @@ export default function grillWithScouts(pi: ExtensionAPI) {
 		refreshWidget(ctx);
 	});
 
+	// --- Track running scout subagents ------------------------------------------
+
+	pi.on("tool_execution_start", (event, ctx) => {
+		if (!activeSession || event.toolName !== "subagent") return;
+		if (markScoutRunStarted(event.toolCallId, event.args)) {
+			refreshWidget(ctx);
+		}
+	});
+
+	pi.on("tool_execution_update", (event, ctx) => {
+		if (!activeSession || event.toolName !== "subagent") return;
+		if (hasActiveScoutRun(event.toolCallId)) {
+			refreshWidget(ctx);
+		}
+	});
+
 	// --- Refresh widget after tool execution -----------------------------------
 
 	pi.on("tool_execution_end", (event, ctx) => {
 		if (!activeSession) return;
+
+		if (event.toolName === "subagent") {
+			markScoutRunFinished(event.toolCallId);
+		}
 
 		// Capture subagent telemetry for scout tool-call passthrough
 		if (event.toolName === "subagent" && event.result) {
@@ -409,6 +546,7 @@ export default function grillWithScouts(pi: ExtensionAPI) {
 			});
 
 			// Update session state
+			clearScoutRunForResult(params.gateId, params.profileName);
 			if (result.finding) {
 				activeSession.durableScoutFindings.push(result.finding);
 			}
@@ -558,6 +696,8 @@ export default function grillWithScouts(pi: ExtensionAPI) {
 				);
 			}
 
+			refreshWidget(ctx);
+
 			// Trigger a turn so the Lead Griller responds immediately
 			pi.sendUserMessage(
 				`[Grill With Scouts] Begin planning session. Goal: ${goal}`,
@@ -595,7 +735,10 @@ export default function grillWithScouts(pi: ExtensionAPI) {
 				ctx.ui.notify("No active Grill With Scouts session.", "warning");
 				return;
 			}
-			const summary = renderScoutRoomSummary(activeSession, { expanded: true });
+			const summary = renderScoutRoomSummary(activeSession, {
+				expanded: true,
+				runStatuses: buildScoutRoomRunStatuses(),
+			});
 			ctx.ui.notify(summary, "info");
 		},
 	});

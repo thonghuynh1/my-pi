@@ -88,6 +88,27 @@ export interface ScoutGate {
 	skipReason?: string;
 }
 
+export interface ActiveScoutRun {
+	toolCallId: string;
+	gateId: string;
+	profileName: string;
+}
+
+export interface ScoutRoomSubagentStatus extends ActiveScoutRun {
+	type?: string;
+	name?: string;
+	startedAt?: number;
+	turns?: number;
+	toolCalls?: number;
+	currentTool?: string;
+	preview?: string;
+	model?: string;
+	cost?: number;
+	contextTokens?: number | null;
+	contextWindow?: number;
+	contextPercent?: number | null;
+}
+
 export interface SessionState {
 	id: string;
 	goal: string;
@@ -97,6 +118,7 @@ export interface SessionState {
 	scoutGates: ScoutGate[];
 	durableScoutFindings: string[];
 	scoutGaps: string[];
+	activeScoutRuns?: ActiveScoutRun[];
 	contextPressure: number;
 	checkpoints: string[];
 	handoffReady: boolean;
@@ -709,6 +731,119 @@ export function renderRespawnStatusEvent(state: SessionState): string {
 
 export interface ScoutRoomSummaryOptions {
 	expanded: boolean;
+	runStatuses?: ScoutRoomSubagentStatus[];
+	now?: number;
+}
+
+const DEFAULT_SCOUT_ROSTER = ["backend", "frontend", "qa", "runtime"];
+
+function orderedUnique(values: string[]): string[] {
+	const seen = new Set<string>();
+	const result: string[] = [];
+	for (const value of values) {
+		if (seen.has(value)) continue;
+		seen.add(value);
+		result.push(value);
+	}
+	return result;
+}
+
+function compactNumber(value: number | null | undefined): string {
+	if (value == null) return "?";
+	if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
+	if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+	return String(value);
+}
+
+function formatElapsed(startedAt: number | undefined, now: number): string {
+	if (!startedAt) return "?";
+	const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	const remainder = seconds % 60;
+	return `${minutes}m${remainder}s`;
+}
+
+function formatCost(cost: number | undefined): string {
+	if (cost == null) return "$?";
+	return `$${cost.toFixed(4)}`;
+}
+
+function scoutFindingVerdict(profile: string, findings: string[]): string | null {
+	const finding = findings.find(f => f.startsWith(`${profile}:`));
+	if (!finding) return null;
+	const match = finding.match(/^[^:]+:\s*(\S+)/);
+	return match ? match[1] : "done";
+}
+
+function hasScoutGap(profile: string, gaps: string[]): boolean {
+	return gaps.some(g => g.includes(` ${profile}:`));
+}
+
+function joinScoutBoxesInline(boxes: string[][], gap: string): string[] {
+	if (boxes.length === 0) return [];
+	const height = boxes[0]?.length ?? 0;
+	const lines: string[] = [];
+	for (let index = 0; index < height; index++) {
+		lines.push(boxes.map(box => box[index] ?? "").join(gap));
+	}
+	return lines;
+}
+
+function renderScoutStatusBox(input: {
+	profile: string;
+	selected: boolean;
+	status: ScoutRoomSubagentStatus | undefined;
+	findingVerdict: string | null;
+	hasGap: boolean;
+	now: number;
+}): string[] {
+	const { profile, selected, status, findingVerdict, hasGap, now } = input;
+	const title = ` scout:${profile} `;
+	const width = 30;
+	const inner = width - 2;
+	const top = `┌─${title}${"─".repeat(Math.max(0, inner - title.length - 1))}┐`;
+	const bottom = `└${"─".repeat(inner)}┘`;
+	const pad = (line: string) => `│${line.slice(0, inner).padEnd(inner, " ")}│`;
+
+	if (status) {
+		const elapsed = formatElapsed(status.startedAt, now);
+		const turns = status.turns ?? 0;
+		const tools = status.toolCalls ?? 0;
+		const ctxTokens = compactNumber(status.contextTokens);
+		const ctxWindow = compactNumber(status.contextWindow);
+		const ctxPercent = status.contextPercent == null ? "?" : `${status.contextPercent.toFixed(0)}%`;
+		const model = status.model ? status.model.split("/").at(-1) ?? status.model : "?";
+		const current = status.currentTool ? `→ ${status.currentTool}` : status.preview ?? "running";
+		return [
+			top,
+			pad(`● running ${turns}t·${tools}T·${elapsed}`),
+			pad(`ctx ${ctxTokens}/${ctxWindow} ${ctxPercent}`),
+			pad(model),
+			pad(formatCost(status.cost)),
+			pad(current),
+			bottom,
+		];
+	}
+
+	const state = findingVerdict ?? (hasGap ? "GAP" : selected ? "pending spawn" : "idle");
+	let detail = "not selected now";
+	if (findingVerdict) {
+		detail = "complete";
+	} else if (hasGap) {
+		detail = "needs follow-up";
+	} else if (selected) {
+		detail = "spawns when needed";
+	}
+	return [
+		top,
+		pad(`○ ${state}`),
+		pad("ctx ?/? ?"),
+		pad("model ?"),
+		pad("$0.0000"),
+		pad(detail),
+		bottom,
+	];
 }
 
 /**
@@ -729,92 +864,24 @@ export function renderScoutRoomSummary(
 		? state.scoutGates[state.scoutGates.length - 1]
 		: null;
 
+	const selectedProfiles = activeGate?.selectedScoutProfiles ?? [];
+	const rosterProfiles = orderedUnique([...DEFAULT_SCOUT_ROSTER, ...selectedProfiles]);
+	const activeRunStatuses = options.runStatuses ?? [];
 	const lines: string[] = [];
 
-	// Header
-	lines.push("Scout Room Summary");
-	lines.push("");
-
-	// Core fields (always shown)
-	lines.push(`Tier: ${state.currentTier}`);
-	lines.push(`Decision: ${state.currentDecision ?? "none"}`);
-	lines.push(`Active Gate: ${activeGate ? activeGate.id : "none"}`);
-
-	// Selected scouts and verdicts
-	if (activeGate && activeGate.selectedScoutProfiles.length > 0) {
-		const scoutList = activeGate.selectedScoutProfiles.join(", ");
-		lines.push(`Scouts: ${scoutList}`);
-
-		// Show actual verdicts from findings/gaps, or "pending" if not yet resolved
-		const verdictParts: string[] = [];
-		for (const profile of activeGate.selectedScoutProfiles) {
-			const finding = state.durableScoutFindings.find(f => f.startsWith(`${profile}:`));
-			const gap = state.scoutGaps.find(g => g.includes(` ${profile}:`));
-			if (finding) {
-				// Extract verdict keyword from finding (format: "profile: verdict — ...")
-				const match = finding.match(/^[^:]+:\s*(\S+)/);
-				verdictParts.push(match ? match[1] : "done");
-			} else if (gap) {
-				verdictParts.push("GAP");
-			} else {
-				verdictParts.push("pending");
-			}
-		}
-		lines.push(`Verdicts: ${verdictParts.join(", ")}`);
-	} else {
-		lines.push("Scouts: none");
-		lines.push("Verdicts: none");
-	}
-
-	// Durable findings (always shown if present)
-	if (state.durableScoutFindings.length > 0) {
-		lines.push("");
-		lines.push("Findings:");
-		for (const f of state.durableScoutFindings) {
-			lines.push(`  - ${f}`);
-		}
-	}
-
-	// Scout Gaps (always shown if present)
-	if (state.scoutGaps.length > 0) {
-		lines.push("");
-		lines.push("Scout Gaps:");
-		for (const g of state.scoutGaps) {
-			lines.push(`  - ${g}`);
-		}
-	}
-
-	// Context pressure and handoff
-	lines.push(`Context Pressure: ${state.contextPressure}`);
-	lines.push(`Handoff Ready: ${state.handoffReady ? "yes" : "no"}`);
-
-	// Respawn status (compact: one-liner; expanded: with checkpoint details)
-	if (state.respawnCount && state.respawnCount > 0) {
-		lines.push(`Respawn: #${state.respawnCount} (tier: ${state.currentTier}, next: ${state.nextQuestion ?? "none"})`);
-	}
-
-	// Expanded: trigger fields and budget action
-	if (options.expanded && activeGate) {
-		lines.push("");
-		lines.push("Trigger Fields:");
-		lines.push(`  crossesBoundary: ${activeGate.crossesBoundary}`);
-		lines.push(`  changesContractOrState: ${activeGate.changesContractOrState}`);
-		lines.push(`  introducesLifecycle: ${activeGate.introducesLifecycle}`);
-		lines.push(`  hasRuntimeRisk: ${activeGate.hasRuntimeRisk}`);
-		lines.push(`  hasUnverifiedLayerAssumption: ${activeGate.hasUnverifiedLayerAssumption}`);
-		lines.push(`  hasMeaningfulFailureCost: ${activeGate.hasMeaningfulFailureCost}`);
-		lines.push("");
-		lines.push(`Budget Action: ${activeGate.budgetAction}`);
-	}
-
-	// Expanded: checkpoint details (expandable, not in compact summary)
-	if (options.expanded && state.checkpoints.length > 0) {
-		lines.push("");
-		lines.push("Checkpoints:");
-		for (const cp of state.checkpoints) {
-			lines.push(`  - ${cp}`);
-		}
-	}
+	const boxes = rosterProfiles.map(profile => {
+		const status = activeRunStatuses.find(run => run.profileName === profile);
+		const selected = selectedProfiles.includes(profile);
+		return renderScoutStatusBox({
+			profile,
+			selected,
+			status,
+			findingVerdict: scoutFindingVerdict(profile, state.durableScoutFindings),
+			hasGap: hasScoutGap(profile, state.scoutGaps),
+			now: options.now ?? Date.now(),
+		});
+	});
+	lines.push(...joinScoutBoxesInline(boxes, "  "));
 
 	return lines.join("\n");
 }

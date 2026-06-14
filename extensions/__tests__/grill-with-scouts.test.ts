@@ -394,12 +394,15 @@ console.log("\n--- renderScoutRoomSummary: compact, no gates ---");
 
 	const summary = renderScoutRoomSummary(state, { expanded: false });
 
-	assertIncludes(summary, "discovery", "compact no-gates: shows current tier");
-	assertIncludes(summary, "none", "compact no-gates: shows no current decision");
-	assertIncludes(summary, "Context Pressure: 0", "compact no-gates: shows context pressure");
-	assertIncludes(summary, "Handoff Ready: no", "compact no-gates: shows handoff readiness");
-	// Should NOT include trigger fields in compact mode
-	assert(!summary.includes("crossesBoundary"), "compact no-gates: no trigger fields");
+	assertIncludes(summary, "scout:backend", "compact no-gates: shows backend scout box");
+	assertIncludes(summary, "scout:frontend", "compact no-gates: shows frontend scout box");
+	assertIncludes(summary, "scout:qa", "compact no-gates: shows qa scout box");
+	assertIncludes(summary, "scout:runtime", "compact no-gates: shows runtime scout box");
+	assert(summary.split("\n")[0].includes("scout:backend") && summary.split("\n")[0].includes("scout:frontend"), "compact no-gates: renders scout boxes inline");
+	assert(!summary.includes("Tier:"), "compact no-gates: hides tier metadata");
+	assert(!summary.includes("Decision:"), "compact no-gates: hides decision metadata");
+	assert(!summary.includes("Context Pressure"), "compact no-gates: hides context pressure metadata");
+	assert(!summary.includes("Handoff Ready"), "compact no-gates: hides handoff metadata");
 }
 
 // ---------------------------------------------------------------------------
@@ -446,16 +449,15 @@ console.log("\n--- renderScoutRoomSummary: compact, with gate ---");
 
 	const summary = renderScoutRoomSummary(state, { expanded: false });
 
-	assertIncludes(summary, "macro", "compact with-gate: shows tier");
-	assertIncludes(summary, "Adopt event sourcing", "compact with-gate: shows current decision");
-	assertIncludes(summary, "gate-active", "compact with-gate: shows active gate id");
-	assertIncludes(summary, "architecture-scout", "compact with-gate: shows selected scout");
-	assertIncludes(summary, "data-scout", "compact with-gate: shows second scout");
-	assertIncludes(summary, "pending", "compact with-gate: shows verdict placeholder");
-	assertIncludes(summary, "Context Pressure: 42", "compact with-gate: shows context pressure");
-	assertIncludes(summary, "Handoff Ready: no", "compact with-gate: shows handoff readiness");
-	// Should NOT include trigger fields in compact mode
-	assert(!summary.includes("crossesBoundary"), "compact with-gate: no trigger fields");
+	assertIncludes(summary, "scout:architecture-scout", "compact with-gate: shows selected scout box");
+	assertIncludes(summary, "scout:data-scout", "compact with-gate: shows second selected scout box");
+	assertIncludes(summary, "pending spawn", "compact with-gate: shows selected scouts are pending spawn");
+	assert(!summary.includes("Tier:"), "compact with-gate: hides tier metadata");
+	assert(!summary.includes("Adopt event sourcing"), "compact with-gate: hides current decision");
+	assert(!summary.includes("gate-active"), "compact with-gate: hides active gate id");
+	assert(!summary.includes("Context Pressure"), "compact with-gate: hides context pressure metadata");
+	assert(!summary.includes("Handoff Ready"), "compact with-gate: hides handoff metadata");
+	assert(!summary.includes("crossesBoundary"), "compact with-gate: hides trigger fields");
 }
 
 // ---------------------------------------------------------------------------
@@ -502,24 +504,15 @@ console.log("\n--- renderScoutRoomSummary: expanded ---");
 
 	const expanded = renderScoutRoomSummary(state, { expanded: true });
 
-	// Compact fields should still be present
-	assertIncludes(expanded, "meso", "expanded: shows tier");
-	assertIncludes(expanded, "Switch to PostgreSQL", "expanded: shows decision");
-	assertIncludes(expanded, "gate-exp", "expanded: shows gate id");
-	assertIncludes(expanded, "infra-scout", "expanded: shows scout");
-	assertIncludes(expanded, "Context Pressure: 65", "expanded: shows context pressure");
-	assertIncludes(expanded, "Handoff Ready: yes", "expanded: shows handoff ready=yes");
-
-	// Expanded-only: trigger fields
-	assertIncludes(expanded, "crossesBoundary: true", "expanded: crossesBoundary trigger");
-	assertIncludes(expanded, "changesContractOrState: false", "expanded: changesContractOrState trigger");
-	assertIncludes(expanded, "introducesLifecycle: true", "expanded: introducesLifecycle trigger");
-	assertIncludes(expanded, "hasRuntimeRisk: false", "expanded: hasRuntimeRisk trigger");
-	assertIncludes(expanded, "hasUnverifiedLayerAssumption: true", "expanded: hasUnverifiedLayerAssumption trigger");
-	assertIncludes(expanded, "hasMeaningfulFailureCost: false", "expanded: hasMeaningfulFailureCost trigger");
-
-	// Expanded-only: budget action
-	assertIncludes(expanded, "Budget Action: ask-human", "expanded: shows budget action");
+	assertIncludes(expanded, "scout:infra-scout", "expanded: shows selected scout box");
+	assertIncludes(expanded, "pending spawn", "expanded: shows selected scout is pending spawn");
+	assert(!expanded.includes("Tier:"), "expanded: hides tier metadata");
+	assert(!expanded.includes("Switch to PostgreSQL"), "expanded: hides decision metadata");
+	assert(!expanded.includes("gate-exp"), "expanded: hides gate id");
+	assert(!expanded.includes("Context Pressure"), "expanded: hides context pressure metadata");
+	assert(!expanded.includes("Handoff Ready"), "expanded: hides handoff metadata");
+	assert(!expanded.includes("crossesBoundary"), "expanded: hides trigger fields");
+	assert(!expanded.includes("Budget Action"), "expanded: hides budget action");
 }
 
 // ---------------------------------------------------------------------------
@@ -818,25 +811,15 @@ console.log("\n--- renderScoutRoomSummary: respawn events ---");
 		respawnCount: 1,
 	};
 
-	// Compact mode: respawn event is shown briefly
 	const compact = renderScoutRoomSummary(state, { expanded: false });
-	assert(
-		compact.includes("Respawn") || compact.includes("respawn"),
-		"compact mode mentions respawn when respawnCount > 0",
-	);
-	// Compact mode should NOT dump full checkpoint content
-	assert(!compact.includes("## Accepted Decisions"), "compact mode does not dump checkpoint sections");
+	assertIncludes(compact, "scout:backend", "compact respawn state still shows scout boxes");
+	assert(!compact.includes("Respawn"), "compact mode hides respawn metadata");
+	assert(!compact.includes("checkpoints/1.md"), "compact mode hides checkpoint metadata");
 
-	// Expanded mode: checkpoint details visible
 	const expanded = renderScoutRoomSummary(state, { expanded: true });
-	assert(
-		expanded.includes("Respawn") || expanded.includes("respawn"),
-		"expanded mode mentions respawn",
-	);
-	assert(
-		expanded.includes("checkpoints/1.md") || expanded.includes("Checkpoint"),
-		"expanded mode shows checkpoint reference or details",
-	);
+	assertIncludes(expanded, "scout:backend", "expanded respawn state still shows scout boxes");
+	assert(!expanded.includes("Respawn"), "expanded mode hides respawn metadata");
+	assert(!expanded.includes("checkpoints/1.md"), "expanded mode hides checkpoint metadata");
 }
 
 // ---------------------------------------------------------------------------
@@ -1447,30 +1430,101 @@ console.log("\n--- renderScoutRoomSummary: verdicts and gaps ---");
 		contractArtifacts: [],
 	};
 
-	// Compact mode: shows verdicts not just "pending"
 	const compact = renderScoutRoomSummary(state, { expanded: false });
-	assertIncludes(compact, "viable", "compact summary shows viable verdict");
-	assertIncludes(compact, "risky", "compact summary shows risky verdict");
-	// Shows gap
-	assertIncludes(compact, "qa", "compact summary shows gap scout name");
-	assert(
-		compact.includes("Gap") || compact.includes("gap") || compact.includes("timeout"),
-		"compact summary indicates gap",
-	);
+	assertIncludes(compact, "scout:backend", "compact summary shows backend scout box");
+	assertIncludes(compact, "○ viable", "compact summary shows backend verdict in scout box");
+	assertIncludes(compact, "○ risky", "compact summary shows frontend verdict in scout box");
+	assertIncludes(compact, "scout:qa", "compact summary shows qa scout box");
+	assertIncludes(compact, "○ GAP", "compact summary shows qa gap in scout box");
+	assert(!compact.includes("Findings:"), "compact summary hides findings section");
+	assert(!compact.includes("Scout Gaps:"), "compact summary hides gaps section");
 
-	// Expanded mode: shows artifact paths
 	const expanded = renderScoutRoomSummary(state, { expanded: true });
-	assertIncludes(expanded, "viable", "expanded shows viable");
-	assertIncludes(expanded, "risky", "expanded shows risky");
-	assertIncludes(expanded, "qa", "expanded shows gap scout");
-	assert(
-		expanded.includes("Finding") || expanded.includes("finding"),
-		"expanded mode shows findings section",
-	);
-	assert(
-		expanded.includes("Gap") || expanded.includes("gap"),
-		"expanded mode shows gaps section",
-	);
+	assertIncludes(expanded, "○ viable", "expanded shows backend verdict in scout box");
+	assertIncludes(expanded, "○ risky", "expanded shows frontend verdict in scout box");
+	assertIncludes(expanded, "○ GAP", "expanded shows qa gap in scout box");
+	assert(!expanded.includes("Findings:"), "expanded hides findings section");
+	assert(!expanded.includes("Scout Gaps:"), "expanded hides gaps section");
+}
+
+// ---------------------------------------------------------------------------
+// Tests: renderScoutRoomSummary shows running scouts
+// ---------------------------------------------------------------------------
+
+console.log("\n--- renderScoutRoomSummary: running scouts ---");
+
+{
+	const gate: ScoutGate = {
+		id: "gate-running",
+		tier: "macro",
+		decisionUnderReview: "Use a workflow engine",
+		crossesBoundary: true,
+		changesContractOrState: false,
+		introducesLifecycle: true,
+		hasRuntimeRisk: true,
+		hasUnverifiedLayerAssumption: false,
+		hasMeaningfulFailureCost: true,
+		riskLevel: "high",
+		selectedScoutProfiles: ["backend", "qa", "runtime"],
+		budgetAction: "call-now",
+	};
+
+	const state: SessionState = {
+		id: "2026-06-15T020000-running-display",
+		goal: "Running display test",
+		currentTier: "macro",
+		currentDecision: "Use a workflow engine",
+		acceptedDecisions: [],
+		scoutGates: [gate],
+		durableScoutFindings: ["backend: viable - verified"],
+		scoutGaps: [],
+		activeScoutRuns: [
+			{ toolCallId: "call-qa", gateId: "gate-running", profileName: "qa" },
+			{ toolCallId: "call-runtime", gateId: "gate-running", profileName: "runtime" },
+		],
+		contextPressure: 45,
+		checkpoints: [],
+		handoffReady: false,
+		createdAt: "2026-06-15T02:00:00.000Z",
+		nextQuestion: null,
+		userAcceptedAssumptions: [],
+		glossaryDeltas: [],
+		adrCandidates: [],
+		contractArtifacts: [],
+	};
+
+	const compact = renderScoutRoomSummary(state, {
+		expanded: false,
+		now: new Date("2026-06-15T02:00:05.000Z").getTime(),
+		runStatuses: [
+			{
+				toolCallId: "call-qa",
+				gateId: "gate-running",
+				profileName: "qa",
+				type: "explore",
+				name: "qa",
+				startedAt: new Date("2026-06-15T02:00:00.000Z").getTime(),
+				turns: 1,
+				toolCalls: 2,
+				currentTool: "grep",
+				model: "provider/test-model",
+				cost: 0.0123,
+				contextTokens: 12_000,
+				contextWindow: 200_000,
+				contextPercent: 6,
+			},
+			{ toolCallId: "call-runtime", gateId: "gate-running", profileName: "runtime" },
+		],
+	});
+	assert(!compact.includes("Running Scouts"), "compact summary hides running summary line");
+	assert(!compact.includes("Verdicts:"), "compact summary hides verdict summary line");
+	assert(!compact.includes("Scout Roster"), "compact summary hides roster heading");
+	assertIncludes(compact, "scout:qa", "compact summary shows qa scout box");
+	assertIncludes(compact, "scout:runtime", "compact summary shows runtime scout box");
+	assert(compact.split("\n")[0].includes("scout:backend") && compact.split("\n")[0].includes("scout:runtime"), "compact summary renders running scout boxes inline");
+	assertIncludes(compact, "● running 1t·2T·5s", "compact summary shows running subagent timing and counts");
+	assertIncludes(compact, "ctx 12.0k/200.0k 6%", "compact summary shows subagent context usage");
+	assertIncludes(compact, "→ grep", "compact summary shows current child tool");
 }
 
 // ---------------------------------------------------------------------------
@@ -2101,9 +2155,9 @@ console.log("\n--- markHandoffReady ---");
 	assertEqual(result.handoffReady, true, "markHandoffReady: sets handoffReady to true");
 	assert(result === state, "markHandoffReady: mutates same reference");
 
-	// Scout Room should reflect readiness
 	const summary = renderScoutRoomSummary(result, { expanded: false });
-	assertIncludes(summary, "Handoff Ready: yes", "markHandoffReady: reflected in Scout Room");
+	assertIncludes(summary, "scout:backend", "markHandoffReady: Scout Room still shows scout boxes");
+	assert(!summary.includes("Handoff Ready"), "markHandoffReady: Scout Room hides handoff metadata");
 }
 
 // ---------------------------------------------------------------------------

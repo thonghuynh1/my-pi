@@ -1279,6 +1279,7 @@ export default function (pi: ExtensionAPI) {
 		enabled: false,
 		active: 0,
 		label: "off",
+		statuses: [],
 		totalCostUsd: 0,
 		totalTokens: 0,
 		totalInputTokens: 0,
@@ -1288,6 +1289,7 @@ export default function (pi: ExtensionAPI) {
 		enabled: boolean;
 		active: number;
 		label: string;
+		statuses: RunningSubagentStatus[];
 		totalCostUsd: number;
 		totalTokens: number;
 		totalInputTokens: number;
@@ -1298,6 +1300,7 @@ export default function (pi: ExtensionAPI) {
 	function publishStateLabel() {
 		subagentState.enabled = subagentModeEnabled;
 		subagentState.active = activeSubagents.size;
+		subagentState.statuses = [...activeSubagents.values()];
 		if (!subagentModeEnabled) {
 			subagentState.label = "off";
 		} else if (activeSubagents.size > 0) {

@@ -320,6 +320,213 @@ export function determineBudgetAction(
 	}
 }
 
+type BuiltInScoutProfile = "backend" | "frontend" | "qa" | "runtime";
+
+export interface ScoutDispatchInput {
+	decision: string;
+	goal: string;
+	currentTier: string | null;
+	crossesBoundary: boolean;
+	changesContractOrState: boolean;
+	introducesLifecycle: boolean;
+	hasRuntimeRisk: boolean;
+	hasUnverifiedLayerAssumption: boolean;
+	hasMeaningfulFailureCost: boolean;
+	budgetAction: ScoutGate["budgetAction"];
+	durableScoutFindings: string[];
+}
+
+export interface ScoutDispatchPlan {
+	budgetAction: ScoutGate["budgetAction"];
+	selectedScoutProfiles: string[];
+	selectionReasons: Record<string, string[]>;
+	skipReason?: string;
+}
+
+const MAX_SCOUTS_PER_GATE = 2;
+
+const DISPATCH_STOP_WORDS = new Set([
+	"about",
+	"after",
+	"before",
+	"choose",
+	"does",
+	"from",
+	"have",
+	"into",
+	"need",
+	"normal",
+	"should",
+	"that",
+	"their",
+	"there",
+	"this",
+	"what",
+	"when",
+	"where",
+	"whether",
+	"with",
+	"work",
+]);
+
+/**
+ * Decide which scouts add new evidence for the next gate.
+ * Risk still controls whether a gate deserves review, but this planner avoids
+ * re-running scouts when durable findings already answer the question.
+ */
+export function planScoutDispatch(input: ScoutDispatchInput): ScoutDispatchPlan {
+	if (hasReusableScoutFinding(input)) {
+		return {
+			budgetAction: "skip-with-reason",
+			selectedScoutProfiles: [],
+			selectionReasons: {},
+			skipReason: "Covered by prior scout findings; reuse the recorded evidence instead of dispatching scouts again.",
+		};
+	}
+
+	const candidates = scoreScoutCandidates(input);
+	const selectedProfiles = selectScoutProfiles(candidates);
+
+	if (selectedProfiles.length === 0) {
+		return {
+			budgetAction: "skip-with-reason",
+			selectedScoutProfiles: [],
+			selectionReasons: {},
+			skipReason: "No specialist verification need detected for this decision.",
+		};
+	}
+
+	return {
+		budgetAction: input.budgetAction === "skip-with-reason" ? "call-now" : input.budgetAction,
+		selectedScoutProfiles: selectedProfiles,
+		selectionReasons: Object.fromEntries(
+			selectedProfiles.map((profile) => [profile, candidates[profile].reasons]),
+		),
+	};
+}
+
+interface ScoutCandidateScore {
+	profile: BuiltInScoutProfile;
+	score: number;
+	reasons: string[];
+}
+
+function scoreScoutCandidates(input: ScoutDispatchInput): Record<BuiltInScoutProfile, ScoutCandidateScore> {
+	const text = dispatchText(input);
+	const candidates: Record<BuiltInScoutProfile, ScoutCandidateScore> = {
+		backend: { profile: "backend", score: 0, reasons: [] },
+		frontend: { profile: "frontend", score: 0, reasons: [] },
+		qa: { profile: "qa", score: 0, reasons: [] },
+		runtime: { profile: "runtime", score: 0, reasons: [] },
+	};
+
+	addScore(candidates.backend, input.crossesBoundary || input.changesContractOrState, 3, "decision changes a boundary, contract, or state shape");
+	addScore(candidates.backend, input.hasUnverifiedLayerAssumption, 2, "decision relies on an unverified layer assumption");
+	addScore(candidates.backend, hasBackendContractConcern(text), 4, "decision names API, config, env, provider, contract, or state shape evidence");
+
+	addScore(candidates.runtime, input.introducesLifecycle || input.hasRuntimeRisk, 3, "decision changes lifecycle or runtime behavior");
+	addScore(candidates.runtime, hasRuntimeConcern(text), 4, "decision names process, extension, trust, JSON mode, stdin, or discovery evidence");
+
+	addScore(candidates.qa, input.hasMeaningfulFailureCost, 4, "decision has meaningful failure cost");
+	addScore(candidates.qa, hasQaConcern(text), 6, "decision names tests, coverage, QA, PRD, ADR, or MICRO conflict evidence");
+
+	addScore(candidates.frontend, hasFrontendConcern(text), 4, "decision names user-visible UI, route, component, styling, or accessibility evidence");
+	addScore(candidates.frontend, input.changesContractOrState && hasFrontendConcern(text), 2, "decision changes UI-facing state or component contract");
+
+	if (hasAmbiguousVerificationNeed(text)) {
+		const strongest = strongestCandidate(candidates);
+		addScore(strongest, true, 4, "decision is ambiguous or asks for verification before the plan can continue");
+	}
+
+	return candidates;
+}
+
+function addScore(candidate: ScoutCandidateScore, condition: boolean, score: number, reason: string): void {
+	if (!condition) return;
+	candidate.score += score;
+	candidate.reasons.push(reason);
+}
+
+function strongestCandidate(candidates: Record<BuiltInScoutProfile, ScoutCandidateScore>): ScoutCandidateScore {
+	return orderedScoutCandidates(candidates)[0] ?? candidates.backend;
+}
+
+function selectScoutProfiles(candidates: Record<BuiltInScoutProfile, ScoutCandidateScore>): BuiltInScoutProfile[] {
+	const orderedCandidates = orderedScoutCandidates(candidates)
+		.filter((candidate) => candidate.score >= 4);
+	const strongest = orderedCandidates[0];
+	if (!strongest) return [];
+
+	return orderedCandidates
+		.filter((candidate) => candidate === strongest || candidate.score >= strongest.score - 1)
+		.slice(0, MAX_SCOUTS_PER_GATE)
+		.map((candidate) => candidate.profile);
+}
+
+function orderedScoutCandidates(candidates: Record<BuiltInScoutProfile, ScoutCandidateScore>): ScoutCandidateScore[] {
+	const priority: Record<BuiltInScoutProfile, number> = {
+		backend: 0,
+		runtime: 1,
+		qa: 2,
+		frontend: 3,
+	};
+
+	return Object.values(candidates).sort((left, right) => {
+		if (right.score !== left.score) return right.score - left.score;
+		return priority[left.profile] - priority[right.profile];
+	});
+}
+
+function hasReusableScoutFinding(input: ScoutDispatchInput): boolean {
+	if (input.durableScoutFindings.length === 0) return false;
+
+	const decisionTerms = tokenizeDispatchText(input.decision)
+		.filter((term) => term !== "add")
+		.filter((term) => term !== "use");
+	if (decisionTerms.length < 3) return false;
+
+	for (const finding of input.durableScoutFindings) {
+		const findingTerms = new Set(tokenizeDispatchText(finding));
+		const overlap = decisionTerms.filter((term) => findingTerms.has(term));
+		if (overlap.length >= Math.min(3, decisionTerms.length)) return true;
+	}
+
+	return false;
+}
+
+function dispatchText(input: ScoutDispatchInput): string {
+	return input.decision.toLowerCase();
+}
+
+function hasRuntimeConcern(text: string): boolean {
+	return /\b(process|subprocess|runtime|lifecycle|async|extension|extensions|trust|approve|json|mode|stdin|discovery)\b/.test(text);
+}
+
+function hasBackendContractConcern(text: string): boolean {
+	return /\b(agentclient|client|contract|api|config|configuration|env|environment|state|shape|provider|metadata|ralph_pi_approve|shellpiclient|resolveagentclient|promptclientkind|pstackclientselector)\b/.test(text);
+}
+
+function hasQaConcern(text: string): boolean {
+	return /\b(test|tests|testing|coverage|qa|quality|micro|prd|adr|assert|assertion|ci|acceptance|verify|verification)\b/.test(text);
+}
+
+function hasAmbiguousVerificationNeed(text: string): boolean {
+	return /\b(ambiguous|assume|assumption|depends|might|maybe|unclear|unknown|validate|need to check|needs to check)\b/.test(text);
+}
+
+function hasFrontendConcern(text: string): boolean {
+	return /\b(frontend|front-end|ui|ux|browser|react|vue|component|screen|page|css|styling|accessibility)\b/.test(text);
+}
+
+function tokenizeDispatchText(value: string): string[] {
+	return value
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, " ")
+		.split(/\s+/)
+		.filter((term) => term.length >= 3)
+		.filter((term) => !DISPATCH_STOP_WORDS.has(term));
+}
+
 // ---------------------------------------------------------------------------
 // Record Scout Gate
 // ---------------------------------------------------------------------------

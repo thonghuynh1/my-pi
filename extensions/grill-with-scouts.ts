@@ -21,6 +21,7 @@ import {
 	type SessionState,
 	type ScoutGate,
 	determineBudgetAction,
+	planScoutDispatch,
 	recordScoutGate,
 	recordScoutResult,
 	recordScoutGap,
@@ -331,17 +332,22 @@ export default function grillWithScouts(pi: ExtensionAPI) {
 				riskLevel = "low";
 			}
 
-			const budgetAction = determineBudgetAction(riskLevel);
-
-			// Select scout profiles based on triggers
-			const selectedProfiles: string[] = [];
-			if (budgetAction === "call-now" || budgetAction === "ask-human") {
-				if (params.crossesBoundary || params.hasRuntimeRisk) selectedProfiles.push("backend");
-				if (params.changesContractOrState) selectedProfiles.push("frontend");
-				if (params.hasMeaningfulFailureCost) selectedProfiles.push("qa");
-				if (params.hasRuntimeRisk || params.introducesLifecycle) selectedProfiles.push("runtime");
-				if (selectedProfiles.length === 0) selectedProfiles.push("backend");
-			}
+			const initialBudgetAction = determineBudgetAction(riskLevel);
+			const dispatchPlan = planScoutDispatch({
+				decision: params.decision,
+				goal: activeSession.goal,
+				currentTier: activeSession.currentTier,
+				crossesBoundary: params.crossesBoundary,
+				changesContractOrState: params.changesContractOrState,
+				introducesLifecycle: params.introducesLifecycle,
+				hasRuntimeRisk: params.hasRuntimeRisk,
+				hasUnverifiedLayerAssumption: params.hasUnverifiedLayerAssumption,
+				hasMeaningfulFailureCost: params.hasMeaningfulFailureCost,
+				budgetAction: initialBudgetAction,
+				durableScoutFindings: activeSession.durableScoutFindings,
+			});
+			const budgetAction = dispatchPlan.budgetAction;
+			const selectedProfiles = dispatchPlan.selectedScoutProfiles;
 
 			// Create the Scout Gate record
 			const gateId = `gate-${activeSession.scoutGates.length + 1}`;
@@ -358,7 +364,7 @@ export default function grillWithScouts(pi: ExtensionAPI) {
 				riskLevel,
 				selectedScoutProfiles: selectedProfiles,
 				budgetAction,
-				skipReason: budgetAction === "skip-with-reason" ? "Low risk — no triggers fired" : undefined,
+				skipReason: dispatchPlan.skipReason,
 			};
 
 			// Persist gate
@@ -394,6 +400,7 @@ export default function grillWithScouts(pi: ExtensionAPI) {
 				riskLevel,
 				budgetAction,
 				selectedScoutProfiles: selectedProfiles,
+				scoutSelectionReasons: dispatchPlan.selectionReasons,
 				scoutPrompts,
 				totalDecisions: activeSession.acceptedDecisions.length,
 			};

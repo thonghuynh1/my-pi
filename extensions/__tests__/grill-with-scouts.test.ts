@@ -26,6 +26,7 @@ import {
 	markHandoffReady,
 	parseClaimedAnchors,
 	parseScoutVerdict,
+	planScoutDispatch,
 	performGrillRespawn,
 	persistScoutOutput,
 	recordScoutGate,
@@ -248,6 +249,208 @@ console.log("\n--- determineBudgetAction ---");
 assertEqual(determineBudgetAction("high"), "call-now", "high risk → call-now");
 assertEqual(determineBudgetAction("medium"), "ask-human", "medium risk → ask-human");
 assertEqual(determineBudgetAction("low"), "skip-with-reason", "low risk → skip-with-reason");
+
+// ---------------------------------------------------------------------------
+// Tests: planScoutDispatch scout need and selection
+// ---------------------------------------------------------------------------
+
+console.log("\n--- planScoutDispatch ---");
+
+{
+	const plan = planScoutDispatch({
+		decision: "Explore how Pi JSON mode and extension loading should work before touching code",
+		goal: "Explore Pi support for ralph-loop",
+		currentTier: "discovery",
+		crossesBoundary: true,
+		changesContractOrState: true,
+		introducesLifecycle: true,
+		hasRuntimeRisk: true,
+		hasUnverifiedLayerAssumption: true,
+		hasMeaningfulFailureCost: true,
+		budgetAction: "call-now",
+		durableScoutFindings: [],
+	});
+
+	assertEqual(plan.selectedScoutProfiles.length, 1, "discovery exploration dispatches one scout");
+	assertEqual(plan.selectedScoutProfiles[0], "runtime", "Pi CLI discovery uses runtime scout");
+	assertEqual(plan.skipReason, undefined, "fresh discovery keeps call-now active");
+}
+
+{
+	const plan = planScoutDispatch({
+		decision: "Choose whether Pi extension loading should rely on normal discovery paths",
+		goal: "Explore Pi support for ralph-loop",
+		currentTier: "macro",
+		crossesBoundary: true,
+		changesContractOrState: true,
+		introducesLifecycle: false,
+		hasRuntimeRisk: true,
+		hasUnverifiedLayerAssumption: false,
+		hasMeaningfulFailureCost: true,
+		budgetAction: "call-now",
+		durableScoutFindings: [
+			"runtime: viable — verified | evidence: Pi supports JSON mode, extension loading, normal discovery paths, and project trust behavior",
+		],
+	});
+
+	assertEqual(plan.budgetAction, "skip-with-reason", "covered Pi facts change budget action to skip");
+	assertEqual(plan.selectedScoutProfiles.length, 0, "covered Pi facts skip repeat scouts");
+	assertIncludes(plan.skipReason ?? "", "prior scout findings", "skip reason cites prior findings");
+}
+
+{
+	const plan = planScoutDispatch({
+		decision: "Add a CLI-backed Pi AgentClient contract for ralph-loop",
+		goal: "Explore Pi support for ralph-loop",
+		currentTier: "macro",
+		crossesBoundary: true,
+		changesContractOrState: true,
+		introducesLifecycle: false,
+		hasRuntimeRisk: true,
+		hasUnverifiedLayerAssumption: false,
+		hasMeaningfulFailureCost: true,
+		budgetAction: "call-now",
+		durableScoutFindings: [],
+	});
+
+	assertEqual(plan.selectedScoutProfiles.length, 1, "CLI AgentClient contract dispatches one scout");
+	assertEqual(plan.selectedScoutProfiles[0], "backend", "CLI AgentClient contract uses backend scout");
+}
+
+{
+	const plan = planScoutDispatch({
+		decision: "Decide ShellPiClient env var RALPH_PI_APPROVE and state shape for project trust",
+		goal: "Explore Pi support for ralph-loop",
+		currentTier: "macro",
+		crossesBoundary: true,
+		changesContractOrState: true,
+		introducesLifecycle: false,
+		hasRuntimeRisk: true,
+		hasUnverifiedLayerAssumption: false,
+		hasMeaningfulFailureCost: true,
+		budgetAction: "call-now",
+		durableScoutFindings: [],
+	});
+
+	assert(plan.selectedScoutProfiles.includes("backend"), "Pi config/env/state decision uses backend scout");
+	assert(plan.selectedScoutProfiles.includes("runtime"), "Pi approval trust behavior also uses runtime scout");
+	assertEqual(plan.selectedScoutProfiles.length, 2, "Pi approval trust decision keeps scout set capped");
+}
+
+{
+	const plan = planScoutDispatch({
+		decision: "Resolve MICRO-004 conflict and test plan for Pi subagent fan-out",
+		goal: "Explore Pi support for ralph-loop",
+		currentTier: "macro",
+		crossesBoundary: true,
+		changesContractOrState: true,
+		introducesLifecycle: false,
+		hasRuntimeRisk: true,
+		hasUnverifiedLayerAssumption: false,
+		hasMeaningfulFailureCost: true,
+		budgetAction: "call-now",
+		durableScoutFindings: [],
+	});
+
+	assertEqual(plan.selectedScoutProfiles.length, 1, "test plan or MICRO conflict dispatches one scout");
+	assertEqual(plan.selectedScoutProfiles[0], "qa", "test plan or MICRO conflict uses QA scout");
+}
+
+{
+	const plan = planScoutDispatch({
+		decision: "Change the React page state contract for the settings screen",
+		goal: "Plan a frontend settings update",
+		currentTier: "macro",
+		crossesBoundary: true,
+		changesContractOrState: true,
+		introducesLifecycle: false,
+		hasRuntimeRisk: true,
+		hasUnverifiedLayerAssumption: false,
+		hasMeaningfulFailureCost: true,
+		budgetAction: "call-now",
+		durableScoutFindings: [],
+	});
+
+	assert(plan.selectedScoutProfiles.includes("frontend"), "frontend decisions keep frontend scout under cap");
+	assert(plan.selectedScoutProfiles.length <= 2, "frontend high-risk decision still caps scout fan-out");
+}
+
+{
+	const plan = planScoutDispatch({
+		decision: "Change the React page state contract for the settings screen",
+		goal: "Explore Pi support for ralph-loop CLI",
+		currentTier: "macro",
+		crossesBoundary: true,
+		changesContractOrState: true,
+		introducesLifecycle: false,
+		hasRuntimeRisk: true,
+		hasUnverifiedLayerAssumption: false,
+		hasMeaningfulFailureCost: true,
+		budgetAction: "call-now",
+		durableScoutFindings: [],
+	});
+
+	assert(plan.selectedScoutProfiles.includes("frontend"), "UI evidence still routes frontend even when the repo goal mentions CLI");
+}
+
+{
+	const plan = planScoutDispatch({
+		decision: "This is unclear and might affect structure before we continue",
+		goal: "Plan a structural feature change",
+		currentTier: "macro",
+		crossesBoundary: false,
+		changesContractOrState: false,
+		introducesLifecycle: false,
+		hasRuntimeRisk: false,
+		hasUnverifiedLayerAssumption: false,
+		hasMeaningfulFailureCost: false,
+		budgetAction: "skip-with-reason",
+		durableScoutFindings: [],
+	});
+
+	assertEqual(plan.budgetAction, "call-now", "ambiguous verification need promotes skipped budget to scout dispatch");
+	assertEqual(plan.selectedScoutProfiles.length, 1, "ambiguous verification need dispatches one scout");
+	assertEqual(plan.selectedScoutProfiles[0], "backend", "ambiguous verification falls back to backend scout");
+}
+
+{
+	const plan = planScoutDispatch({
+		decision: "Accept the release plan for this migration",
+		goal: "Plan a risky feature rollout",
+		currentTier: "macro",
+		crossesBoundary: false,
+		changesContractOrState: false,
+		introducesLifecycle: false,
+		hasRuntimeRisk: false,
+		hasUnverifiedLayerAssumption: false,
+		hasMeaningfulFailureCost: true,
+		budgetAction: "call-now",
+		durableScoutFindings: [],
+	});
+
+	assertEqual(plan.selectedScoutProfiles.length, 1, "meaningful failure cost dispatches QA scout");
+	assertEqual(plan.selectedScoutProfiles[0], "qa", "meaningful failure cost uses QA scout");
+}
+
+{
+	const plan = planScoutDispatch({
+		decision: "Use shorter labels in the planning handoff",
+		goal: "Polish a low-risk planning reply",
+		currentTier: "macro",
+		crossesBoundary: false,
+		changesContractOrState: false,
+		introducesLifecycle: false,
+		hasRuntimeRisk: false,
+		hasUnverifiedLayerAssumption: false,
+		hasMeaningfulFailureCost: false,
+		budgetAction: "ask-human",
+		durableScoutFindings: [],
+	});
+
+	assertEqual(plan.budgetAction, "skip-with-reason", "low-evidence decision skips scout even if caller did not pre-skip");
+	assertEqual(plan.selectedScoutProfiles.length, 0, "low-evidence decision dispatches no scouts");
+	assertIncludes(plan.skipReason ?? "", "No specialist verification", "skip reason explains no scout need");
+}
 
 // ---------------------------------------------------------------------------
 // Tests: recordScoutGate — persists gate to session.json and transcript.md

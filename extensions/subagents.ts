@@ -64,6 +64,18 @@ interface CustomAgentModelConfig {
 	agents: Partial<Record<string, ModelPreference>>;
 }
 
+interface SubagentTypeDefaults {
+	default?: string;
+}
+
+interface EditableSubagentTypeDefault {
+	id: "subagents:default";
+	label: string;
+	description: string;
+	configDir: string;
+	currentValue: string;
+}
+
 interface EditableCustomAgent {
 	id: string;
 	name: string;
@@ -415,6 +427,78 @@ function resolveConfiguredModel(agent: CustomAgent, config: CustomAgentModelConf
 	return agent.model;
 }
 
+// Returns the canonical list of dirs to consult for subagent type defaults,
+// from least to most specific. Mirrors discoverCustomAgents' walk: package
+// (bundled my-pi/agents/), user (~/.pi/agent/agents/), project (.pi/agents/).
+// Missing dirs are returned as undefined so the reader can skip them.
+export function getSubagentDefaultsSearchDirs(cwd: string): Array<string | undefined> {
+	return [getPackageAgentsDir(), path.join(getAgentDir(), "agents"), findProjectAgentsDir(cwd)];
+}
+
+// Resolves subagents.default across the package -> user -> project layering.
+// A more specific "model" preference replaces a less specific one. An explicit
+// "inherit" preference at a more specific level clears the parent default,
+// letting the runner fall back to the parent agent's currently active model.
+export function readSubagentTypeDefaults(cwd: string): SubagentTypeDefaults {
+	const merged: SubagentTypeDefaults = {};
+	for (const dir of getSubagentDefaultsSearchDirs(cwd)) {
+		if (!dir) continue;
+		const raw = readJsonObjectFile(getCustomAgentModelsPath(dir));
+		const block = raw && isRecord(raw.subagents) ? raw.subagents : undefined;
+		if (!block) continue;
+		const preference = parseModelPreference(block.default);
+		if (!preference) continue;
+		if (preference.kind === "model") merged.default = preference.value;
+		else merged.default = undefined;
+	}
+	return merged;
+}
+
+// Picks the canonical dir to write subagents.default into when the user saves
+// from the /subagents-model editor. Always writes to the user agents dir so
+// that choices persist across package updates. The package dir may ship a
+// default that the user dir overrides (position [1] beats position [0] in
+// readSubagentTypeDefaults).
+export function getSubagentDefaultsWriteDir(): string {
+	return path.join(getAgentDir(), "agents");
+}
+
+// Writes subagents.default into <dir>/models.json, merging with any existing
+// content. Pass INHERIT_MODEL_CHOICE to set "inherit" explicitly (so a more
+// specific dir clears a parent default); pass undefined to remove the field.
+export function writeSubagentDefaultModel(dir: string, value: string | undefined): string {
+	const filePath = getCustomAgentModelsPath(dir);
+	const parsed = readJsonObjectFile(filePath) ?? {};
+	const nextSubagents = isRecord(parsed.subagents) ? { ...parsed.subagents } : {};
+	if (value === undefined) {
+		delete nextSubagents.default;
+	} else {
+		nextSubagents.default = value;
+	}
+	const nextConfig: Record<string, unknown> = { ...parsed, subagents: nextSubagents };
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(filePath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
+	return filePath;
+}
+
+export function buildEditableSubagentTypeDefault(cwd: string): EditableSubagentTypeDefault {
+	const resolved = readSubagentTypeDefaults(cwd);
+	const configDir = getSubagentDefaultsWriteDir();
+	const raw = readJsonObjectFile(getCustomAgentModelsPath(configDir));
+	const block = raw && isRecord(raw.subagents) ? raw.subagents : undefined;
+	const explicit = parseModelPreference(block?.default);
+	const currentValue = explicit
+		? explicit.kind === "model" ? explicit.value : INHERIT_MODEL_CHOICE
+		: resolved.default ?? INHERIT_MODEL_CHOICE;
+	return {
+		id: "subagents:default",
+		label: "generic explore / shell",
+		description: "Default model for type=explore and type=shell subagents.",
+		configDir,
+		currentValue,
+	};
+}
+
 function loadCustomAgentsFromDir(dir: string, source: AgentSource): CustomAgent[] {
 	if (!fs.existsSync(dir)) return [];
 	let entries: fs.Dirent[];
@@ -496,6 +580,18 @@ export function discoverCustomAgents(cwd: string): CustomAgent[] {
 	if (projectDir) {
 		for (const agent of loadCustomAgentsFromDir(projectDir, "project")) byName.set(agent.name, agent);
 	}
+	// Apply user-dir model config as an overlay on package-bundled agents.
+	// This ensures /subagents-model writes (which go to user dir) are picked
+	// up at runtime even when the agent .md lives in the package dir.
+	const userModelConfig = readCustomAgentModelConfig(userDir);
+	for (const [name, agent] of byName) {
+		if (path.dirname(agent.filePath) === packageDir) {
+			const overrideModel = resolveConfiguredModel(agent, userModelConfig);
+			if (overrideModel !== agent.model) {
+				byName.set(name, { ...agent, model: overrideModel });
+			}
+		}
+	}
 	return [...byName.values()];
 }
 
@@ -507,9 +603,14 @@ function prioritizeCustomAgentsForDisplay(agents: CustomAgent[]): CustomAgent[] 
 }
 
 export function buildEditableCustomAgents(cwd: string): EditableCustomAgent[] {
+	const packageDir = getPackageAgentsDir();
+	const userDir = path.join(getAgentDir(), "agents");
 	const configCache = new Map<string, CustomAgentModelConfig>();
 	return prioritizeCustomAgentsForDisplay(discoverCustomAgents(cwd)).map((agent) => {
-		const configDir = path.dirname(agent.filePath);
+		// For package-bundled agents, redirect config to user dir so that
+		// /subagents-model writes persist across package updates.
+		const agentDir = path.dirname(agent.filePath);
+		const configDir = agentDir === packageDir ? userDir : agentDir;
 		const config = configCache.get(configDir) ?? readCustomAgentModelConfig(configDir);
 		configCache.set(configDir, config);
 		const explicitPreference = config.agents[agent.name];
@@ -675,15 +776,32 @@ class SubagentModelsEditor extends Container {
 	constructor(
 		private readonly agents: EditableCustomAgent[],
 		modelItems: SelectItem[],
-		private readonly onSaveValue: (agents: EditableCustomAgent[]) => void,
+		private readonly onSaveValue: (agents: EditableCustomAgent[], typeDefault: EditableSubagentTypeDefault | undefined) => void,
 		private readonly matchesSave: (data: string) => boolean,
 		onCancelValue: () => void,
 		private readonly theme: Theme,
-		parentDone?: (result: EditableCustomAgent[] | undefined) => void,
+		parentDone?: (result: { agents: EditableCustomAgent[]; typeDefault: EditableSubagentTypeDefault | undefined } | undefined) => void,
+		private typeDefault?: EditableSubagentTypeDefault,
 	) {
 		super();
 		this.addChild(new Text(centerText(theme.fg("accent", theme.bold("Subagent models")), 120), 0, 0));
 		this.addChild(new Spacer(1));
+		const typeDefaultItem: SettingItem | undefined = typeDefault
+			? {
+				id: typeDefault.id,
+				label: typeDefault.label,
+				description: typeDefault.description,
+				currentValue: typeDefault.currentValue,
+				submenu: (currentValue, done) => new SubagentModelPicker(
+					theme,
+					"Generic subagent default model",
+					modelItems,
+					(value) => done(value),
+					() => done(),
+					currentValue,
+				),
+			}
+			: undefined;
 		const agentItems: SettingItem[] = agents.map((agent) => ({
 			id: agent.id,
 			label: `${agent.name} [${agent.source}]`,
@@ -705,15 +823,22 @@ class SubagentModelsEditor extends Container {
 			currentValue: "",
 			values: [""],
 		};
-		const items = [...agentItems, saveItem];
+		const items = typeDefaultItem ? [typeDefaultItem, ...agentItems, saveItem] : [...agentItems, saveItem];
 		this.settingsList = new SettingsList(
 			items,
 			Math.min(items.length + 2, 15),
 			getSettingsListTheme(),
 			(id, _newValue) => {
 				if (id === "_save") {
-					this.onSaveValue(this.agents);
-					if (parentDone) parentDone(this.agents.map((agent) => ({ ...agent })));
+					this.onSaveValue(this.agents, this.typeDefault);
+					if (parentDone) parentDone({
+						agents: this.agents.map((agent) => ({ ...agent })),
+						typeDefault: this.typeDefault ? { ...this.typeDefault } : undefined,
+					});
+					return;
+				}
+				if (this.typeDefault && id === this.typeDefault.id) {
+					this.typeDefault = { ...this.typeDefault, currentValue: _newValue };
 					return;
 				}
 				const agent = this.agents.find((entry) => entry.id === id);
@@ -734,7 +859,7 @@ class SubagentModelsEditor extends Container {
 
 	handleInput(data: string): void {
 		if (this.matchesSave(data)) {
-			this.onSaveValue(this.agents);
+			this.onSaveValue(this.agents, this.typeDefault);
 			return;
 		}
 		this.settingsList.handleInput(data);
@@ -743,24 +868,26 @@ class SubagentModelsEditor extends Container {
 
 function resolveRunConfig(params: SubagentParamsType, cwd: string): RunConfig {
 	if (params.type === "explore") {
+		const defaults = readSubagentTypeDefaults(cwd);
 		return {
 			type: "explore",
 			name: "explore",
 			description: "Read-only codebase exploration",
 			prompt: EXPLORE_PROMPT,
 			tools: ["read", "grep", "find", "ls"],
-			model: params.model,
+			model: params.model ?? defaults.default,
 		};
 	}
 
 	if (params.type === "shell") {
+		const defaults = readSubagentTypeDefaults(cwd);
 		return {
 			type: "shell",
 			name: "shell",
 			description: "Shell-oriented investigation",
 			prompt: SHELL_PROMPT,
 			tools: ["read", "grep", "find", "ls", "bash"],
-			model: params.model,
+			model: params.model ?? defaults.default,
 		};
 	}
 
@@ -1632,14 +1759,9 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const editableAgents = buildEditableCustomAgents(ctx.cwd);
-			if (editableAgents.length === 0) {
-				ctx.ui.notify(
-					`No custom agents found. Add markdown files to ${path.join(os.homedir(), ".pi", "agent", "agents")} or .pi/agents/.`,
-					"info",
-				);
-				return;
-			}
-			for (const configDir of new Set(editableAgents.map((agent) => agent.configDir))) {
+			const typeDefault = buildEditableSubagentTypeDefault(ctx.cwd);
+			const configDirsToValidate = new Set<string>([typeDefault.configDir, ...editableAgents.map((agent) => agent.configDir)]);
+			for (const configDir of configDirsToValidate) {
 				const configError = getCustomAgentModelConfigError(configDir);
 				if (configError) ctx.ui.notify(`Ignoring invalid subagent models config. ${configError}.`, "warning");
 			}
@@ -1653,21 +1775,38 @@ export default function (pi: ExtensionAPI) {
 			}
 			const modelItems = buildModelSelectItems(availableModels, ctx);
 
-			const result = await ctx.ui.custom<EditableCustomAgent[] | undefined>(
+			type EditorResult = { agents: EditableCustomAgent[]; typeDefault: EditableSubagentTypeDefault | undefined } | undefined;
+			const result = await ctx.ui.custom<EditorResult>(
 				(_tui, theme, keybindings, done) => new SubagentModelsEditor(
 					editableAgents.map((agent) => ({ ...agent })),
 					modelItems,
-					(agents) => done(agents.map((agent) => ({ ...agent }))),
+					(agents, savedTypeDefault) => done({
+						agents: agents.map((agent) => ({ ...agent })),
+						typeDefault: savedTypeDefault ? { ...savedTypeDefault } : undefined,
+					}),
 					(data) => keybindings.matches(data, "app.models.save"),
 					() => done(undefined),
 					theme,
 					done,
+					{ ...typeDefault },
 				),
 				{ overlay: true, overlayOptions: { anchor: "center", width: "90%" } },
 			);
 			if (!result) return;
 
-			const writtenPaths = writeCustomAgentModelChoices(result);
+			const writtenPaths = writeCustomAgentModelChoices(result.agents);
+			if (result.typeDefault) {
+				const savedValue = result.typeDefault.currentValue === INHERIT_MODEL_CHOICE
+					? INHERIT_MODEL_CHOICE
+					: result.typeDefault.currentValue;
+				const typeDefaultPath = writeSubagentDefaultModel(result.typeDefault.configDir, savedValue);
+				if (!writtenPaths.includes(typeDefaultPath)) writtenPaths.push(typeDefaultPath);
+			}
+			writtenPaths.sort((left, right) => left.localeCompare(right));
+			if (writtenPaths.length === 0) {
+				ctx.ui.notify("No subagent model choices to save.", "info");
+				return;
+			}
 			ctx.ui.notify(`Saved subagent model choices to ${writtenPaths.join(", ")}.`, "info");
 		},
 	});

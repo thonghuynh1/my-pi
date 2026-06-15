@@ -14,13 +14,12 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
 	createSession,
 	ARTIFACT_ROOT,
 	type SessionState,
 	type ScoutGate,
-	type ScoutRoomSubagentStatus,
 	determineBudgetAction,
 	recordScoutGate,
 	recordScoutResult,
@@ -32,7 +31,8 @@ import {
 	computeAreaVerification,
 	buildScoutPrompt,
 	loadScoutProfile,
-	renderScoutRoomSummary,
+	loadGrillMeProtocol,
+	loadGrillWithDocsSkill,
 	compactDecisionLedger,
 	updateContextPressure,
 	performGrillRespawn,
@@ -40,6 +40,23 @@ import {
 	deriveInspectedPaths,
 	type AreaVerification,
 } from "./lib/grill-with-scouts-helpers.ts";
+
+// Resolve extension directory for loading prompt templates
+const extDir = typeof __dirname !== "undefined" ? __dirname : dirname(new URL(import.meta.url).pathname);
+const PROMPTS_DIR = join(extDir, "prompts");
+
+let cachedLeadGrillerTemplate: string | null = null;
+function loadLeadGrillerTemplate(): string {
+	if (cachedLeadGrillerTemplate !== null) return cachedLeadGrillerTemplate;
+	try {
+		const main = readFileSync(join(PROMPTS_DIR, "lead-griller.md"), "utf8");
+		const scoutDispatch = readFileSync(join(PROMPTS_DIR, "scout-dispatch.md"), "utf8");
+		cachedLeadGrillerTemplate = main + "\n\n" + scoutDispatch;
+	} catch {
+		cachedLeadGrillerTemplate = "";
+	}
+	return cachedLeadGrillerTemplate;
+}
 
 // ---------------------------------------------------------------------------
 // Session state (module-scoped, lives for the pi process lifetime)
@@ -55,7 +72,6 @@ const scoutTelemetryCache = new Map<string, Array<{ name: string; args: unknown 
 let lastCheckpointPressure = 0;
 let lastRespawnPressure = 0;
 
-const WIDGET_KEY = "grill-scout-room";
 const CHECKPOINT_THRESHOLD = 65;
 const RESPAWN_THRESHOLD = 80;
 
@@ -67,139 +83,10 @@ function persistState(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Scout Room Widget
-// ---------------------------------------------------------------------------
-
-function refreshWidget(ctx: ExtensionContext): void {
-	if (!activeSession) {
-		ctx.ui.setWidget(WIDGET_KEY, undefined);
-		return;
-	}
-	const lines = renderScoutRoomSummary(activeSession, {
-		expanded: false,
-		runStatuses: buildScoutRoomRunStatuses(),
-	}).split("\n");
-	ctx.ui.setWidget(WIDGET_KEY, lines, { placement: "aboveEditor" });
-}
-
-function stringifyToolArgs(args: unknown): string {
-	if (typeof args === "string") return args;
-	try {
-		return JSON.stringify(args) ?? "";
-	} catch {
-		return "";
-	}
-}
-
-function inferScoutProfileFromSubagentArgs(args: unknown): string | null {
-	if (!activeSession) return null;
-	const activeGate = activeSession.scoutGates[activeSession.scoutGates.length - 1];
-	if (!activeGate || activeGate.selectedScoutProfiles.length === 0) return null;
-
-	const text = stringifyToolArgs(args).toLowerCase();
-	if (!text.includes("scout")) return null;
-
-	return activeGate.selectedScoutProfiles.find(profile =>
-		text.includes(profile.toLowerCase()),
-	) ?? null;
-}
-
-function markScoutRunStarted(toolCallId: string, args: unknown): boolean {
-	if (!activeSession) return false;
-	const activeGate = activeSession.scoutGates[activeSession.scoutGates.length - 1];
-	const profileName = inferScoutProfileFromSubagentArgs(args);
-	if (!activeGate || !profileName) return false;
-
-	const activeScoutRuns = activeSession.activeScoutRuns ?? [];
-	activeSession.activeScoutRuns = activeScoutRuns.filter(run => run.toolCallId !== toolCallId);
-	activeSession.activeScoutRuns.push({ toolCallId, gateId: activeGate.id, profileName });
-	return true;
-}
-
-function markScoutRunFinished(toolCallId: string): boolean {
-	if (!activeSession?.activeScoutRuns) return false;
-	const before = activeSession.activeScoutRuns.length;
-	activeSession.activeScoutRuns = activeSession.activeScoutRuns.filter(run => run.toolCallId !== toolCallId);
-	return activeSession.activeScoutRuns.length !== before;
-}
-
-function clearScoutRunForResult(gateId: string, profileName: string): void {
-	if (!activeSession?.activeScoutRuns) return;
-	activeSession.activeScoutRuns = activeSession.activeScoutRuns.filter(run =>
-		run.gateId !== gateId || run.profileName !== profileName,
-	);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null;
-}
-
-function stringField(record: Record<string, unknown>, key: string): string | undefined {
-	const value = record[key];
-	return typeof value === "string" ? value : undefined;
-}
-
-function numberField(record: Record<string, unknown>, key: string): number | undefined {
-	const value = record[key];
-	return typeof value === "number" ? value : undefined;
-}
-
-function nullableNumberField(record: Record<string, unknown>, key: string): number | null | undefined {
-	const value = record[key];
-	if (value === null) return null;
-	return typeof value === "number" ? value : undefined;
-}
-
-function readLiveSubagentStatuses(): Record<string, Record<string, unknown>> {
-	const state = Reflect.get(globalThis, "__subagent");
-	if (!isRecord(state)) return {};
-	const statuses = state["statuses"];
-	if (!Array.isArray(statuses)) return {};
-
-	const byId: Record<string, Record<string, unknown>> = {};
-	for (const status of statuses) {
-		if (!isRecord(status)) continue;
-		const id = stringField(status, "id");
-		if (!id) continue;
-		byId[id] = status;
-	}
-	return byId;
-}
-
-function buildScoutRoomRunStatuses(): ScoutRoomSubagentStatus[] {
-	if (!activeSession?.activeScoutRuns) return [];
-	const liveStatuses = readLiveSubagentStatuses();
-	return activeSession.activeScoutRuns.map(run => {
-		const live = liveStatuses[run.toolCallId];
-		if (!live) return run;
-		const toolCalls = live["toolCalls"];
-		return {
-			...run,
-			type: stringField(live, "type"),
-			name: stringField(live, "name"),
-			startedAt: numberField(live, "startedAt"),
-			turns: numberField(live, "turns"),
-			toolCalls: Array.isArray(toolCalls) ? toolCalls.length : undefined,
-			currentTool: stringField(live, "currentTool"),
-			preview: stringField(live, "preview"),
-			model: stringField(live, "model"),
-			cost: numberField(live, "cost"),
-			contextTokens: nullableNumberField(live, "contextTokens"),
-			contextWindow: numberField(live, "contextWindow"),
-			contextPercent: nullableNumberField(live, "contextPercent"),
-		};
-	});
-}
-
-function hasActiveScoutRun(toolCallId: string): boolean {
-	return activeSession?.activeScoutRuns?.some(run => run.toolCallId === toolCallId) ?? false;
-}
-
-// ---------------------------------------------------------------------------
 // Context Pressure Automation
 // ---------------------------------------------------------------------------
 
-function handleContextPressure(ctx: ExtensionContext): void {
+function handleContextPressure(ctx: ExtensionContext, pi: ExtensionAPI): void {
 	if (!activeSession || !activeSessionCwd) return;
 
 	const usage = ctx.getContextUsage();
@@ -228,11 +115,18 @@ function handleContextPressure(ctx: ExtensionContext): void {
 		ctx.ui.notify(`Grill Respawn: ${respawnMsg}`, "info");
 
 		// Actually compact the conversation so the real context shrinks.
-		// The Lead Griller system prompt re-injects the latest checkpoint,
-		// so planning state survives compaction.
+		// The system prompt is intentionally STATIC (so it stays cached), so it can
+		// no longer carry the checkpoint. Instead we re-seed the volatile planning
+		// state as a tail message after compaction — this survives the truncation
+		// without invalidating the cached system-prompt prefix.
 		ctx.compact({
-			customInstructions: "This is a Grill With Scouts planning session. Preserve: the current goal, tier, accepted decisions, and the latest planning question. The full checkpoint is re-injected via system prompt.",
+			customInstructions: "This is a Grill With Scouts planning session. Preserve: the current goal, tier, accepted decisions, and the latest planning question.",
 		});
+
+		const snapshot = activeSession ? buildDynamicStateMessage(activeSession) : null;
+		if (snapshot) {
+			pi.sendUserMessage(snapshot, { deliverAs: "followUp" });
+		}
 	}
 }
 
@@ -270,78 +164,71 @@ const GrillFinalizeParams = Type.Object({
 // Lead Griller system prompt
 // ---------------------------------------------------------------------------
 
-function buildLeadGrillerPrompt(state: SessionState): string {
-	const checkpoint = latestCheckpointContent(state);
-	const ledger = state.acceptedDecisions.length > 0 ? compactDecisionLedger(state) : "";
-
-	return `
+/**
+ * Build the STATIC Lead Griller system-prompt block.
+ *
+ * IMPORTANT (prompt-cache correctness): this is appended to the system prompt on
+ * every turn via `before_agent_start`. The system prompt is the cached prefix
+ * (byte 0). If any byte of it changes between turns, the entire prompt-cache
+ * prefix mismatches and the whole request (system + full history) is re-written
+ * as fresh cache — which is exactly the cacheWrite blow-up we want to avoid.
+ *
+ * Therefore this block MUST be byte-identical for the whole lifetime of a
+ * session. Only include values that are fixed at session creation (id, goal)
+ * plus the static protocol/docs/template. Volatile planning state (decisions,
+ * findings, gaps, next question, ledger, checkpoint) lives in the conversation
+ * itself (tool results) and is re-seeded after compaction via
+ * `buildDynamicStateMessage` — never in the cached prefix.
+ */
+export function buildStaticLeadGrillerPrompt(state: SessionState): string {
+	const sessionHeader = `
 === Grill With Scouts — Lead Griller mode active ===
-
-You are the Lead Griller in a managed planning session. Drive a structured conversation that produces a Scout-Grounded Handoff.
 
 Session: ${state.id}
 Goal: ${state.goal}
+
+Session artifacts: ${ARTIFACT_ROOT}/sessions/${state.id}/
+
+Current planning state (tier, accepted decisions, scout findings/gaps, and the
+next question) is tracked in the conversation via grill_* tool results. Do not
+expect it to be repeated here.
+`;
+
+	const grillMeProtocol = loadGrillMeProtocol();
+	const grillMeSection = grillMeProtocol
+		? `\n## Base protocol (grill-me)\n\n${grillMeProtocol}\n`
+		: "";
+
+	const grillWithDocs = loadGrillWithDocsSkill();
+	const docsSection = grillWithDocs
+		? `\n## Domain awareness (grill-with-docs additions)\n\n${grillWithDocs}\n`
+		: "";
+
+	const template = loadLeadGrillerTemplate();
+
+	return sessionHeader + grillMeSection + docsSection + "\n" + template;
+}
+
+/**
+ * Build the VOLATILE planning-state snapshot, delivered as a normal conversation
+ * message (NOT in the system prompt). Used to re-seed state after a compaction /
+ * respawn truncates the history. Because it lands at the tail of the
+ * conversation, it only invalidates the small last-message cache breakpoint
+ * rather than the whole prefix.
+ */
+export function buildDynamicStateMessage(state: SessionState): string {
+	const checkpoint = latestCheckpointContent(state);
+	const ledger = state.acceptedDecisions.length > 0 ? compactDecisionLedger(state) : "";
+
+	return `[Grill With Scouts] Resuming after context compaction. Current planning state:
+
 Current tier: ${state.currentTier}
 Decisions accepted: ${state.acceptedDecisions.length}
 ${state.durableScoutFindings.length > 0 ? `Scout findings: ${state.durableScoutFindings.join("; ")}` : ""}
 ${state.scoutGaps.length > 0 ? `Scout gaps: ${state.scoutGaps.join("; ")}` : ""}
 ${state.nextQuestion ? `Resume from: ${state.nextQuestion}` : ""}
 ${ledger ? `\nDecision ledger:\n${ledger}` : ""}
-${checkpoint ? `\nLatest checkpoint:\n${checkpoint}` : ""}
-
-## Your protocol
-
-1. Ask ONE focused question at a time. Start at macro, progress to meso, then micro.
-2. When the human confirms a decision, call the \`grill_decide\` tool with the decision and trigger fields.
-3. If \`grill_decide\` returns budget action \`call-now\`, immediately dispatch scouts using the \`subagent\` tool (type=explore), then call \`grill_record_scout\` with each scout's output.
-4. If budget action is \`ask-human\`, ask the human whether to run scouts or skip.
-5. If budget action is \`skip-with-reason\`, move on.
-6. After completing a tier or accumulating 5+ decisions, call \`grill_checkpoint\`.
-7. When all tiers are covered, call \`grill_finalize\` to produce the handoff.
-
-## How to dispatch scouts
-
-When \`grill_decide\` says \`call-now\`, run scouts for the profiles it selects. For each profile, call the \`subagent\` tool with:
-- type: "explore"
-- task: the scout prompt (see format below)
-
-Scout prompt format for the subagent task:
-\`\`\`
-You are the {profile} scout. Investigate this decision from the {profile} perspective.
-
-Decision: {the decision text}
-Goal: ${state.goal}
-Known anchors: {any file paths or symbols mentioned so far}
-
-End your response with exactly:
-Verdict: viable | risky | blocked | needs-decision
-Evidence: <specific files/docs/patterns, or "not found">
-Concern: <one concrete issue, or "none">
-Required decision: <one question for the Lead Griller to ask, or "none">
-Claimed anchors: <symbols/contracts/events/state names, or "none">
-Confidence: verified | partial | unverified
-\`\`\`
-
-After each scout returns, call \`grill_record_scout\` with the gate ID, profile name, and full output.
-
-## Tools available to you
-
-- \`grill_decide\` — record a confirmed decision and get the Scout Gate evaluation
-- \`grill_record_scout\` — persist a scout's output and extract verdict/findings
-- \`grill_checkpoint\` — save a formal checkpoint (do this after each tier)
-- \`grill_finalize\` — write the final handoff (do this when planning is complete)
-- \`subagent\` — dispatch scouts as explore subagents
-
-## Formatting
-
-- Start each turn with: [Tier] | [N decisions] | [active gate if any]
-- Ask one clear question.
-- When recording a decision, state it as a one-liner the human can confirm or reject.
-
-## Session artifacts
-
-Artifacts: ${ARTIFACT_ROOT}/sessions/${state.id}/
-`;
+${checkpoint ? `\nLatest checkpoint:\n${checkpoint}` : ""}`;
 }
 
 function latestCheckpointContent(state: SessionState): string | null {
@@ -360,11 +247,14 @@ function latestCheckpointContent(state: SessionState): string | null {
 // ---------------------------------------------------------------------------
 
 export default function grillWithScouts(pi: ExtensionAPI) {
-	// Inject Lead Griller system prompt on every agent turn while session is active
+	// Inject the STATIC Lead Griller system prompt on every agent turn while a
+	// session is active. This block is byte-identical for the whole session so it
+	// stays in the prompt cache (cacheRead) instead of forcing a full prefix
+	// re-write (cacheWrite) on every turn.
 	pi.on("before_agent_start", (event) => {
 		if (!activeSession) return;
 		return {
-			systemPrompt: event.systemPrompt + buildLeadGrillerPrompt(activeSession),
+			systemPrompt: event.systemPrompt + buildStaticLeadGrillerPrompt(activeSession),
 		};
 	});
 
@@ -372,34 +262,13 @@ export default function grillWithScouts(pi: ExtensionAPI) {
 
 	pi.on("turn_end", (_event, ctx) => {
 		if (!activeSession) return;
-		handleContextPressure(ctx);
-		refreshWidget(ctx);
-	});
-
-	// --- Track running scout subagents ------------------------------------------
-
-	pi.on("tool_execution_start", (event, ctx) => {
-		if (!activeSession || event.toolName !== "subagent") return;
-		if (markScoutRunStarted(event.toolCallId, event.args)) {
-			refreshWidget(ctx);
-		}
-	});
-
-	pi.on("tool_execution_update", (event, ctx) => {
-		if (!activeSession || event.toolName !== "subagent") return;
-		if (hasActiveScoutRun(event.toolCallId)) {
-			refreshWidget(ctx);
-		}
+		handleContextPressure(ctx, pi);
 	});
 
 	// --- Refresh widget after tool execution -----------------------------------
 
 	pi.on("tool_execution_end", (event, ctx) => {
 		if (!activeSession) return;
-
-		if (event.toolName === "subagent") {
-			markScoutRunFinished(event.toolCallId);
-		}
 
 		// Capture subagent telemetry for scout tool-call passthrough
 		if (event.toolName === "subagent" && event.result) {
@@ -414,13 +283,6 @@ export default function grillWithScouts(pi: ExtensionAPI) {
 			}
 		}
 
-		refreshWidget(ctx);
-	});
-
-	// --- Refresh widget on session start ----------------------------------------
-
-	pi.on("session_start", (_event, ctx) => {
-		refreshWidget(ctx);
 	});
 
 	// --- Tool: grill_decide ---------------------------------------------------
@@ -504,12 +366,35 @@ export default function grillWithScouts(pi: ExtensionAPI) {
 			activeSession.scoutGates.push(gate);
 			persistState();
 
+			// Build profile-specific scout prompts so the model uses them directly
+			const checkpointContent = latestCheckpointContent(activeSession!) || "No checkpoint yet.";
+			const scoutPrompts: Record<string, string> = {};
+			for (const profileName of selectedProfiles) {
+				const profile = loadScoutProfile(profileName) ?? {
+					name: profileName,
+					description: profileName + " scout",
+					scope: profileName + " layer concerns",
+					triggerFit: "general",
+					evidenceRequirements: "file paths with line ranges",
+					verdictFormat: "standard",
+					forbiddenBehaviors: "Do not modify source code.",
+					body: "Investigate " + profileName + " aspects of the decision.",
+				};
+				scoutPrompts[profileName] = buildScoutPrompt({
+					profile,
+					checkpointContent,
+					decision: params.decision,
+					anchors: [],
+				});
+			}
+
 			const result = {
 				gateId,
 				decision: params.decision,
 				riskLevel,
 				budgetAction,
 				selectedScoutProfiles: selectedProfiles,
+				scoutPrompts,
 				totalDecisions: activeSession.acceptedDecisions.length,
 			};
 
@@ -546,7 +431,6 @@ export default function grillWithScouts(pi: ExtensionAPI) {
 			});
 
 			// Update session state
-			clearScoutRunForResult(params.gateId, params.profileName);
 			if (result.finding) {
 				activeSession.durableScoutFindings.push(result.finding);
 			}
@@ -696,7 +580,6 @@ export default function grillWithScouts(pi: ExtensionAPI) {
 				);
 			}
 
-			refreshWidget(ctx);
 
 			// Trigger a turn so the Lead Griller responds immediately
 			pi.sendUserMessage(
@@ -721,7 +604,6 @@ export default function grillWithScouts(pi: ExtensionAPI) {
 			lastCheckpointPressure = 0;
 			lastRespawnPressure = 0;
 			scoutTelemetryCache.clear();
-			ctx.ui.setWidget(WIDGET_KEY, undefined);
 			ctx.ui.notify(`Grill With Scouts session ended: ${id}\nArtifacts preserved.`, "info");
 		},
 	});
@@ -735,11 +617,7 @@ export default function grillWithScouts(pi: ExtensionAPI) {
 				ctx.ui.notify("No active Grill With Scouts session.", "warning");
 				return;
 			}
-			const summary = renderScoutRoomSummary(activeSession, {
-				expanded: true,
-				runStatuses: buildScoutRoomRunStatuses(),
-			});
-			ctx.ui.notify(summary, "info");
+			ctx.ui.notify(JSON.stringify({ tier: activeSession.currentTier, decisions: activeSession.acceptedDecisions.length, gates: activeSession.scoutGates.length }, null, 2), "info");
 		},
 	});
 }

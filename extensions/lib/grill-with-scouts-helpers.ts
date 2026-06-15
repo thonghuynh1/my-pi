@@ -1359,7 +1359,7 @@ function resolveEngineeringSkillsRepoRoot(): string | null {
 			const distIndexPath = serverEntry.args[0].replace(/\\/g, "/");
 			// Go up from dist/index.js → dist → repo root
 			const repoRoot = dirname(dirname(distIndexPath));
-			if (existsSync(join(repoRoot, "scouts"))) {
+			if (existsSync(join(repoRoot, "skills")) || existsSync(join(repoRoot, "prompts"))) {
 				resolvedRepoRoot = repoRoot;
 				return repoRoot;
 			}
@@ -1370,6 +1370,86 @@ function resolveEngineeringSkillsRepoRoot(): string | null {
 
 	resolvedRepoRoot = null;
 	return null;
+}
+
+/**
+ * Strip YAML frontmatter from a markdown file's content.
+ */
+function stripFrontmatter(raw: string): string {
+	return raw.replace(/^---[\s\S]*?---\n*/, "").trim();
+}
+
+/**
+ * Load the grill-me protocol prompt from the Engineering Skills MCP repo.
+ * Returns the raw prompt content (without frontmatter), or null if unavailable.
+ * Cached for process lifetime.
+ */
+let cachedGrillMeProtocol: string | null | undefined;
+export function loadGrillMeProtocol(): string | null {
+	if (cachedGrillMeProtocol !== undefined) return cachedGrillMeProtocol;
+
+	const repoRoot = resolveEngineeringSkillsRepoRoot();
+	if (!repoRoot) {
+		cachedGrillMeProtocol = null;
+		return null;
+	}
+
+	const promptPath = join(repoRoot, "prompts", "grill-me.md");
+	if (!existsSync(promptPath)) {
+		cachedGrillMeProtocol = null;
+		return null;
+	}
+
+	try {
+		cachedGrillMeProtocol = stripFrontmatter(readFileSync(promptPath, "utf8"));
+		return cachedGrillMeProtocol;
+	} catch {
+		cachedGrillMeProtocol = null;
+		return null;
+	}
+}
+
+/**
+ * Load the grill-with-docs skill from the Engineering Skills MCP repo.
+ * Includes the SKILL.md content plus the CONTEXT-FORMAT.md and ADR-FORMAT.md references.
+ * Cached for process lifetime.
+ */
+let cachedGrillWithDocs: string | null | undefined;
+export function loadGrillWithDocsSkill(): string | null {
+	if (cachedGrillWithDocs !== undefined) return cachedGrillWithDocs;
+
+	const repoRoot = resolveEngineeringSkillsRepoRoot();
+	if (!repoRoot) {
+		cachedGrillWithDocs = null;
+		return null;
+	}
+
+	const skillDir = join(repoRoot, "skills", "grill-with-docs");
+	const skillPath = join(skillDir, "SKILL.md");
+	if (!existsSync(skillPath)) {
+		cachedGrillWithDocs = null;
+		return null;
+	}
+
+	try {
+		const parts: string[] = [stripFrontmatter(readFileSync(skillPath, "utf8"))];
+
+		// Append format references if available
+		const contextFormat = join(skillDir, "CONTEXT-FORMAT.md");
+		if (existsSync(contextFormat)) {
+			parts.push(readFileSync(contextFormat, "utf8").trim());
+		}
+		const adrFormat = join(skillDir, "ADR-FORMAT.md");
+		if (existsSync(adrFormat)) {
+			parts.push(readFileSync(adrFormat, "utf8").trim());
+		}
+
+		cachedGrillWithDocs = parts.join("\n\n");
+		return cachedGrillWithDocs;
+	} catch {
+		cachedGrillWithDocs = null;
+		return null;
+	}
 }
 
 /**

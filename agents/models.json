@@ -1,9 +1,12 @@
 {
+  "subagents": {
+    "default": "github-copilot/claude-sonnet-4.6"
+  },
   "defaultModel": "github-copilot/claude-sonnet-4.6",
   "agents": {
-    "explore-fast": "openai-codex/gpt-5.4-mini",
-    "find-callers": "openai-codex/gpt-5.4-mini",
+    "explore-fast": "github-copilot/claude-sonnet-4.6",
+    "find-callers": "github-copilot/claude-sonnet-4.6",
     "review-diff": "inherit",
-    "test-runner": "openai-codex/gpt-5.4-mini"
+    "test-runner": "github-copilot/claude-sonnet-4.6"
   }
 }

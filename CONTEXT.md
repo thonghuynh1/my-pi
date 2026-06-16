@@ -92,6 +92,18 @@ The compact working memory maintained by the Pair Program Tool during a run. It 
 
 The human-auditable record of Driver Agent and Navigator Agent communication during a pair-programming run. The full transcript is saved for review, but only compact Pair Run Memory is passed back into agent prompts.
 
+## End Goal To Prove
+
+The canonical finish line for one Pair Program Tool run. For issue-file-driven runs, it is grounded in the issue's acceptance criteria and every acceptance criterion must be explicitly accounted for before final approval.
+
+## Pair Acceptance Checklist
+
+The concrete proof checklist used by the Navigator Agent to review whether the End Goal To Prove has been met. It may contain multiple acceptance-criteria bullets when they all verify the same vertical slice.
+
+## Pair Run State
+
+The coordinator-owned canonical state for a pair-programming run. It records the pinned end goal, acceptance checklist, playbook recommendation, active playbook, loaded leaves, skipped steps, permitted amendments, evidence, follow-ups, and Navigator verification telemetry so roles cannot silently redefine success.
+
 ## TDD Skill
 
 The test-driven development workflow exposed by Engineering Skills MCP as `skill-tdd`. In TDD mode, Driver Agent and Navigator Agent are expected to use this skill for red-green-refactor behavior and evidence reporting.

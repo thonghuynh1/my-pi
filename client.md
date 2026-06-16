@@ -1,0 +1,2 @@
+We have pair programming extension for pi, that design mainly for running tdd skill. But now i want it to running like the poteto-mode we have, it will use that skill, that skill living in hackathon-grill-me that will have principles when doing the task. With implement we make sure the potepo-mode will implement, and verifer must just reviewing
+Also we should extract the prompt into md for driver/ navigator so we can easy read.

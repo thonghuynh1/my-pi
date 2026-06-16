@@ -7,5 +7,5 @@ node_modules/
 # common case of launching from the repo root.
 .frontend-coach/
 
-.scratch/
 .ralph-loop/
+.audit/

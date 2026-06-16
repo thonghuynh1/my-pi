@@ -247,7 +247,15 @@ function latestCheckpointContent(state: SessionState): string | null {
 // Extension entry
 // ---------------------------------------------------------------------------
 
+const REGISTER_GRILL_WITH_SCOUTS = false;
+
 export default function grillWithScouts(pi: ExtensionAPI) {
+	if (!REGISTER_GRILL_WITH_SCOUTS) {
+		// Backlog for later: keep the implementation in-repo, but do not register
+		// the tools/commands into Pi for now.
+		return;
+	}
+
 	// Inject the STATIC Lead Griller system prompt on every agent turn while a
 	// session is active. This block is byte-identical for the whole session so it
 	// stays in the prompt cache (cacheRead) instead of forcing a full prefix

@@ -322,6 +322,8 @@ export interface PairProtocolSessions {
 	navigatorDecisionRepair(prompt: string): Promise<string>;
 	driverCorrection(prompt: string): Promise<string>;
 	navigatorClarification?(prompt: string): Promise<string>;
+	/** Used for Driver startup repair when first-turn output is malformed. */
+	driverStartupRepair?(prompt: string): Promise<string>;
 }
 
 export interface PairProtocolEvent {
@@ -337,6 +339,8 @@ export interface PairCycleRecord {
 	navigatorDecision?: NavigatorDecisionValue | "malformed";
 	correctionReport?: string;
 	clarificationAnswer?: string;
+	driverStartupReport?: string;
+	driverStartupRepairReport?: string;
 }
 
 export interface PairProtocolResult {
@@ -350,6 +354,11 @@ export interface PairProtocolResult {
 	initialWorkspace?: WorkspaceSnapshot;
 	finalWorkspace?: WorkspaceSnapshot;
 	finalVerification?: FinalVerification;
+	driverStartupCompleted: boolean;
+	activePlaybook?: string;
+	loadedLeaves?: LoadedLeaf[];
+	skippedPlaybookSteps?: SkippedStep[];
+	playbookOverrideReason?: string;
 }
 
 export interface WorkspaceSnapshot {
@@ -373,6 +382,28 @@ export interface RunPairProtocolOptions {
 	collectFinalEvidence?: () => Promise<WorkspaceSnapshot>;
 	runFinalVerification?: (command: string) => Promise<FinalVerification>;
 	currentWorkspace?: WorkspaceSnapshot;
+	/** Pstack registry snapshot for startup/playbook validation. */
+	pstackRegistry?: PstackRegistryForProtocol;
+	/** Navigator's initial playbook recommendation (set by preflight freeze). */
+	initialPlaybookRecommendation?: string;
+	/** Render the driver first-turn prompt given run state context. */
+	renderDriverFirstTurn?: (context: DriverFirstTurnContext) => string;
+}
+
+/** Minimal pstack registry interface needed by the protocol. */
+export interface PstackRegistryForProtocol {
+	allNames: ReadonlySet<string>;
+	skills: ReadonlyArray<{ name: string; slug: string }>;
+	playbooks: ReadonlyArray<{ name: string; slug: string }>;
+}
+
+/** Context provided to the driver first-turn renderer. */
+export interface DriverFirstTurnContext {
+	task: string;
+	initialPlaybook: string;
+	registrySummary: string;
+	preflightEndGoal: string;
+	runStateText: string;
 }
 
 const VALID_NAVIGATOR_DECISIONS: ReadonlySet<NavigatorDecisionValue> = new Set([
@@ -569,7 +600,7 @@ export function statusFromNavigatorDecision(decision: NavigatorDecisionValue): P
 }
 
 export function statusFromStopReason(stopReason: string): PairRuntimeStatus {
-	if (stopReason === "navigator_blocked" || stopReason === "malformed_decision_after_repair" || stopReason === "repeated_revision_request") {
+	if (stopReason === "navigator_blocked" || stopReason === "malformed_decision_after_repair" || stopReason === "repeated_revision_request" || stopReason === "driver_startup_failed") {
 		return "blocked";
 	}
 	if (stopReason === "navigator_final_approve") return "success";
@@ -599,7 +630,7 @@ If you need to change the checklist later, include:
 ## Checklist Amendment`;
 }
 
-export function buildDriverCyclePrompt(memory: PairRunMemory, latestNavigatorHandoff: string | null, testCommand: string | undefined, currentWorkspace?: WorkspaceSnapshot): string {
+export function buildDriverCyclePrompt(memory: PairRunMemory, latestNavigatorHandoff: string | null, testCommand: string | undefined, currentWorkspace?: WorkspaceSnapshot, _driverStartupCompleted?: boolean): string {
 	const workspaceSection = currentWorkspace
 		? `\nCurrent workspace evidence:\n${formatWorkspaceSnapshot(currentWorkspace)}\n`
 		: "";
@@ -707,6 +738,64 @@ If you choose DECISION: request_revision, include:
 ## Required Evidence`;
 }
 
+// ---------------------------------------------------------------------------
+// Driver startup validation for the protocol loop (DEC-011, DEC-012)
+// ---------------------------------------------------------------------------
+
+export interface DriverStartupOutcome {
+	completed: boolean;
+	activePlaybook: string;
+	loadedLeaves: LoadedLeaf[];
+	skippedSteps: SkippedStep[];
+	overrideUsed: boolean;
+	overrideReason?: string;
+	errors: string[];
+}
+
+/**
+ * Parse skipped steps from the Skipped Steps section.
+ * Expects lines like: `- step name: reason` or `- skip: reason`
+ */
+function parseSkippedSteps(raw: string): SkippedStep[] {
+	const results: SkippedStep[] = [];
+	for (const line of raw.split(/\r?\n/)) {
+		const stripped = line.replace(/^[-*+]\s+/, "").trim();
+		if (!stripped) continue;
+		const colonIdx = stripped.indexOf(":");
+		if (colonIdx > 0) {
+			results.push({
+				step: stripped.slice(0, colonIdx).trim(),
+				reason: stripped.slice(colonIdx + 1).trim(),
+			});
+		} else {
+			results.push({ step: stripped, reason: "" });
+		}
+	}
+	return results;
+}
+
+/**
+ * Build a driver startup repair prompt for malformed first-turn output.
+ */
+export function buildDriverStartupRepairPrompt(originalResponse: string, errors: string[]): string {
+	return `Your previous Driver startup response did not satisfy the startup ritual contract.
+
+Problems:
+${errors.map((e) => `- ${e}`).join("\n")}
+
+Original response (truncated):
+${originalResponse.slice(0, 2000)}
+
+Return the corrected startup response now with all required sections:
+## Todo List
+## Principles Read
+## Selected Playbook
+## Playbook Steps
+## Loaded Leaves
+## Skipped Steps
+## Override Packet (only if overriding the recommended playbook)`;
+}
+
 export async function runPairProtocolDryRun(
 	sessions: PairProtocolSessions,
 	options: RunPairProtocolOptions,
@@ -746,6 +835,78 @@ export async function runPairProtocolDryRun(
 	};
 	options.onEvent?.({ role: "navigator", phase: "preflight", text: preflight });
 
+	// -----------------------------------------------------------------------
+	// Driver startup gate (DEC-011, DEC-012, DEC-013)
+	// -----------------------------------------------------------------------
+	let driverStartupCompleted = false;
+	let activePlaybook = options.initialPlaybookRecommendation ?? "";
+	let loadedLeaves: LoadedLeaf[] = [];
+	let skippedPlaybookSteps: SkippedStep[] = [];
+	let playbookOverrideReason: string | undefined;
+
+	if (options.pstackRegistry && options.renderDriverFirstTurn) {
+		const registrySummary = [
+			`Skills: ${options.pstackRegistry.skills.map((s) => s.slug).join(", ")}`,
+			`Playbooks: ${options.pstackRegistry.playbooks.map((p) => p.slug).join(", ")}`,
+		].join("\n");
+
+		const firstTurnPrompt = options.renderDriverFirstTurn({
+			task: options.task,
+			initialPlaybook: activePlaybook,
+			registrySummary,
+			preflightEndGoal: memory.acceptanceChecklistText ?? "",
+			runStateText: `Cycle: ${memory.currentCycle}, Objective: ${memory.currentObjective ?? "not set"}`,
+		});
+
+		let startupResponse = await sessions.driverCycle(firstTurnPrompt);
+		options.onEvent?.({ role: "driver", phase: "startup", text: startupResponse });
+		cycleRecord(1).driverStartupReport = startupResponse;
+
+		// Import validation inline to avoid circular deps
+		const { validateDriverStartup } = await import("./pair-program-helpers.ts");
+		let validation = validateDriverStartup(startupResponse, options.pstackRegistry as any, activePlaybook);
+
+		// One repair pass if malformed
+		if (!validation.valid && (sessions.driverStartupRepair ?? sessions.driverCycle)) {
+			const repairFn = sessions.driverStartupRepair ?? sessions.driverCycle;
+			const repairPrompt = buildDriverStartupRepairPrompt(startupResponse, validation.errors);
+			startupResponse = await repairFn(repairPrompt);
+			options.onEvent?.({ role: "driver", phase: "startup_repair", text: startupResponse });
+			cycleRecord(1).driverStartupRepairReport = startupResponse;
+			validation = validateDriverStartup(startupResponse, options.pstackRegistry as any, activePlaybook);
+		}
+
+		if (!validation.valid) {
+			options.onEvent?.({ role: "coordinator", phase: "startup_failed", text: `Driver startup validation failed: ${validation.errors.join("; ")}` });
+			if (options.collectFinalEvidence) finalWorkspace = await options.collectFinalEvidence();
+			return finish("driver_startup_failed", memory, malformedDecisionRepairs, cycles, finalNavigatorDecision, initialWorkspace, finalWorkspace, finalVerification, false, activePlaybook, loadedLeaves, skippedPlaybookSteps, playbookOverrideReason);
+		}
+
+		// Startup validated — record state
+		driverStartupCompleted = true;
+		if (validation.parsedPlaybook) {
+			activePlaybook = validation.parsedPlaybook;
+		}
+		if (validation.isOverride && validation.overridePacket) {
+			activePlaybook = validation.overridePacket.chosen || activePlaybook;
+			playbookOverrideReason = `${validation.overridePacket.evidence} | ${validation.overridePacket.pinnedGoal}`;
+		}
+		if (validation.parsedLeaves) {
+			loadedLeaves = validation.parsedLeaves.map((name) => ({ name }));
+		}
+
+		// Parse skipped steps
+		const skippedRaw = extractHeadingBody(startupResponse, "Skipped Steps");
+		if (skippedRaw) {
+			skippedPlaybookSteps = parseSkippedSteps(skippedRaw);
+		}
+
+		options.onEvent?.({ role: "coordinator", phase: "startup_completed", text: `Startup validated. Active playbook: ${activePlaybook}. Loaded leaves: ${loadedLeaves.map((l) => l.name).join(", ") || "none"}.` });
+	} else {
+		// No pstack registry provided — skip startup gate (legacy/test mode)
+		driverStartupCompleted = true;
+	}
+
 	while (memory.currentCycle <= options.maxCycles) {
 		let correctionUsed = false;
 		let currentWorkspaceEvidence = options.currentWorkspace ?? initialWorkspace;
@@ -773,7 +934,7 @@ export async function runPairProtocolDryRun(
 			options.onEvent?.({ role: "navigator", phase: `review_${memory.currentCycle}`, text: review });
 
 			if (decision.kind === "malformed") {
-				return finish("malformed_decision_after_repair", memory, malformedDecisionRepairs, cycles, finalNavigatorDecision, initialWorkspace, finalWorkspace, finalVerification);
+				return finish("malformed_decision_after_repair", memory, malformedDecisionRepairs, cycles, finalNavigatorDecision, initialWorkspace, finalWorkspace, finalVerification, driverStartupCompleted, activePlaybook, loadedLeaves, skippedPlaybookSteps, playbookOverrideReason);
 			}
 
 			finalNavigatorDecision = decision.value;
@@ -791,12 +952,12 @@ export async function runPairProtocolDryRun(
 						if (classificationDecision.kind === "valid" && classificationDecision.value === "blocked") {
 							finalNavigatorDecision = "blocked";
 							if (options.collectFinalEvidence) finalWorkspace = await options.collectFinalEvidence();
-							return finish("navigator_blocked", memory, malformedDecisionRepairs, cycles, finalNavigatorDecision, initialWorkspace, finalWorkspace, finalVerification);
+							return finish("navigator_blocked", memory, malformedDecisionRepairs, cycles, finalNavigatorDecision, initialWorkspace, finalWorkspace, finalVerification, driverStartupCompleted, activePlaybook, loadedLeaves, skippedPlaybookSteps, playbookOverrideReason);
 						}
 					}
 				}
 				if (options.collectFinalEvidence) finalWorkspace = await options.collectFinalEvidence();
-				return finish(decision.value === "blocked" ? "navigator_blocked" : "navigator_final_approve", memory, malformedDecisionRepairs, cycles, finalNavigatorDecision, initialWorkspace, finalWorkspace, finalVerification);
+				return finish(decision.value === "blocked" ? "navigator_blocked" : "navigator_final_approve", memory, malformedDecisionRepairs, cycles, finalNavigatorDecision, initialWorkspace, finalWorkspace, finalVerification, driverStartupCompleted, activePlaybook, loadedLeaves, skippedPlaybookSteps, playbookOverrideReason);
 			}
 
 			if (decision.value === "approve_next") {
@@ -805,7 +966,7 @@ export async function runPairProtocolDryRun(
 			}
 
 			if (correctionUsed) {
-				return finish("repeated_revision_request", memory, malformedDecisionRepairs, cycles, finalNavigatorDecision, initialWorkspace, finalWorkspace, finalVerification);
+				return finish("repeated_revision_request", memory, malformedDecisionRepairs, cycles, finalNavigatorDecision, initialWorkspace, finalWorkspace, finalVerification, driverStartupCompleted, activePlaybook, loadedLeaves, skippedPlaybookSteps, playbookOverrideReason);
 			}
 
 			correctionUsed = true;
@@ -829,7 +990,7 @@ export async function runPairProtocolDryRun(
 	}
 
 	if (options.collectFinalEvidence) finalWorkspace = await options.collectFinalEvidence();
-	return finish("max_cycles_without_final_approval", memory, malformedDecisionRepairs, cycles, finalNavigatorDecision, initialWorkspace, finalWorkspace, finalVerification);
+	return finish("max_cycles_without_final_approval", memory, malformedDecisionRepairs, cycles, finalNavigatorDecision, initialWorkspace, finalWorkspace, finalVerification, driverStartupCompleted, activePlaybook, loadedLeaves, skippedPlaybookSteps, playbookOverrideReason);
 }
 
 function finish(
@@ -841,6 +1002,11 @@ function finish(
 	initialWorkspace?: WorkspaceSnapshot,
 	finalWorkspace?: WorkspaceSnapshot,
 	finalVerification?: FinalVerification,
+	driverStartupCompleted = false,
+	activePlaybook?: string,
+	loadedLeaves?: LoadedLeaf[],
+	skippedPlaybookSteps?: SkippedStep[],
+	playbookOverrideReason?: string,
 ): PairProtocolResult {
 	return {
 		status: statusFromStopReason(stopReason),
@@ -853,6 +1019,11 @@ function finish(
 		initialWorkspace,
 		finalWorkspace,
 		finalVerification,
+		driverStartupCompleted,
+		activePlaybook,
+		loadedLeaves,
+		skippedPlaybookSteps,
+		playbookOverrideReason,
 	};
 }
 

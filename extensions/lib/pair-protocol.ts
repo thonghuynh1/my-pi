@@ -115,6 +115,135 @@ export function createInitialPairRunMemory(task: string): PairRunMemory {
 	};
 }
 
+// ---------------------------------------------------------------------------
+// Heading normalization and generalized section extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize a markdown heading for comparison: trim whitespace, lowercase,
+ * and remove any trailing punctuation characters (. ! ? : , ;).
+ */
+export function normalizeHeading(heading: string): string {
+	return heading.trim().toLowerCase().replace(/[.!?:,;]+$/, "");
+}
+
+/**
+ * Extract the body text of a section identified by a level-2 heading.
+ *
+ * Heading matching is normalized: both the target `heading` string and the
+ * headings found in `markdown` are normalized before comparison, so trailing
+ * punctuation, extra whitespace, and letter case differences are ignored.
+ *
+ * Returns `null` if the heading is not found or if the section body is blank.
+ */
+export function extractSection(markdown: string, heading: string): string | null {
+	const normalizedTarget = normalizeHeading(heading);
+	const lines = markdown.split(/\r?\n/);
+	const start = lines.findIndex((line) => {
+		const stripped = line.trim();
+		if (!stripped.startsWith("## ")) return false;
+		return normalizeHeading(stripped.slice(3)) === normalizedTarget;
+	});
+	if (start < 0) return null;
+	const body: string[] = [];
+	for (let i = start + 1; i < lines.length; i++) {
+		if (lines[i].startsWith("## ")) break;
+		body.push(lines[i]);
+	}
+	return body.join("\n").trim() || null;
+}
+
+// ---------------------------------------------------------------------------
+// Section-specific validator scaffolding
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of a structured section validation pass.
+ *
+ * `valid` is true only when there are no errors. `errors` lists all
+ * individual validation failures found. Validators are pure and do not
+ * mutate state.
+ */
+export interface SectionValidationResult {
+	valid: boolean;
+	errors: string[];
+}
+
+/**
+ * Validate a Navigator review response.
+ *
+ * Rules (in addition to the exact one-DECISION-line rule):
+ * - Exactly one DECISION line must be present.
+ * - When the decision is `request_revision`, both `## Correction Packet` and
+ *   `## Required Evidence` sections must be present and non-blank.
+ */
+export function validateNavigatorReview(text: string): SectionValidationResult {
+	const errors: string[] = [];
+
+	// Reuse the existing one-DECISION-line check
+	const decision = parseNavigatorDecision(text);
+	if (decision.kind === "malformed") {
+		if (decision.reason.toLowerCase().includes("multiple")) {
+			errors.push("Multiple DECISION lines found; exactly one is required.");
+		} else {
+			errors.push(decision.reason);
+		}
+		return { valid: false, errors };
+	}
+
+	// request_revision requires Correction Packet and Required Evidence
+	if (decision.value === "request_revision") {
+		if (!extractSection(text, "Correction Packet")) {
+			errors.push("Missing required section: ## Correction Packet (required when DECISION: request_revision).");
+		}
+		if (!extractSection(text, "Required Evidence")) {
+			errors.push("Missing required section: ## Required Evidence (required when DECISION: request_revision).");
+		}
+	}
+
+	return { valid: errors.length === 0, errors };
+}
+
+/**
+ * Validate a Driver cycle report.
+ *
+ * Required sections: Summary, Changed Files, Tests Run, Evidence,
+ * Acceptance Checklist Progress, Next Intent.
+ */
+export function validateDriverCycleReport(text: string): SectionValidationResult {
+	const errors: string[] = [];
+	const required = [
+		"Summary",
+		"Changed Files",
+		"Tests Run",
+		"Evidence",
+		"Acceptance Checklist Progress",
+		"Next Intent",
+	];
+	for (const section of required) {
+		if (!extractSection(text, section)) {
+			errors.push(`Missing required section: ## ${section}.`);
+		}
+	}
+	return { valid: errors.length === 0, errors };
+}
+
+/**
+ * Validate a Navigator preflight response.
+ *
+ * Required sections: Acceptance Checklist, Risks, First Cycle Objective.
+ */
+export function validateNavigatorPreflight(text: string): SectionValidationResult {
+	const errors: string[] = [];
+	const required = ["Acceptance Checklist", "Risks", "First Cycle Objective"];
+	for (const section of required) {
+		if (!extractSection(text, section)) {
+			errors.push(`Missing required section: ## ${section}.`);
+		}
+	}
+	return { valid: errors.length === 0, errors };
+}
+
 export function parseNavigatorDecision(text: string): NavigatorDecision {
 	const matches = [...text.matchAll(/^\s*DECISION:\s*(\S+)\s*$/gim)];
 	if (matches.length === 0) return { kind: "malformed", reason: "Missing DECISION line." };

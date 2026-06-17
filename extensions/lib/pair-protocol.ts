@@ -1,3 +1,299 @@
+import type { IssueTaskPacket } from "./issue-task-extractor.ts";
+
+export type { IssueTaskPacket } from "./issue-task-extractor.ts";
+
+// ---------------------------------------------------------------------------
+// PairRunState — canonical coordinator-owned run state (DEC-004, DEC-005)
+// ---------------------------------------------------------------------------
+
+/** Proof class for an acceptance criterion — structural, runtime, or mixed. */
+export type ProofClass = "structural" | "runtime" | "mixed";
+
+/** One acceptance criterion extracted from Navigator preflight. */
+export interface AcceptanceCriterion {
+	text: string;
+	proofClass: ProofClass;
+}
+
+/** Narrow amendment kinds (DEC-010). */
+export type AmendmentKind =
+	| "contradiction"
+	| "ambiguity"
+	| "implied_missing_requirement"
+	| "safety_verification_gap";
+
+/** One amendment record — Navigator may only amend within the narrow envelope. */
+export interface Amendment {
+	kind: AmendmentKind;
+	description: string;
+	accepted: boolean;
+}
+
+/** Compact evidence record produced by the Driver each cycle. */
+export interface Evidence {
+	cycleNumber: number;
+	summary: string;
+}
+
+/** A loaded pstack leaf skill. */
+export interface LoadedLeaf {
+	name: string;
+}
+
+/** A skipped playbook step with rationale. */
+export interface SkippedStep {
+	step: string;
+	reason: string;
+}
+
+/** Sanitized telemetry summary from a Navigator verification phase. */
+export interface PairTelemetrySummary {
+	phase: string;
+	summary: string;
+}
+
+/** Non-blocking discovery preserved as a follow-up. */
+export interface FollowUp {
+	description: string;
+}
+
+/**
+ * Canonical coordinator-owned run state.
+ * Pinned by Navigator preflight and frozen by the coordinator (DEC-005).
+ */
+export interface PairRunState {
+	task: string;
+	taskFile?: { path: string; extractedPacket: IssueTaskPacket };
+	endGoalToProve: string;
+	acceptanceChecklist: AcceptanceCriterion[];
+	initialPlaybookRecommendation: string;
+	activePlaybook: string;
+	playbookOverrideReason?: string;
+	loadedLeaves: LoadedLeaf[];
+	skippedPlaybookSteps: SkippedStep[];
+	driverStartupCompleted: boolean;
+	allowedAmendments: Amendment[];
+	driverEvidence: Evidence[];
+	navigatorVerificationTelemetry: PairTelemetrySummary[];
+	followUps: FollowUp[];
+	currentCycle: number;
+	initialWorkspace?: WorkspaceSnapshot;
+}
+
+/** Create the initial (empty) PairRunState for a new run. */
+export function createInitialPairRunState(
+	task: string,
+	taskFile?: { path: string; extractedPacket: IssueTaskPacket },
+): PairRunState {
+	return {
+		task,
+		taskFile,
+		endGoalToProve: "",
+		acceptanceChecklist: [],
+		initialPlaybookRecommendation: "",
+		activePlaybook: "",
+		loadedLeaves: [],
+		skippedPlaybookSteps: [],
+		driverStartupCompleted: false,
+		allowedAmendments: [],
+		driverEvidence: [],
+		navigatorVerificationTelemetry: [],
+		followUps: [],
+		currentCycle: 1,
+	};
+}
+
+// ---------------------------------------------------------------------------
+// validatePreflightEndGoal — standalone validation helper
+// ---------------------------------------------------------------------------
+
+export interface EndGoalValidationResult {
+	valid: boolean;
+	reason?: string;
+}
+
+/**
+ * Validate the Navigator's End Goal To Prove text.
+ *
+ * - Always: must be non-empty.
+ * - For issue-file tasks (DEC-007): must contain the extracted acceptance
+ *   criteria text verbatim (each criterion line must appear in the end goal).
+ */
+export function validatePreflightEndGoal(
+	endGoal: string,
+	taskFile?: { path: string; extractedPacket: IssueTaskPacket },
+): EndGoalValidationResult {
+	if (!endGoal.trim()) {
+		return { valid: false, reason: "End Goal To Prove must not be empty." };
+	}
+
+	if (taskFile) {
+		// DEC-007: verbatim criterion check — each non-empty line of the AC must
+		// appear somewhere in the end goal text.
+		const acLines = taskFile.extractedPacket.acceptanceCriteria
+			.split(/\r?\n/)
+			.map((l) => l.replace(/^[-*+]\s+/, "").replace(/^\[.\]\s+/, "").trim())
+			.filter((l) => l.length > 0);
+
+		const missing = acLines.filter((line) => !endGoal.includes(line));
+		if (missing.length > 0) {
+			return {
+				valid: false,
+				reason:
+					`Issue-file-driven End Goal To Prove must copy acceptance criteria verbatim. ` +
+					`Missing: ${missing.slice(0, 3).join(" | ")}`,
+			};
+		}
+	}
+
+	return { valid: true };
+}
+
+// ---------------------------------------------------------------------------
+// buildNavigatorPreflightPromptForState
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the Navigator preflight prompt from a PairRunState.
+ * Includes the task file path and extracted packet when present.
+ */
+export function buildNavigatorPreflightPromptForState(
+	state: PairRunState,
+	testCommand: string | undefined,
+): string {
+	const workspaceSection = state.initialWorkspace
+		? `\nWorkspace snapshot at run start:\n${formatWorkspaceSnapshot(state.initialWorkspace)}\n`
+		: "";
+
+	let fileSection = "";
+	if (state.taskFile) {
+		const { path: filePath, extractedPacket: pkt } = state.taskFile;
+		fileSection = [
+			`\nSource file: ${filePath}`,
+			`\n### Acceptance criteria\n${pkt.acceptanceCriteria}`,
+			pkt.explicitConstraints.length
+				? `\n### Constraints\n${pkt.explicitConstraints.map((c) => `- ${c}`).join("\n")}`
+				: "",
+			pkt.buildOrWiringNotes.length
+				? `\n### Build notes\n${pkt.buildOrWiringNotes.map((n) => `- ${n}`).join("\n")}`
+				: "",
+			pkt.blockedBy ? `\n### Blocked by\n${pkt.blockedBy}` : "",
+		]
+			.filter(Boolean)
+			.join("");
+	}
+
+	return `You are the Navigator Agent for a deterministic Pair Program Tool run.
+
+Task:
+${state.task}
+${fileSection}
+${workspaceSection}
+Define the End Goal To Prove, acceptance checklist with proof classes, risks, initial playbook recommendation, and the first Driver cycle objective.
+
+For issue-file-driven tasks, the End Goal To Prove MUST copy the acceptance criteria verbatim.
+Each acceptance criterion must be tagged [structural], [runtime], or [mixed].
+
+Return Markdown with these headings:
+## End Goal To Prove
+## Acceptance Checklist
+## Risks
+## Initial Playbook Recommendation
+## First Cycle Objective`;
+}
+
+// ---------------------------------------------------------------------------
+// freezePreflightIntoState
+// ---------------------------------------------------------------------------
+
+export interface FreezePreflightResult {
+	frozenState: PairRunState;
+	errors: string[];
+}
+
+const VALID_PROOF_CLASSES: ReadonlySet<string> = new Set(["structural", "runtime", "mixed"]);
+
+/**
+ * Parse and validate a Navigator preflight response, then freeze the result
+ * into coordinator-owned PairRunState (DEC-005).
+ *
+ * Validation:
+ * - End Goal To Prove must be non-empty.
+ * - For issue-file tasks, End Goal must contain verbatim acceptance criteria.
+ * - Each checklist item must carry a valid proof class.
+ * - Initial Playbook Recommendation must be non-empty.
+ *
+ * Returns the frozen state and any validation error strings.
+ * When errors is non-empty, the run should be blocked.
+ */
+export function freezePreflightIntoState(
+	preflightText: string,
+	baseState: PairRunState,
+): FreezePreflightResult {
+	const errors: string[] = [];
+
+	// Extract End Goal To Prove
+	const endGoalRaw = extractHeadingBody(preflightText, "End Goal To Prove") ?? "";
+	const endGoal = endGoalRaw.trim();
+
+	// Validate end goal
+	const endGoalResult = validatePreflightEndGoal(endGoal, baseState.taskFile);
+	if (!endGoalResult.valid) {
+		errors.push(endGoalResult.reason ?? "End Goal To Prove is invalid.");
+	}
+
+	// Extract and parse Acceptance Checklist
+	const checklistRaw = extractHeadingBody(preflightText, "Acceptance Checklist") ?? "";
+	const acceptanceChecklist = parseAcceptanceChecklist(checklistRaw, errors);
+
+	// Extract Initial Playbook Recommendation
+	const playbookRaw = extractHeadingBody(preflightText, "Initial Playbook Recommendation") ?? "";
+	const playbook = playbookRaw.trim();
+	if (!playbook) {
+		errors.push("Initial Playbook Recommendation must not be empty.");
+	}
+
+	const frozenState: PairRunState = {
+		...baseState,
+		endGoalToProve: endGoal,
+		acceptanceChecklist,
+		initialPlaybookRecommendation: playbook,
+		activePlaybook: playbook,
+	};
+
+	return { frozenState, errors };
+}
+
+function parseAcceptanceChecklist(raw: string, errors: string[]): AcceptanceCriterion[] {
+	if (!raw.trim()) return [];
+	const items: AcceptanceCriterion[] = [];
+	for (const line of raw.split(/\r?\n/)) {
+		const stripped = line
+			.replace(/^[-*+]\s+/, "")
+			.replace(/^\[.\]\s+/, "")
+			.trim();
+		if (!stripped) continue;
+
+		// Extract proof class tag: [structural], [runtime], or [mixed]
+		const tagMatch = /\[(structural|runtime|mixed|[a-z_]+)\]\s*$/.exec(stripped);
+		if (!tagMatch) {
+			// Item has no tag — skip silently (may be a heading line or note)
+			continue;
+		}
+
+		const proofClassRaw = tagMatch[1];
+		const text = stripped.slice(0, tagMatch.index).trim().replace(/\.\s*$/, "") + ".";
+
+		if (!VALID_PROOF_CLASSES.has(proofClassRaw)) {
+			errors.push(`Invalid proof class "${proofClassRaw}" for criterion: ${text}`);
+			continue;
+		}
+
+		items.push({ text, proofClass: proofClassRaw as ProofClass });
+	}
+	return items;
+}
+
 export interface PairRunMemory {
 	task: string;
 	acceptedConstraints: string[];

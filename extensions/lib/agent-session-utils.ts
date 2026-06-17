@@ -25,7 +25,62 @@ import type { Message } from "@earendil-works/pi-ai";
 
 type ActiveModel = NonNullable<ExtensionContext["model"]>;
 
+// ---------------------------------------------------------------------------
+// Telemetry types (DEC-014, DEC-015, DEC-016, DEC-017)
+// ---------------------------------------------------------------------------
 
+export type TelemetryKind =
+	| "skill_load"
+	| "file_read"
+	| "search"
+	| "command"
+	| "file_write"
+	| "artifact_inspection";
+
+/**
+ * Normative telemetry summary shape. Stored in Pair Run State and used
+ * for coordinator proof maps. Raw command strings are never stored here;
+ * only sanitized previews are kept (DEC-015).
+ */
+export interface PairTelemetrySummary {
+	/** Coordinator-stable hybrid ID, e.g. "driver-c1-t3", "nav-r2-t1", "nav-final-t2" */
+	id: string;
+	/** Raw Pi toolCallId — kept internally for correlation only */
+	rawToolCallId: string;
+	role: "driver" | "navigator";
+	phase: string;
+	cycle?: number;
+	toolName: string;
+	kind: TelemetryKind;
+	/** File path or search pattern for non-command tools */
+	targetPreview?: string;
+	/** Redacted command preview for bash tool calls */
+	commandPreview?: string;
+	/** True when the raw command string was redacted (bash calls) */
+	redacted: boolean;
+	/** False for failed calls — retained as attempt evidence only */
+	success: boolean;
+	exitCode?: number;
+	timestamp: string;
+}
+
+/** Internal state for in-flight tool call correlation. */
+interface PendingTelemetryEntry {
+	toolCallId: string;
+	toolName: string;
+	args: Record<string, unknown>;
+	timestamp: string;
+}
+
+/** Per-session mutable telemetry state, owned by createRoleSession. */
+export interface RoleTelemetryState {
+	/** Current coordinator context for incoming tool calls */
+	context: { phase: string; cycle?: number };
+	/** In-flight tool calls awaiting their end event */
+	pending: Map<string, PendingTelemetryEntry>;
+	/** 1-based index within the current phase; resets on context change */
+	phaseIndex: number;
+}
 
 export interface RoleSession {
 	session: Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"];
@@ -33,6 +88,10 @@ export interface RoleSession {
 	modelId: string;
 	tools: string[];
 	usage: RoleUsage;
+	/** Accumulated telemetry summaries across all phases */
+	telemetry: PairTelemetrySummary[];
+	/** Internal mutable telemetry correlation state */
+	_telemetry: RoleTelemetryState;
 }
 
 export interface RoleUsage {
@@ -69,6 +128,12 @@ type AssistantUsage = {
 };
 
 // ---------------------------------------------------------------------------
+// Telemetry constants (DEC-015)
+// ---------------------------------------------------------------------------
+
+export const COMMAND_PREVIEW_MAX_LENGTH = 60;
+
+// ---------------------------------------------------------------------------
 // Tool allowlists (decision artifact: MESO-003, MICRO-001)
 // ---------------------------------------------------------------------------
 
@@ -82,6 +147,188 @@ export function getRoleTools(role: "driver" | "navigator"): string[] {
 		return [...DRIVER_TOOLS];
 	}
 	return [...NAVIGATOR_TOOLS];
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry pure logic (DEC-014, DEC-015, DEC-016, DEC-017)
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a stable coordinator telemetry ID.
+ *
+ * Format: `{rolePrefix}-{phaseCode}-t{index}`
+ *
+ * Role prefix: driver → "driver", navigator → "nav"
+ * Phase codes:
+ *   "cycle"     + cycle n → "c{n}"
+ *   "review"    + cycle n → "r{n}"
+ *   "final"               → "final"
+ *   "preflight"           → "preflight"
+ *   other                 → sanitized lowercase phase string
+ *
+ * Index: 1-based sequential number within the phase (resets on context change).
+ */
+export function generateTelemetryId(
+	role: "driver" | "navigator",
+	phase: string,
+	cycle: number | undefined,
+	index: number,
+): string {
+	const rolePrefix = role === "driver" ? "driver" : "nav";
+
+	let phaseCode: string;
+	switch (phase) {
+		case "cycle":
+			phaseCode = `c${cycle ?? 1}`;
+			break;
+		case "review":
+			phaseCode = `r${cycle ?? 1}`;
+			break;
+		case "final":
+			phaseCode = "final";
+			break;
+		case "preflight":
+			phaseCode = "preflight";
+			break;
+		default:
+			phaseCode = phase.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "unknown";
+			break;
+	}
+
+	return `${rolePrefix}-${phaseCode}-t${index}`;
+}
+
+/**
+ * Map a Pi tool name to a normalized telemetry kind (DEC-014).
+ *
+ * read               → file_read
+ * grep, find, ls     → search
+ * bash               → command
+ * edit, write        → file_write
+ * anything else      → artifact_inspection
+ */
+export function normalizeTelemetryKind(toolName: string): TelemetryKind {
+	switch (toolName) {
+		case "read":
+			return "file_read";
+		case "grep":
+		case "find":
+		case "ls":
+			return "search";
+		case "bash":
+			return "command";
+		case "edit":
+		case "write":
+			return "file_write";
+		default:
+			return "artifact_inspection";
+	}
+}
+
+/**
+ * Produce a redacted command preview (DEC-015).
+ *
+ * Keeps at most COMMAND_PREVIEW_MAX_LENGTH chars, appending "…" if truncated.
+ * Raw command strings must never be stored in Pair Run State.
+ */
+export function redactCommandPreview(command: string): string {
+	if (typeof command !== "string") return "[redacted]";
+	if (command.length <= COMMAND_PREVIEW_MAX_LENGTH) return command;
+	return command.slice(0, COMMAND_PREVIEW_MAX_LENGTH) + "\u2026";
+}
+
+function extractTargetPreview(
+	toolName: string,
+	args: Record<string, unknown>,
+): string | undefined {
+	if (toolName === "bash") return undefined;
+	const pathArg =
+		typeof args["path"] === "string" ? args["path"] :
+		typeof args["pattern"] === "string" ? args["pattern"] :
+		undefined;
+	return pathArg;
+}
+
+interface TelemetryStartRaw {
+	toolCallId: string;
+	toolName: string;
+	args: Record<string, unknown>;
+	timestamp: string;
+}
+
+interface TelemetryEndRaw {
+	toolCallId: string;
+	args: Record<string, unknown>;
+	exitCode?: number;
+	error?: unknown;
+}
+
+/**
+ * Build a PairTelemetrySummary from correlated start and end events.
+ * Called after a pending entry is matched by toolCallId.
+ */
+export function buildTelemetrySummary(
+	role: "driver" | "navigator",
+	context: { phase: string; cycle?: number },
+	index: number,
+	start: TelemetryStartRaw,
+	end: TelemetryEndRaw,
+): PairTelemetrySummary {
+	const kind = normalizeTelemetryKind(start.toolName);
+	const isBash = start.toolName === "bash";
+	const rawCommand = typeof start.args["command"] === "string" ? start.args["command"] : undefined;
+
+	const redacted = isBash && rawCommand !== undefined;
+	const commandPreview = isBash && rawCommand !== undefined
+		? redactCommandPreview(rawCommand)
+		: undefined;
+	const targetPreview = extractTargetPreview(start.toolName, start.args);
+	const hasError = end.error !== undefined && end.error !== null;
+
+	return {
+		id: generateTelemetryId(role, context.phase, context.cycle, index),
+		rawToolCallId: start.toolCallId,
+		role,
+		phase: context.phase,
+		cycle: context.cycle,
+		toolName: start.toolName,
+		kind,
+		targetPreview,
+		commandPreview,
+		redacted,
+		success: !hasError,
+		exitCode: typeof end.exitCode === "number" ? end.exitCode : undefined,
+		timestamp: start.timestamp,
+	};
+}
+
+/**
+ * Returns true if a telemetry entry can serve as write proof.
+ *
+ * Navigator is non-writing by design; any file_write entry from navigator
+ * cannot satisfy a review proof (DEC-003). Failed entries are attempt
+ * evidence only and also cannot satisfy proof.
+ */
+export function canSatisfyWriteProof(entry: PairTelemetrySummary): boolean {
+	if (entry.role === "navigator" && entry.kind === "file_write") return false;
+	if (!entry.success) return false;
+	return entry.kind === "file_write";
+}
+
+/**
+ * Set the active telemetry context for a role session.
+ *
+ * Called by the protocol runner before each role prompt to associate
+ * subsequent tool calls with the correct phase and cycle.
+ * Resets the per-phase tool index counter.
+ */
+export function setActiveTelemetryContext(
+	roleSession: RoleSession,
+	phase: string,
+	cycle?: number,
+): void {
+	roleSession._telemetry.context = { phase, cycle };
+	roleSession._telemetry.phaseIndex = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -270,19 +517,71 @@ export async function createRoleSession(
 		thinkingLevel: pi.getThinkingLevel(),
 	});
 
+	const telemetryState: RoleTelemetryState = {
+		context: { phase: "preflight" },
+		pending: new Map<string, PendingTelemetryEntry>(),
+		phaseIndex: 0,
+	};
+
 	const roleSession: RoleSession = {
 		session: created.session,
 		model,
 		modelId,
 		tools,
 		usage: zeroUsage(modelId),
+		telemetry: [],
+		_telemetry: telemetryState,
 	};
 
-	// Subscribe to accumulate usage across prompts.
+	// Subscribe to accumulate usage and capture tool telemetry across prompts.
 	created.session.subscribe((event) => {
 		if (event.type === "message_end") {
 			const message = event.message as Message;
 			roleSession.usage = accumulateUsage(roleSession.usage, message);
+		} else if (event.type === "tool_execution_start") {
+			// Correlate by toolCallId: record the pending entry.
+			const ev = event as unknown as {
+				toolCallId: string;
+				toolName: string;
+				args: Record<string, unknown>;
+			};
+			if (ev.toolCallId && ev.toolName) {
+				roleSession._telemetry.pending.set(ev.toolCallId, {
+					toolCallId: ev.toolCallId,
+					toolName: ev.toolName,
+					args: ev.args ?? {},
+					timestamp: new Date().toISOString(),
+				});
+			}
+		} else if (event.type === "tool_execution_end") {
+			// Correlate by toolCallId: complete the pending entry.
+			const ev = event as unknown as {
+				toolCallId: string;
+				toolName: string;
+				args: Record<string, unknown>;
+				exitCode?: number;
+				error?: unknown;
+			};
+			const pending = ev.toolCallId
+				? roleSession._telemetry.pending.get(ev.toolCallId)
+				: undefined;
+			if (pending) {
+				roleSession._telemetry.pending.delete(ev.toolCallId);
+				roleSession._telemetry.phaseIndex += 1;
+				const summary = buildTelemetrySummary(
+					role,
+					roleSession._telemetry.context,
+					roleSession._telemetry.phaseIndex,
+					pending,
+					{
+						toolCallId: ev.toolCallId,
+						args: ev.args ?? {},
+						exitCode: ev.exitCode,
+						error: ev.error,
+					},
+				);
+				roleSession.telemetry.push(summary);
+			}
 		}
 	});
 

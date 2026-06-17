@@ -7,9 +7,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { homedir } from "node:os";
 import { execSync } from "node:child_process";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
@@ -31,6 +29,13 @@ import {
   type PairProtocolEvent,
   type WorkspaceSnapshot,
 } from "./lib/pair-protocol.ts";
+import {
+  normalizeParams,
+  resolvePstackRegistry,
+  tryAcquireRun,
+  releaseRun,
+  type PstackRegistry,
+} from "./lib/pair-program-helpers.ts";
 
 // ---------------------------------------------------------------------------
 // Parameter schema (MICRO-001, MICRO-003)
@@ -38,21 +43,12 @@ import {
 
 const PairProgramParams = Type.Object({
   task: Type.String({ description: "Task for the Driver/Navigator pair." }),
-  mode: Type.Optional(
-    StringEnum(["tdd"] as const, {
-      description: "Pair workflow mode. MVP supports only tdd.",
-    }),
-  ),
   maxCycles: Type.Optional(
     Type.Number({
       description: "Maximum Driver/Navigator cycles. Default: 4.",
       minimum: 1,
     }),
   ),
-  testCommand: Type.Optional(
-    Type.String({ description: "Test command to run during TDD red phase." }),
-  ),
-
   driverModel: Type.Optional(
     Type.String({ description: "Model override for the Driver agent." }),
   ),
@@ -62,13 +58,6 @@ const PairProgramParams = Type.Object({
 });
 
 type PairProgramParamsType = Static<typeof PairProgramParams>;
-
-// ---------------------------------------------------------------------------
-// Defaults (MESO-014)
-// ---------------------------------------------------------------------------
-
-const DEFAULT_MODE = "tdd";
-const DEFAULT_MAX_CYCLES = 4;
 // ---------------------------------------------------------------------------
 // Pair-program tool details type (for renderResult)
 // ---------------------------------------------------------------------------
@@ -93,7 +82,6 @@ interface PairProgramDetails {
 
 interface PairTranscript {
   task: string;
-  mode: "tdd";
   status: "success" | "blocked" | "incomplete" | "error";
   startedAt: string;
   endedAt?: string;
@@ -144,8 +132,7 @@ function createTranscriptPaths(cwd: string, task: string, startedAt: Date): Tran
     markdown,
     `# Pair Program Transcript\n\n` +
       `- Task: ${task}\n` +
-      `- Started: ${startedAt.toISOString()}\n` +
-      `- Mode: ${DEFAULT_MODE}\n\n` +
+      `- Started: ${startedAt.toISOString()}\n\n` +
       `---\n\n`,
     "utf8",
   );
@@ -180,14 +167,14 @@ function buildRoleSystemPrompt(role: "driver" | "navigator"): string {
     return [
       "You are the Driver Agent in a deterministic Pair Program Tool run.",
       "You own implementation planning, editing, and evidence reporting for the current cycle.",
-      "You may edit and write files. Run tests to verify your changes.",
-      "Use skill-tdd before implementation planning and report TDD evidence.",
+      "You may edit and write files. Run commands to verify your changes.",
+      "Follow pstack engineering skills and playbooks as directed by the run's playbook recommendation.",
     ].join("\n");
   }
   return [
     "You are the Navigator Agent in a deterministic Pair Program Tool run.",
-    "You review Driver reports, TDD evidence, risks, and acceptance checklist coverage.",
-    "Do not edit or write files.",
+    "You review Driver plans, implementation evidence, risks, and acceptance checklist coverage.",
+    "Do not edit or write files. Your role is review-only.",
     "When reviewing a cycle, include exactly one DECISION line from the coordinator contract.",
   ].join("\n");
 }
@@ -196,86 +183,9 @@ async function runRolePrompt(roleSession: RoleSession, prompt: string): Promise<
   return promptRoleSession(roleSession, prompt);
 }
 
-// ---------------------------------------------------------------------------
-// skill-tdd prerequisite verification (MESO-016, MICRO-002)
-// ---------------------------------------------------------------------------
 
-// Fallback: check that the engineering-skills MCP server is configured.
-// The preferred approach would be pi.getAllTools() to detect skill-tdd
-// directly, but that API surface is not yet verified for extension use.
-// This config-check is a safe MVP proxy: if engineering-skills MCP is
-// configured, skill-tdd is expected to be available at runtime.
-// FUTURE: replace with pi.getAllTools() detection once the API is stable.
 
-const SERVER_NAME = "engineering-skills";
-const GLOBAL_MCP_CONFIG = path.join(homedir(), ".config", "mcp", "mcp.json");
 
-interface McpConfigFile {
-  mcpServers?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-function readJsonFile(filePath: string): McpConfigFile {
-  if (!fs.existsSync(filePath)) return {};
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function isEngineeringSkillsConfigured(): boolean {
-  const candidates = [
-    GLOBAL_MCP_CONFIG,
-    path.join(homedir(), ".pi", "agent", "mcp.json"),
-    path.resolve(process.cwd(), ".mcp.json"),
-    path.resolve(process.cwd(), ".pi", "mcp.json"),
-  ];
-
-  for (const candidate of candidates) {
-    const config = readJsonFile(candidate);
-    if (
-      config.mcpServers &&
-      Object.prototype.hasOwnProperty.call(config.mcpServers, SERVER_NAME)
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// ---------------------------------------------------------------------------
-// Parameter normalization (MESO-017)
-// ---------------------------------------------------------------------------
-
-function normalizeParams(raw: PairProgramParamsType) {
-  return {
-    task: raw.task,
-    mode: raw.mode ?? DEFAULT_MODE,
-    maxCycles: raw.maxCycles ?? DEFAULT_MAX_CYCLES,
-    testCommand: raw.testCommand,
-
-    driverModel: raw.driverModel,
-    navigatorModel: raw.navigatorModel,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Active-run guard (MESO-001)
-// ---------------------------------------------------------------------------
-
-let activeRunId: string | undefined;
-
-function tryAcquireRun(): boolean {
-  if (activeRunId) return false;
-  activeRunId = "active";
-  return true;
-}
-
-function releaseRun(): void {
-  activeRunId = undefined;
-}
 
 // ---------------------------------------------------------------------------
 // Git evidence collection (MESO-011, MESO-005)
@@ -330,15 +240,15 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
     name: "pair_program",
     label: "Pair Program",
     description:
-      "Start a deterministic pair-programming run with a Driver and Navigator agent. " +
-      "MVP supports TDD mode only. Returns structured status with transcript path.",
+      "Start a deterministic pstack-driven pair-programming run with a Driver and Navigator agent. " +
+      "The Driver executes the implementation while the Navigator reviews plans, evidence, and risks. " +
+      "Returns structured status with transcript path.",
     promptSnippet:
-      "Use `pair_program` to kick off a TDD pair-programming session for a well-scoped task. " +
-      "The tool verifies prerequisites, creates a transcript, and coordinates the run.",
+      "Use `pair_program` to kick off a pstack-driven pair-programming session for a well-scoped task. " +
+      "The tool snapshots the pstack skill registry, creates a transcript, and coordinates the run.",
     promptGuidelines: [
       "Provide a clear, focused task description for the Driver/Navigator pair.",
-      "TDD mode is the only supported mode in MVP; omitting mode defaults to tdd.",
-
+      "The Navigator is review-only and does not edit or write files.",
     ],
     parameters: PairProgramParams,
     execute: async (
@@ -351,22 +261,7 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
       const normalized = normalizeParams(params);
       const publish = onUpdate as PairProgramUpdate | undefined;
 
-      // --- Reject unsupported modes (AC #3) ---
-      if (normalized.mode !== "tdd") {
-        const errorResult: PairProgramDetails = {
-          status: "error",
-          summary: `Unsupported mode "${normalized.mode}". MVP only supports "tdd" mode.`,
-          changedFiles: [],
-          error: `Unsupported mode: ${normalized.mode}`,
-        };
-        return {
-          content: [{ type: "text" as const, text: errorResult.summary }],
-          details: errorResult,
-          isError: true,
-        };
-      }
-
-      // --- One active run per session (AC #4) ---
+      // --- One active run per session ---
       if (!tryAcquireRun()) {
         const errorResult: PairProgramDetails = {
           status: "error",
@@ -381,16 +276,22 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
         };
       }
 
+      // Capture pstack registry snapshot once per run; block if unavailable.
+      let pstackRegistry: PstackRegistry | undefined;
+
       try {
-        // --- Verify skill-tdd prerequisite (AC #5, AC #6) ---
-        if (!isEngineeringSkillsConfigured()) {
+        // --- Resolve pstack skill registry snapshot ---
+        const registryResult = resolvePstackRegistry({
+          getAllTools: () => pi.getAllTools?.() ?? [],
+        });
+        if (!registryResult.available) {
           const blockedResult: PairProgramDetails = {
             status: "blocked",
             summary:
-              "TDD mode requires the engineering-skills MCP server with skill-tdd. " +
-              "Run /engineering-skill <repo-path> to configure it first.",
+              "pstack-driven pair programming requires the engineering-skills MCP server with skill-pstack. " +
+              `Registry unavailable: ${registryResult.reason}`,
             changedFiles: [],
-            error: "engineering-skills MCP not configured",
+            error: registryResult.reason,
           };
           return {
             content: [{ type: "text" as const, text: blockedResult.summary }],
@@ -398,6 +299,7 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
             isError: true,
           };
         }
+        pstackRegistry = registryResult.registry;
 
         // --- Create transcript files (AC #7, AC: JSON transcript) ---
         const cwd = ctx.cwd;
@@ -411,7 +313,6 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
         // Live transcript scaffold so partial state can be persisted on abort/error.
         const liveTranscript: PairTranscript = {
           task: normalized.task,
-          mode: "tdd",
           status: "incomplete",
           startedAt: startedAt.toISOString(),
           cycles: [],
@@ -448,9 +349,7 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
             },
             {
               task: normalized.task,
-
               maxCycles: normalized.maxCycles,
-              testCommand: normalized.testCommand,
               collectEvidence: () => Promise.resolve(collectWorkspaceEvidence(cwd)),
               collectFinalEvidence: () => Promise.resolve(collectWorkspaceEvidence(cwd)),
               runFinalVerification: (command) => Promise.resolve(runVerification(command, cwd)),
@@ -488,10 +387,10 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
           const result: PairProgramDetails = {
             status: protocolResult.status,
             summary:
-              `Pair program TDD finished.\n` +
+              `Pair program finished.\n` +
               `- Task: ${normalized.task}\n` +
-              `- Mode: ${normalized.mode}\n` +
               `- Status: ${protocolResult.status}\n` +
+              `- Pstack skills available: ${pstackRegistry?.skills.length ?? 0}, playbooks: ${pstackRegistry?.playbooks.length ?? 0}\n` +
               `- Stop reason: ${protocolResult.stopReason}\n` +
               `- Cycles completed: ${protocolResult.cyclesCompleted}\n` +
               (protocolResult.finalNavigatorDecision
@@ -597,9 +496,8 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
           ? `${(args.task as string).slice(0, 80)}...`
           : (args.task as string)
         : "...";
-      const mode = (args.mode as string) ?? DEFAULT_MODE;
       return new Text(
-        `${theme.fg("toolTitle", theme.bold("pair_program "))}${theme.fg("accent", mode)}\n  ${theme.fg("dim", task)}`,
+        `${theme.fg("toolTitle", theme.bold("pair_program "))}${theme.fg("accent", "pstack")}\n  ${theme.fg("dim", task)}`,
         0,
         0,
       );
@@ -646,7 +544,7 @@ export default function pairProgramExtension(pi: ExtensionAPI) {
 
   // Register slash command so /pair-program <task> works from the editor
   pi.registerCommand("pair-program", {
-    description: "Start a pair-programming session. Usage: /pair-program <task description>",
+    description: "Start a pstack-driven pair-programming session. Usage: /pair-program <task description>",
     handler: async (args, ctx) => {
       const task = args?.trim();
       if (!task) {

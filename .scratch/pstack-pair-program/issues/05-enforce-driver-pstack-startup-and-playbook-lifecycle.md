@@ -1,5 +1,5 @@
 ---
-status: ready-for-agent
+status: closed
 ---
 
 # Enforce Driver pstack startup and playbook lifecycle

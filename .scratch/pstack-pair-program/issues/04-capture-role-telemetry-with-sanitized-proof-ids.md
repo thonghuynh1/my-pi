@@ -1,5 +1,5 @@
 ---
-status: ready-for-agent
+status: closed
 ---
 
 # Capture role telemetry with sanitized proof IDs

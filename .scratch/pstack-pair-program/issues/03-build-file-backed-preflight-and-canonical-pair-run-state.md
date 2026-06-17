@@ -1,5 +1,5 @@
 ---
-status: ready-for-agent
+status: closed
 ---
 
 # Build file-backed preflight and canonical Pair Run State

@@ -1,5 +1,5 @@
 ---
-status: ready-for-agent
+status: closed
 ---
 
 # Add markdown prompt renderer and structured output parser

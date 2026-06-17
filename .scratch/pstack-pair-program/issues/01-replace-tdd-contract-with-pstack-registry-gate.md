@@ -1,5 +1,5 @@
 ---
-status: ready-for-agent
+status: closed
 ---
 
 # Replace TDD contract with pstack registry gate

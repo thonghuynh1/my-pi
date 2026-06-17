@@ -1,21 +1,16 @@
 /**
  * Pure helpers for the pair_program tool: parameter normalization, the
- * single-active-run guard, and skill-tdd prerequisite verification.
+ * single-active-run guard, and pstack registry prerequisite verification.
  *
  * These helpers contain no Pi/MCP runtime dependencies so they can be
  * unit-tested without spawning child sessions, MCP servers, or git
  * processes. The pair_program extension wires them to the live runtime.
  */
 
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { homedir } from "node:os";
-
 // ---------------------------------------------------------------------------
 // Defaults (MICRO-001, MESO-014)
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_MODE = "tdd" as const;
 export const DEFAULT_MAX_CYCLES = 4;
 
 // ---------------------------------------------------------------------------
@@ -24,18 +19,14 @@ export const DEFAULT_MAX_CYCLES = 4;
 
 export interface PairProgramRawParams {
 	task: string;
-	mode?: string;
 	maxCycles?: number;
-	testCommand?: string;
 	driverModel?: string;
 	navigatorModel?: string;
 }
 
 export interface PairProgramNormalizedParams {
 	task: string;
-	mode: string;
 	maxCycles: number;
-	testCommand?: string;
 	driverModel?: string;
 	navigatorModel?: string;
 }
@@ -43,16 +34,13 @@ export interface PairProgramNormalizedParams {
 /**
  * Pure normalizer for pair_program parameters.
  *
- * - `mode` defaults to "tdd".
  * - `maxCycles` defaults to 4 (callers should still reject < 1 if needed; the
  *   TypeBox schema enforces `minimum: 1` for explicit values).
  */
 export function normalizeParams(raw: PairProgramRawParams): PairProgramNormalizedParams {
 	return {
 		task: raw.task,
-		mode: raw.mode ?? DEFAULT_MODE,
 		maxCycles: raw.maxCycles ?? DEFAULT_MAX_CYCLES,
-		testCommand: raw.testCommand,
 		driverModel: raw.driverModel,
 		navigatorModel: raw.navigatorModel,
 	};
@@ -84,129 +72,181 @@ export function __resetActiveRunForTests(): void {
 }
 
 // ---------------------------------------------------------------------------
-// skill-tdd prerequisite verification (MESO-016, MICRO-002)
+// Pstack registry types (DEC-011, DEC-012, DEC-013, DEC-015)
 // ---------------------------------------------------------------------------
 
-/*
- * skill-tdd verification mechanisms (preferred first):
- *
- *   1. Preferred: enumerate registered Pi tools via `pi.getAllTools()` and
- *      look for any tool whose name contains "skill-tdd" or "skill_tdd"
- *      (case-insensitive). When the engineering-skills MCP server is
- *      connected, pi-mcp-adapter registers each MCP tool as a direct Pi
- *      tool with a server-prefixed name (e.g. `engineering-skills_skill-tdd`
- *      or its underscore-normalized variant). This is the most accurate
- *      runtime signal that skill-tdd is actually callable.
- *
- *   2. Fallback: check whether the `engineering-skills` MCP server is
- *      *configured* in any of the well-known MCP config files. This is a
- *      pre-startup proxy: if the server is configured, skill-tdd is
- *      *expected* to be available once the MCP adapter finishes connecting.
- *      It is used when getAllTools() is unavailable or the MCP adapter has
- *      not yet finished its lazy connect.
- *
- * Why prefer (1): config presence does not prove the server actually
- *   started or that the skill-tdd tool registered without error. The tool
- *   registry is the source of truth at call time.
- *
- * Why keep (2): pi-mcp-adapter uses `lifecycle: "lazy"`, so at the moment
- *   pair_program is invoked the direct tool may not yet be registered.
- *   Config presence lets us proceed (with a warning-grade signal) rather
- *   than blocking the first run after a fresh Pi start.
- *
- * No SKILL.md filesystem path appears in this verification.
- */
-
-export type SkillTddMechanism = "tool-registry" | "mcp-config" | "none";
-
-export interface SkillTddToolInfo {
+export interface PstackEntry {
+	/** Full canonical name as it appears in MCP metadata. */
 	name: string;
+	/** Human-facing short slug (last path segment for playbooks, same as name for skills). */
+	slug: string;
+	type: "skill" | "playbook";
 }
 
-export interface SkillTddVerifierOptions {
-	/** Enumerates currently registered Pi tools. Preferred mechanism. */
-	getAllTools?: () => SkillTddToolInfo[];
-	/** Checks whether the engineering-skills MCP server is configured. Fallback. */
-	isMcpConfigured?: () => boolean;
+export interface PstackRegistry {
+	skills: readonly PstackEntry[];
+	playbooks: readonly PstackEntry[];
+	/** All full names and all slugs — useful for fast membership checks. */
+	allNames: ReadonlySet<string>;
 }
 
-export interface SkillTddVerificationResult {
-	available: boolean;
-	mechanism: SkillTddMechanism;
-	matchedToolName?: string;
+export type PstackRegistryResult =
+	| { available: true; registry: PstackRegistry }
+	| { available: false; reason: string };
+
+export interface PstackToolInfo {
+	name: string;
+	description?: string;
 }
 
-const SKILL_TDD_PATTERNS = [/skill[-_]tdd/i];
-
-export function verifySkillTddAvailable(opts: SkillTddVerifierOptions): SkillTddVerificationResult {
-	if (opts.getAllTools) {
-		try {
-			const tools = opts.getAllTools() ?? [];
-			for (const tool of tools) {
-				if (!tool || typeof tool.name !== "string") continue;
-				for (const pattern of SKILL_TDD_PATTERNS) {
-					if (pattern.test(tool.name)) {
-						return { available: true, mechanism: "tool-registry", matchedToolName: tool.name };
-					}
-				}
-			}
-		} catch {
-			// Fall through to the MCP-config fallback below.
-		}
-	}
-
-	if (opts.isMcpConfigured) {
-		try {
-			if (opts.isMcpConfigured()) {
-				return { available: true, mechanism: "mcp-config" };
-			}
-		} catch {
-			// Treat any failure as "not configured".
-		}
-	}
-
-	return { available: false, mechanism: "none" };
+export interface PstackRegistryResolverOptions {
+	/** Enumerates currently registered Pi tools. The preferred and only accepted mechanism. */
+	getAllTools?: () => PstackToolInfo[];
 }
 
 // ---------------------------------------------------------------------------
-// engineering-skills MCP config discovery (fallback helper)
+// Slug normalization (DEC-012)
 // ---------------------------------------------------------------------------
 
-const SERVER_NAME = "engineering-skills";
-const GLOBAL_MCP_CONFIG = path.join(homedir(), ".config", "mcp", "mcp.json");
-
-interface McpConfigFile {
-	mcpServers?: Record<string, unknown>;
-	[key: string]: unknown;
+/**
+ * Normalizes a pstack name to a human-facing short slug.
+ *
+ * - `poteto-mode/playbooks/bug-fix` → `bug-fix`   (last path segment)
+ * - `architect`                     → `architect`  (no path, unchanged)
+ * - `""`                            → `""`          (empty, unchanged)
+ */
+export function normalizePlaybookSlug(fullName: string): string {
+	if (!fullName) return fullName;
+	const segments = fullName.split("/");
+	return segments[segments.length - 1] ?? fullName;
 }
 
-function readJsonFile(filePath: string): McpConfigFile {
-	if (!fs.existsSync(filePath)) return {};
+// ---------------------------------------------------------------------------
+// Pstack registry description parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Parses the pstack skill/playbook list from the description text emitted by
+ * the `engineering_skills_skill-pstack` MCP tool's metadata.
+ *
+ * Expected format (sections separated by blank lines):
+ * ```
+ * Skills:
+ *   - architect
+ *   - figure-it-out
+ * Playbooks:
+ *   - poteto-mode/playbooks/bug-fix
+ * ```
+ */
+export function parsePstackRegistry(description: string): PstackRegistry {
+	const lines = description.split("\n");
+
+	const skills: PstackEntry[] = [];
+	const playbooks: PstackEntry[] = [];
+
+	type Section = "none" | "skills" | "playbooks";
+	let section: Section = "none";
+
+	for (const rawLine of lines) {
+		const line = rawLine.trim();
+
+		if (/^Skills:/i.test(line)) {
+			section = "skills";
+			continue;
+		}
+		if (/^Playbooks:/i.test(line)) {
+			section = "playbooks";
+			continue;
+		}
+		// Any other header-like line (e.g. "Parameters:") ends the known sections.
+		if (/^\w[^-].*:/.test(line) && line.endsWith(":")) {
+			section = "none";
+			continue;
+		}
+
+		if (section === "none") continue;
+
+		const match = line.match(/^-\s+(.+)$/);
+		if (!match) continue;
+		const name = match[1].trim();
+		if (!name) continue;
+
+		if (section === "skills") {
+			skills.push({ name, slug: normalizePlaybookSlug(name), type: "skill" });
+		} else {
+			playbooks.push({ name, slug: normalizePlaybookSlug(name), type: "playbook" });
+		}
+	}
+
+	const allNames = new Set<string>();
+	for (const s of skills) {
+		allNames.add(s.name);
+		allNames.add(s.slug);
+	}
+	for (const p of playbooks) {
+		allNames.add(p.name);
+		allNames.add(p.slug);
+	}
+
+	return { skills, playbooks, allNames };
+}
+
+// ---------------------------------------------------------------------------
+// Pstack registry resolution (DEC-013)
+// ---------------------------------------------------------------------------
+
+const SKILL_PSTACK_PATTERN = /skill[-_]pstack/i;
+
+/**
+ * Resolves the pstack skill/playbook registry by locating the
+ * `skill-pstack` tool in the registered Pi tool set and parsing its
+ * description metadata. The registry is intended to be snapshotted once
+ * per run at startup and then treated as immutable for that run.
+ *
+ * Returns `{ available: false, reason }` when:
+ *   - `getAllTools` is not provided.
+ *   - No tool matching the skill-pstack pattern is found.
+ *   - The matched tool has an empty or missing description.
+ *   - `getAllTools` throws.
+ */
+export function resolvePstackRegistry(opts: PstackRegistryResolverOptions): PstackRegistryResult {
+	if (!opts.getAllTools) {
+		return { available: false, reason: "No tool resolver provided; cannot locate skill-pstack metadata." };
+	}
+
+	let tools: PstackToolInfo[];
 	try {
-		const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-	} catch {
-		return {};
+		tools = opts.getAllTools() ?? [];
+	} catch (err: unknown) {
+		const message = err instanceof Error ? err.message : String(err);
+		return { available: false, reason: `Failed to enumerate tools: ${message}` };
 	}
-}
 
-export function isEngineeringSkillsConfigured(): boolean {
-	const candidates = [
-		GLOBAL_MCP_CONFIG,
-		path.join(homedir(), ".pi", "agent", "mcp.json"),
-		path.resolve(process.cwd(), ".mcp.json"),
-		path.resolve(process.cwd(), ".pi", "mcp.json"),
-	];
-	for (const candidate of candidates) {
-		const config = readJsonFile(candidate);
-		if (
-			config.mcpServers &&
-			Object.prototype.hasOwnProperty.call(config.mcpServers, SERVER_NAME)
-		) {
-			return true;
-		}
+	const pstackTool = tools.find(
+		(t) => t && typeof t.name === "string" && SKILL_PSTACK_PATTERN.test(t.name),
+	);
+
+	if (!pstackTool) {
+		return {
+			available: false,
+			reason:
+				"skill-pstack tool not found in the Pi tool registry. " +
+				"Ensure the engineering-skills MCP server is connected.",
+		};
 	}
-	return false;
+
+	const description = pstackTool.description ?? "";
+	if (!description.trim()) {
+		return {
+			available: false,
+			reason:
+				`skill-pstack tool found (${pstackTool.name}) but its description is empty; ` +
+				"cannot resolve the pstack registry.",
+		};
+	}
+
+	const registry = parsePstackRegistry(description);
+	return { available: true, registry };
 }
 
 // ---------------------------------------------------------------------------
@@ -217,16 +257,15 @@ export type PairProgramStatus = "success" | "blocked" | "incomplete" | "error";
 
 /**
  * Map a (loose) reason string to one of the four user-facing runtime statuses.
- * Useful for the skill-tdd / unsupported-mode / concurrency early-return paths.
+ * Useful for the registry-unavailable / concurrency early-return paths.
  */
 export function mapEarlyReturnStatus(
-	reason: "unsupported_mode" | "already_active" | "skill_tdd_missing" | "incomplete",
+	reason: "already_active" | "registry_unavailable" | "incomplete",
 ): PairProgramStatus {
 	switch (reason) {
-	case "unsupported_mode":
 	case "already_active":
 		return "error";
-	case "skill_tdd_missing":
+	case "registry_unavailable":
 		return "blocked";
 	case "incomplete":
 		return "incomplete";

@@ -630,7 +630,7 @@ If you need to change the checklist later, include:
 ## Checklist Amendment`;
 }
 
-export function buildDriverCyclePrompt(memory: PairRunMemory, latestNavigatorHandoff: string | null, testCommand: string | undefined, currentWorkspace?: WorkspaceSnapshot, _driverStartupCompleted?: boolean): string {
+export function buildDriverCyclePrompt(memory: PairRunMemory, latestNavigatorHandoff: string | null, testCommand: string | undefined, currentWorkspace?: WorkspaceSnapshot): string {
 	const workspaceSection = currentWorkspace
 		? `\nCurrent workspace evidence:\n${formatWorkspaceSnapshot(currentWorkspace)}\n`
 		: "";
@@ -864,7 +864,7 @@ export async function runPairProtocolDryRun(
 
 		// Import validation inline to avoid circular deps
 		const { validateDriverStartup } = await import("./pair-program-helpers.ts");
-		let validation = validateDriverStartup(startupResponse, options.pstackRegistry as any, activePlaybook);
+		let validation = validateDriverStartup(startupResponse, options.pstackRegistry, activePlaybook);
 
 		// One repair pass if malformed
 		if (!validation.valid && (sessions.driverStartupRepair ?? sessions.driverCycle)) {
@@ -873,7 +873,7 @@ export async function runPairProtocolDryRun(
 			startupResponse = await repairFn(repairPrompt);
 			options.onEvent?.({ role: "driver", phase: "startup_repair", text: startupResponse });
 			cycleRecord(1).driverStartupRepairReport = startupResponse;
-			validation = validateDriverStartup(startupResponse, options.pstackRegistry as any, activePlaybook);
+			validation = validateDriverStartup(startupResponse, options.pstackRegistry, activePlaybook);
 		}
 
 		if (!validation.valid) {

@@ -535,6 +535,8 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
 // Extension entry point
 // ---------------------------------------------------------------------------
 
+let activeRunId: string | undefined;
+
 export default function pairProgramExtension(pi: ExtensionAPI) {
   pi.on("session_start", async () => {
     activeRunId = undefined;

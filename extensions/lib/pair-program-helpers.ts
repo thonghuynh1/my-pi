@@ -349,8 +349,8 @@ function parseOverridePacket(
  */
 export function validateDriverStartup(
 	responseText: string,
-	registry: PstackRegistry,
-	initialPlaybookRecommendation: string,
+	registry: Pick<PstackRegistry, "allNames">,
+	_initialPlaybookRecommendation: string,
 ): DriverStartupValidationResult {
 	const errors: string[] = [];
 
@@ -442,7 +442,7 @@ export interface PlaybookSwitchResult {
  */
 export function validatePlaybookSwitch(
 	request: PlaybookSwitchRequest,
-	registry: PstackRegistry,
+	registry: Pick<PstackRegistry, "allNames">,
 ): PlaybookSwitchResult {
 	// Validate new playbook against registry
 	const slug = normalizePlaybookSlug(request.newPlaybook);

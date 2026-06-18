@@ -100,8 +100,12 @@ export interface PstackToolInfo {
 }
 
 export interface PstackRegistryResolverOptions {
-	/** Enumerates currently registered Pi tools. The preferred and only accepted mechanism. */
+	/** Enumerates configured Pi tools with metadata. MCP tools may be absent from this list. */
 	getAllTools?: () => PstackToolInfo[];
+	/** Enumerates active tool names. MCP adapter tools are visible here in live sessions. */
+	getActiveTools?: () => string[];
+	/** Supplies metadata when an active MCP tool has no entry in getAllTools. */
+	getPstackDescription?: (toolName: string) => string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,48 +203,75 @@ const SKILL_PSTACK_PATTERN = /skill[-_]pstack/i;
 
 /**
  * Resolves the pstack skill/playbook registry by locating the
- * `skill-pstack` tool in the registered Pi tool set and parsing its
- * description metadata. The registry is intended to be snapshotted once
+ * `skill-pstack` tool in live tool metadata or active tool names and parsing
+ * its description metadata. The registry is intended to be snapshotted once
  * per run at startup and then treated as immutable for that run.
  *
  * Returns `{ available: false, reason }` when:
- *   - `getAllTools` is not provided.
- *   - No tool matching the skill-pstack pattern is found.
- *   - The matched tool has an empty or missing description.
- *   - `getAllTools` throws.
+ *   - no tool resolver is provided.
+ *   - no tool matching the skill-pstack pattern is found.
+ *   - the matched tool has an empty or missing description.
+ *   - every provided resolver throws.
  */
 export function resolvePstackRegistry(opts: PstackRegistryResolverOptions): PstackRegistryResult {
-	if (!opts.getAllTools) {
+	if (!opts.getAllTools && !opts.getActiveTools) {
 		return { available: false, reason: "No tool resolver provided; cannot locate skill-pstack metadata." };
 	}
 
-	let tools: PstackToolInfo[];
-	try {
-		tools = opts.getAllTools() ?? [];
-	} catch (err: unknown) {
-		const message = err instanceof Error ? err.message : String(err);
-		return { available: false, reason: `Failed to enumerate tools: ${message}` };
+	const errors: string[] = [];
+	let tools: PstackToolInfo[] = [];
+	if (opts.getAllTools) {
+		try {
+			tools = opts.getAllTools() ?? [];
+		} catch (err: unknown) {
+			const message = err instanceof Error ? err.message : String(err);
+			errors.push(`getAllTools failed: ${message}`);
+		}
 	}
 
-	const pstackTool = tools.find(
+	let activeToolNames: string[] = [];
+	if (opts.getActiveTools) {
+		try {
+			activeToolNames = opts.getActiveTools() ?? [];
+		} catch (err: unknown) {
+			const message = err instanceof Error ? err.message : String(err);
+			errors.push(`getActiveTools failed: ${message}`);
+		}
+	}
+
+	if (tools.length === 0 && activeToolNames.length === 0 && errors.length > 0) {
+		return { available: false, reason: `Failed to enumerate tools: ${errors.join("; ")}` };
+	}
+
+	const metadataTool = tools.find(
 		(t) => t && typeof t.name === "string" && SKILL_PSTACK_PATTERN.test(t.name),
 	);
+	const activeToolName = activeToolNames.find((name) => SKILL_PSTACK_PATTERN.test(name));
+	const toolName = metadataTool?.name ?? activeToolName;
 
-	if (!pstackTool) {
+	if (!toolName) {
+		const hasMcpGateway = tools.some((tool) => tool.name === "mcp") || activeToolNames.includes("mcp");
+		const fallbackDescription = hasMcpGateway ? opts.getPstackDescription?.("skill-pstack") ?? "" : "";
+		if (fallbackDescription.trim()) {
+			const registry = parsePstackRegistry(fallbackDescription);
+			return { available: true, registry };
+		}
+
+		const suffix = errors.length > 0 ? ` Resolver errors: ${errors.join("; ")}` : "";
 		return {
 			available: false,
 			reason:
 				"skill-pstack tool not found in the Pi tool registry. " +
-				"Ensure the engineering-skills MCP server is connected.",
+				`Ensure the engineering-skills MCP server is connected.${suffix}`,
 		};
 	}
 
-	const description = pstackTool.description ?? "";
+	const description = metadataTool?.description ?? opts.getPstackDescription?.(toolName) ?? "";
 	if (!description.trim()) {
 		return {
 			available: false,
 			reason:
-				`skill-pstack tool found (${pstackTool.name}) but its description is empty; ` +
+				`skill-pstack tool found (${toolName}) but its description is empty; ` +
 				"cannot resolve the pstack registry.",
 		};
 	}

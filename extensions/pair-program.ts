@@ -8,6 +8,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
+import { homedir } from "node:os";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
@@ -101,6 +102,85 @@ interface PairTranscript {
 }
 
 type PairProgramUpdate = (partial: { content: Array<{ type: "text"; text: string }>; details?: Partial<PairProgramDetails> }) => void;
+
+// ---------------------------------------------------------------------------
+// Pstack registry metadata fallback
+// ---------------------------------------------------------------------------
+
+const ENGINEERING_SKILLS_SERVER_NAME = "engineering-skills";
+const MCP_CONFIG_CANDIDATES = [
+  path.join(homedir(), ".config", "mcp", "mcp.json"),
+  path.join(homedir(), ".pi", "agent", "mcp.json"),
+  path.resolve(process.cwd(), ".mcp.json"),
+  path.resolve(process.cwd(), ".pi", "mcp.json"),
+];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readJsonRecord(filePath: string): Record<string, unknown> | undefined {
+  if (!fs.existsSync(filePath)) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function findEngineeringSkillsRepoPath(): string | undefined {
+  for (const configPath of MCP_CONFIG_CANDIDATES) {
+    const config = readJsonRecord(configPath);
+    const mcpServers = isRecord(config?.mcpServers) ? config.mcpServers : undefined;
+    const server = isRecord(mcpServers?.[ENGINEERING_SKILLS_SERVER_NAME])
+      ? mcpServers[ENGINEERING_SKILLS_SERVER_NAME]
+      : undefined;
+    const args = Array.isArray(server?.args) ? server.args : [];
+    const entrypoint = args.find((arg): arg is string => typeof arg === "string" && arg.trim().length > 0);
+    if (!entrypoint) continue;
+
+    const resolvedEntrypoint = path.resolve(path.dirname(configPath), entrypoint);
+    const repoPath = path.basename(resolvedEntrypoint) === "index.js"
+      ? path.dirname(path.dirname(resolvedEntrypoint))
+      : path.dirname(resolvedEntrypoint);
+    if (fs.existsSync(path.join(repoPath, "pstack", "skills"))) return repoPath;
+  }
+  return undefined;
+}
+
+function listDirectories(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+}
+
+function listMarkdownBasenames(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+    .map((entry) => path.basename(entry.name, ".md"))
+    .sort();
+}
+
+function discoverPstackDescriptionFromEngineeringSkillsConfig(): string | undefined {
+  const repoPath = findEngineeringSkillsRepoPath();
+  if (!repoPath) return undefined;
+
+  const skillsDir = path.join(repoPath, "pstack", "skills");
+  const skills = listDirectories(skillsDir).filter((name) => fs.existsSync(path.join(skillsDir, name, "SKILL.md")));
+  const playbooks = skills.flatMap((skill) =>
+    listMarkdownBasenames(path.join(skillsDir, skill, "playbooks")).map((playbook) => `${skill}/playbooks/${playbook}`),
+  );
+
+  if (skills.length === 0 && playbooks.length === 0) return undefined;
+  const lines = ["pstack skill reference (from configured engineering-skills MCP repo). Available names:"];
+  if (skills.length > 0) lines.push("", "Skills:", ...skills.map((name) => `  - ${name}`));
+  if (playbooks.length > 0) lines.push("", "Playbooks:", ...playbooks.map((name) => `  - ${name}`));
+  return lines.join("\n");
+}
 
 // ---------------------------------------------------------------------------
 // Transcript helpers
@@ -283,6 +363,8 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
         // --- Resolve pstack skill registry snapshot ---
         const registryResult = resolvePstackRegistry({
           getAllTools: () => pi.getAllTools?.() ?? [],
+          getActiveTools: () => pi.getActiveTools?.() ?? [],
+          getPstackDescription: () => discoverPstackDescriptionFromEngineeringSkillsConfig(),
         });
         if (!registryResult.available) {
           const blockedResult: PairProgramDetails = {

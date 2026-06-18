@@ -231,6 +231,52 @@ console.log("resolvePstackRegistry");
 }
 
 {
+	// skill-pstack present in active MCP tools; description comes from the fallback metadata source.
+	const result = resolvePstackRegistry({
+		getAllTools: () => [{ name: "read", description: "read a file" }],
+		getActiveTools: () => ["read", "engineering_skills_skill-pstack"],
+		getPstackDescription: (toolName) => toolName === "engineering_skills_skill-pstack" ? SAMPLE_DESCRIPTION : undefined,
+	});
+	assert(result.available, "registry resolved from active MCP tool plus fallback description");
+	if (result.available) {
+		assert(result.registry.skills.length > 0, "fallback description populated skills");
+		assert(result.registry.playbooks.length > 0, "fallback description populated playbooks");
+	}
+}
+
+{
+	// getAllTools can omit or fail for MCP tools; active tools still prove the MCP tool is available.
+	const result = resolvePstackRegistry({
+		getAllTools: () => {
+			throw new Error("configured tool metadata excludes MCP");
+		},
+		getActiveTools: () => ["engineering_skills_skill-pstack"],
+		getPstackDescription: () => SAMPLE_DESCRIPTION,
+	});
+	assert(result.available, "active MCP tool resolves even when getAllTools fails");
+}
+
+{
+	// Proxy-only MCP sessions expose only the mcp gateway; the configured repo still supplies pstack metadata.
+	const result = resolvePstackRegistry({
+		getAllTools: () => [{ name: "mcp", description: "MCP gateway" }],
+		getActiveTools: () => ["read", "mcp"],
+		getPstackDescription: () => SAMPLE_DESCRIPTION,
+	});
+	assert(result.available, "registry resolved from configured pstack metadata when MCP is proxy-only");
+}
+
+{
+	// Configured metadata alone is not enough when no MCP tool surface is active.
+	const result = resolvePstackRegistry({
+		getAllTools: () => [{ name: "read", description: "read a file" }],
+		getActiveTools: () => ["read"],
+		getPstackDescription: () => SAMPLE_DESCRIPTION,
+	});
+	assert(!result.available, "configured metadata without an MCP tool surface stays unavailable");
+}
+
+{
 	// skill-pstack present but no description -> unavailable
 	const result = resolvePstackRegistry({
 		getAllTools: () => [{ name: "engineering_skills_skill-pstack", description: "" }],

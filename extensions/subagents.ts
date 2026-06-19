@@ -1392,7 +1392,28 @@ async function runSubagent(
 }
 
 export default function (pi: ExtensionAPI) {
-	let subagentModeEnabled = false;
+	// Allow non-interactive runs (e.g. ralph-loop spawning pi) to start with
+	// subagent workflow mode already enabled, so the model is steered to use the
+	// `subagent` tool without anyone typing `/subagent on`.
+	//
+	// Two supported mechanisms:
+	//   1. CLI flag `--subagents` (the documented pi.registerFlag mechanism) —
+	//      spawn with `pi --subagents ...`.
+	//   2. Env var `PI_SUBAGENT_MODE=1` — convenient for process spawners that
+	//      already pass an env map.
+	pi.registerFlag("subagents", {
+		description: "Start with subagent workflow mode enabled (explore/shell fan-out)",
+		type: "boolean",
+		default: false,
+	});
+	const subagentModeEnvDefault = /^(1|true|yes|on)$/i.test(
+		process.env.PI_SUBAGENT_MODE ?? "",
+	);
+	// Resolves the startup default from CLI flag (preferred) or env var. getFlag
+	// is only reliable once flags are parsed, so callers use this at session_start.
+	const resolveSubagentModeDefault = (): boolean =>
+		pi.getFlag("subagents") === true || subagentModeEnvDefault;
+	let subagentModeEnabled = subagentModeEnvDefault;
 	const activeSubagents = new Map<string, RunningSubagentStatus>();
 	let tuiRef: { requestRender: () => void } | undefined;
 	let spinnerTimer: ReturnType<typeof setInterval> | undefined;
@@ -1486,7 +1507,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		subagentModeEnabled = false;
+		subagentModeEnabled = resolveSubagentModeDefault();
 		activeSubagents.clear();
 		resetBatchCoachState();
 		// New session ⇒ reset accumulated subagent billing so the footer
@@ -1501,6 +1522,9 @@ export default function (pi: ExtensionAPI) {
 				subagentModeEnabled = Boolean(entry.data?.enabled);
 			}
 		}
+		// Sync the tool's prompting metadata with the resolved mode so a flag/env
+		// enabled run gets the steering snippet from the first turn.
+		pi.registerTool(buildSubagentToolDef(subagentModeEnabled));
 		refreshSubagentStatusWidget(ctx);
 	});
 
@@ -1703,8 +1727,9 @@ export default function (pi: ExtensionAPI) {
 		};
 	});
 
-	// Initial registration (OFF by default - no prompting metadata)
-	pi.registerTool(buildSubagentToolDef(false));
+	// Initial registration. Defaults OFF unless PI_SUBAGENT_MODE enables it, in
+	// which case the prompting metadata is included from startup.
+	pi.registerTool(buildSubagentToolDef(subagentModeEnvDefault));
 
 	pi.registerCommand("subagent", {
 		description: "Enable, disable, or show session-level subagent workflow instructions",

@@ -546,6 +546,28 @@ export function crossCheckLeavesAgainstTelemetry(
 
 export type PairProgramStatus = "success" | "blocked" | "incomplete" | "error";
 
+// ---------------------------------------------------------------------------
+// Registration gate (skip in pi RPC/JSON mode used by ralph-loop)
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide whether the pair_program tool and slash command should be registered
+ * for the current pi process. Returns false when pi was launched in JSON RPC
+ * mode (`--mode json` or `--mode=json`), which is how ralph-loop's pi-client
+ * spawns pi. In that mode there is no human typing `/pair-program`, so the
+ * only effect of keeping the tool registered would be the LLM auto-selecting
+ * it inside ralph-loop runs. Returns true for every other launch (interactive
+ * TUI, `-p`, other RPC modes).
+ */
+export function shouldRegisterPairProgram(argv: readonly string[]): boolean {
+	for (let i = 0; i < argv.length; i += 1) {
+		const arg = argv[i];
+		if (arg === "--mode" && argv[i + 1] === "json") return false;
+		if (arg === "--mode=json") return false;
+	}
+	return true;
+}
+
 /**
  * Map a (loose) reason string to one of the four user-facing runtime statuses.
  * Useful for the registry-unavailable / concurrency early-return paths.

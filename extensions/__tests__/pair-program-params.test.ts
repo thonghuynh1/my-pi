@@ -19,6 +19,7 @@ import {
 	parsePstackRegistry,
 	releaseRun,
 	resolvePstackRegistry,
+	shouldRegisterPairProgram,
 	tryAcquireRun,
 } from "../lib/pair-program-helpers.ts";
 
@@ -326,6 +327,50 @@ console.log("mapEarlyReturnStatus");
 assertEqual(mapEarlyReturnStatus("already_active"), "error", "already_active -> error");
 assertEqual(mapEarlyReturnStatus("registry_unavailable"), "blocked", "registry_unavailable -> blocked");
 assertEqual(mapEarlyReturnStatus("incomplete"), "incomplete", "incomplete passthrough");
+
+// ---------------------------------------------------------------------------
+// shouldRegisterPairProgram (RPC/JSON mode gate)
+// ---------------------------------------------------------------------------
+
+console.log("shouldRegisterPairProgram");
+
+assert(
+	shouldRegisterPairProgram(["node", "pi"]),
+	"register in plain interactive launch",
+);
+assert(
+	shouldRegisterPairProgram(["node", "pi", "--approve"]),
+	"register when --mode is absent",
+);
+assert(
+	!shouldRegisterPairProgram(["node", "pi", "--mode", "json"]),
+	"skip when --mode json is passed (ralph-loop shape)",
+);
+assert(
+	!shouldRegisterPairProgram([
+		"node",
+		"pi",
+		"--mode",
+		"json",
+		"--approve",
+		"--no-session",
+		"--no-context-files",
+		"--subagents",
+	]),
+	"skip for the exact ralph-loop pi-client argv shape",
+);
+assert(
+	!shouldRegisterPairProgram(["node", "pi", "--mode=json"]),
+	"skip for --mode=json single-token form",
+);
+assert(
+	shouldRegisterPairProgram(["node", "pi", "--mode", "tui"]),
+	"register for non-json mode values",
+);
+assert(
+	shouldRegisterPairProgram(["node", "pi", "--label", "--mode"]),
+	"register when --mode appears without a value (don't crash, treat as absent)",
+);
 
 // ---------------------------------------------------------------------------
 // Report

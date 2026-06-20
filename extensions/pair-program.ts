@@ -33,6 +33,7 @@ import {
 import {
   normalizeParams,
   resolvePstackRegistry,
+  shouldRegisterPairProgram,
   tryAcquireRun,
   releaseRun,
   type PstackRegistry,
@@ -620,6 +621,14 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
 let activeRunId: string | undefined;
 
 export default function pairProgramExtension(pi: ExtensionAPI) {
+  // Skip registration entirely when pi runs in JSON RPC mode (the launch
+  // shape ralph-loop uses). There is no slash-command surface in that mode,
+  // and we don't want the LLM auto-selecting pair_program inside ralph-loop
+  // iterations. Interactive sessions still get the tool and `/pair-program`.
+  if (!shouldRegisterPairProgram(process.argv)) {
+    return;
+  }
+
   pi.on("session_start", async () => {
     activeRunId = undefined;
   });

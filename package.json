@@ -12,6 +12,7 @@
     "check": "tsc --noEmit"
   },
   "dependencies": {
+    "@ogulcancelik/pi-herdr": "^0.2.5",
     "pi-mcp-adapter": "^2.9.0",
     "ws": "^8.21.0"
   },
@@ -30,6 +31,7 @@
   "pi": {
     "extensions": [
       "./node_modules/pi-mcp-adapter/index.ts",
+      "./node_modules/@ogulcancelik/pi-herdr/index.ts",
       "./extensions"
     ],
     "prompts": [

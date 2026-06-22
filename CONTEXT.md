@@ -36,6 +36,22 @@ The practical verification level for Scout-Grounded Handoffs. The Grill With Sco
 
 The MCP server named `engineering-skills` that exposes reusable engineering skills and prompts, including `grill-with-docs`, `to-prd`, and `skill-tdd`. It is the contract source for planning, PRD handoff, and TDD workflow protocols that Pi tools should follow. Pair Program Tool runs in TDD mode should depend on this MCP capability rather than hardcoded skill file paths.
 
+## Capability Visibility
+
+A `my-pi` configuration layer that controls which managed custom extension tools are exposed to the agent and which managed commands are registered for human slash-command use.
+
+## Managed Extension
+
+A custom `my-pi` extension that opts into Capability Visibility by declaring a stable `piExtension.id`. Capability Visibility settings target this ID rather than the extension file path.
+
+## Agent-Visible Tool
+
+A managed extension tool that is included in the agent's active callable tool schema.
+
+## Agent-Hidden Tool
+
+A managed extension tool that is registered internally but excluded from the agent's active callable tool schema.
+
 ## Scout Profile
 
 A canonical planning role definition owned by the Engineering Skills MCP. A Scout Profile describes the scope, trigger fit, evidence requirements, and verdict format for a specialized planning scout such as backend, frontend, QA, or runtime.

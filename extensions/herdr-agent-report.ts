@@ -5,6 +5,15 @@ type HerdrAgentState = "idle" | "working" | "blocked" | "unknown";
 const SOURCE = "pi-extension";
 const AGENT = "pi";
 
+// Seq must survive module re-import across /new (jiti uses moduleCache:false).
+// globalThis persists for the process lifetime.
+const SEQ_KEY = Symbol.for("herdr-agent-report-seq");
+function nextSeq(): number {
+  const seq = ((globalThis as Record<symbol, number>)[SEQ_KEY] ?? 0) + 1;
+  (globalThis as Record<symbol, number>)[SEQ_KEY] = seq;
+  return seq;
+}
+
 export default function (pi: ExtensionAPI) {
   const herdrPaneId = process.env.HERDR_PANE_ID;
   const inHerdr = Boolean(process.env.HERDR_ENV && herdrPaneId);
@@ -12,13 +21,12 @@ export default function (pi: ExtensionAPI) {
   if (!inHerdr || !herdrPaneId) return;
   const paneId = herdrPaneId;
 
-  let seq = 0;
   let lastState: HerdrAgentState | undefined;
 
   async function report(state: HerdrAgentState, message?: string) {
     if (lastState === state && !message) return;
     lastState = state;
-    seq += 1;
+    const seq = nextSeq();
 
     const args = [
       "pane",
@@ -39,7 +47,6 @@ export default function (pi: ExtensionAPI) {
     try {
       const result = await pi.exec("herdr", args, { timeout: 5000 });
       if (result.code !== 0) {
-        // Keep this quiet in normal use; Herdr may be restarting or unavailable.
         console.warn(`[herdr-agent-report] report ${state} failed: ${result.stderr || result.stdout}`);
       }
     } catch (error) {
@@ -48,7 +55,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function release() {
-    seq += 1;
+    const seq = nextSeq();
     try {
       await pi.exec(
         "herdr",
@@ -80,8 +87,12 @@ export default function (pi: ExtensionAPI) {
     setFooter(ctx, "idle");
   });
 
-  pi.on("session_shutdown", async () => {
-    await release();
+  // Only release on actual quit. Session switches (/new, /resume, /fork, /reload)
+  // keep the agent registered; the new session_start updates the state in place.
+  pi.on("session_shutdown", async (event) => {
+    if (event.reason === "quit") {
+      await release();
+    }
   });
 
   pi.registerCommand("herdr-agent", {

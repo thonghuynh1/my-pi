@@ -17,10 +17,10 @@
     },
     "pair-program": {
       "tools": {
-        "pair_program": "agent-visible"
+        "pair_program": "agent-hidden"
       },
       "commands": {
-        "pair-program": "enabled"
+        "pair-program": "disabled"
       }
     },
     "subagents": {

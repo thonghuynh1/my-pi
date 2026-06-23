@@ -363,21 +363,11 @@ export interface ManagedExtension {
 	registerCommand(name: string, options: { [key: string]: unknown }): void;
 }
 
-/** Module-level registry to catch duplicate managed extension IDs at startup. */
-const managedExtensionRegistry = new Set<string>();
-
 export function createManagedExtension(
 	pi: ManagedExtensionPiApi,
 	options: CreateManagedExtensionOptions,
 ): ManagedExtension {
 	const { id, visibility } = options;
-
-	if (managedExtensionRegistry.has(id)) {
-		throw new Error(
-			`Duplicate managed extension ID "${id}". Each managed extension must have a unique ID.`,
-		);
-	}
-	managedExtensionRegistry.add(id);
 
 	// Collect agent-hidden tool names during loading and apply them after loading
 	// completes. pi forbids getActiveTools/setActiveTools during extension loading.

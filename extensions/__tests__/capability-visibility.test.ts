@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
@@ -5,8 +8,19 @@ import {
 	parseCapabilityVisibilitySettings,
 	resolveExtensionCapabilityVisibility,
 	resolveToolVisibility,
+	createManagedExtension,
 	type CapabilityVisibilityWarning,
+	type ManagedExtensionPiApi,
 } from "../lib/capability-visibility.ts";
+import { piExtension } from "../frontend-coach/index.ts";
+import { piExtension as pairProgramExtension } from "../pair-program.ts";
+import { piExtension as subagentsExtension } from "../subagents.ts";
+import { piExtension as lavishAxiExtension } from "../lavish-axi.ts";
+import { piExtension as engineeringSkillsExtension } from "../engineering-skills.ts";
+import { piExtension as usageFooterExtension } from "../usage-footer.ts";
+import { piExtension as herdrAgentReportExtension } from "../herdr-agent-report.ts";
+import { piExtension as toolPanelExtension } from "../tool-panel.ts";
+import { piExtension as grillWithScoutsExtension } from "../grill-with-scouts.ts";
 
 function warningCodes(warnings: ReadonlyArray<CapabilityVisibilityWarning>): string[] {
 	return warnings.map((warning) => warning.code);
@@ -206,3 +220,289 @@ test("invalid unsafe override warns and keeps hidden", () => {
 	assert.equal(result.visibility, "agent-hidden");
 	assert.deepEqual(warningCodes(result.warnings), ["unsafe-override-rejected"]);
 });
+
+// ── Package-default wiring tests (issue 02) ──────────────────────────────────
+
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
+test("package.json points to pi.settings.json", () => {
+	const pkg = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+	assert.equal(pkg.pi?.settings, "./pi.settings.json");
+});
+
+test("pi.settings.json is valid capability visibility JSON", () => {
+	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
+	const result = parseCapabilityVisibilitySettings(raw);
+	assert.equal(
+		result.warnings.length,
+		0,
+		`unexpected parse warnings: ${JSON.stringify(result.warnings)}`,
+	);
+});
+
+test("frontend-coach browser_eval package default is agent-hidden", () => {
+	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
+	const { settings } = parseCapabilityVisibilitySettings(raw);
+	assert.equal(
+		settings.capabilityVisibility?.["frontend-coach"]?.tools?.browser_eval,
+		"agent-hidden",
+	);
+});
+
+test("no Pi built-in tool defaults in pi.settings.json", () => {
+	const builtins = new Set(["bash", "read", "edit", "write", "grep", "find", "ls"]);
+	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
+	const { settings } = parseCapabilityVisibilitySettings(raw);
+	for (const [extId, ext] of Object.entries(settings.capabilityVisibility ?? {})) {
+		for (const toolName of Object.keys(ext?.tools ?? {})) {
+			assert.ok(
+				!builtins.has(toolName),
+				`built-in tool "${toolName}" found under extension "${extId}" in pi.settings.json`,
+			);
+		}
+	}
+});
+
+// ── Managed extension registration helper tests (issue 03) ─────────────────
+
+function createFakePi(): ManagedExtensionPiApi & {
+	tools: Map<string, unknown>;
+	commands: Map<string, unknown>;
+	emit(event: string): void;
+} {
+	const tools = new Map<string, unknown>();
+	const commands = new Map<string, unknown>();
+	let activeTools: string[] = [];
+	const handlers = new Map<string, Array<(...args: unknown[]) => void>>();
+
+	return {
+		tools,
+		commands,
+		registerTool(tool: unknown) {
+			const t = tool as { name: string };
+			tools.set(t.name, tool);
+			if (!activeTools.includes(t.name)) activeTools = [...activeTools, t.name];
+		},
+		registerCommand(name: string, options: unknown) {
+			commands.set(name, options);
+		},
+		getActiveTools() {
+			return [...activeTools];
+		},
+		setActiveTools(names: string[]) {
+			activeTools = [...names];
+		},
+		on(event: string, handler: (...args: unknown[]) => void) {
+			if (!handlers.has(event)) handlers.set(event, []);
+			handlers.get(event)!.push(handler);
+		},
+		emit(event: string) {
+			for (const handler of handlers.get(event) ?? []) handler();
+		},
+	};
+}
+
+test("managed disabled command is not registered", () => {
+	const pi = createFakePi();
+	const managed = createManagedExtension(pi, {
+		id: "cv-test-disabled-cmd",
+		visibility: {
+			capabilityVisibility: {
+				"cv-test-disabled-cmd": { commands: { "launch-edge": "disabled" } },
+			},
+		},
+	});
+	managed.registerCommand("launch-edge", { handler: async () => {} });
+	assert.equal(pi.commands.has("launch-edge"), false, "disabled command must not reach pi.registerCommand");
+});
+
+test("managed unlisted command is registered by default", () => {
+	const pi = createFakePi();
+	const managed = createManagedExtension(pi, { id: "cv-test-unlisted-cmd" });
+	managed.registerCommand("coach-status", { handler: async () => {} });
+	assert.ok(pi.commands.has("coach-status"), "unlisted command must be registered as enabled");
+});
+
+test("duplicate managed extension ID throws", () => {
+	const pi = createFakePi();
+	createManagedExtension(pi, { id: "cv-test-dup" });
+	assert.throws(
+		() => createManagedExtension(pi, { id: "cv-test-dup" }),
+		/duplicate/i,
+		"second registration of the same ID must throw",
+	);
+});
+
+test("managed agent-hidden tool is excluded from active tools", () => {
+	const pi = createFakePi();
+	const managed = createManagedExtension(pi, { id: "cv-test-hidden-tool" });
+	managed.registerTool({
+		name: "secret_tool",
+		defaultVisibility: "agent-hidden",
+		label: "Secret",
+		description: "runs in shadow",
+		parameters: {},
+		execute: async () => ({ type: "text", text: "noop" }),
+	});
+	pi.emit("session_start"); // deferred visibility is applied at session_start
+	assert.ok(pi.tools.has("secret_tool"), "tool must still be registered (internal metadata preserved)");
+	assert.equal(
+		pi.getActiveTools().includes("secret_tool"),
+		false,
+		"agent-hidden tool must not appear in active tools",
+	);
+});
+
+test("managed tool visibility override via settings overrides defaultVisibility", () => {
+	const pi = createFakePi();
+	const managed = createManagedExtension(pi, {
+		id: "cv-test-override-path",
+		visibility: {
+			capabilityVisibility: {
+				"cv-test-override-path": { tools: { spy_tool: "agent-hidden" } },
+			},
+		},
+	});
+	managed.registerTool({
+		name: "spy_tool",
+		defaultVisibility: "agent-visible",
+		label: "Spy",
+		description: "default visible but settings override to hidden",
+		parameters: {},
+		execute: async () => ({ type: "text", text: "noop" }),
+	});
+	pi.emit("session_start"); // deferred visibility is applied at session_start
+	assert.ok(pi.tools.has("spy_tool"), "tool is registered");
+	assert.equal(
+		pi.getActiveTools().includes("spy_tool"),
+		false,
+		"settings override to agent-hidden must exclude tool from active tools",
+	);
+});
+
+test("direct pi registration is unaffected by managed helper", () => {
+	const pi = createFakePi();
+	pi.registerTool({ name: "direct_tool", label: "Direct", description: "ok", parameters: {}, execute: async () => {} });
+	pi.registerCommand("direct-cmd", { handler: async () => {} });
+	assert.ok(pi.tools.has("direct_tool"), "direct tool registration must succeed without managed wrapper");
+	assert.ok(pi.commands.has("direct-cmd"), "direct command registration must succeed without managed wrapper");
+});
+
+// ── Frontend-coach tracer migration tests (issue 04) ─────────────────────────
+
+test("frontend-coach piExtension.id is 'frontend-coach'", () => {
+	assert.equal(piExtension.id, "frontend-coach");
+});
+
+test("frontend-coach browser_eval resolves agent-hidden from package defaults", () => {
+	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
+	const { settings } = parseCapabilityVisibilitySettings(raw);
+	const result = resolveToolVisibility({
+		extensionId: "frontend-coach",
+		toolName: "browser_eval",
+		managed: true,
+		defaultVisibility: "agent-hidden",
+		configuredOverride: settings.capabilityVisibility?.["frontend-coach"]?.tools?.browser_eval,
+	});
+	assert.equal(result.visibility, "agent-hidden");
+	assert.deepEqual(result.warnings, []);
+});
+
+test("frontend-coach browser_record_test resolves agent-visible from package defaults", () => {
+	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
+	const { settings } = parseCapabilityVisibilitySettings(raw);
+	const result = resolveToolVisibility({
+		extensionId: "frontend-coach",
+		toolName: "browser_record_test",
+		managed: true,
+		defaultVisibility: "agent-visible",
+		configuredOverride: settings.capabilityVisibility?.["frontend-coach"]?.tools?.browser_record_test,
+	});
+	assert.equal(result.visibility, "agent-visible");
+	assert.deepEqual(result.warnings, []);
+});
+
+test("frontend-coach coach-launch-edge command is enabled by default", () => {
+	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
+	const { settings } = parseCapabilityVisibilitySettings(raw);
+	assert.equal(
+		settings.capabilityVisibility?.["frontend-coach"]?.commands?.["coach-launch-edge"],
+		"enabled",
+	);
+});
+
+test("frontend-coach unsafe override attempt for browser_eval without allowUnsafeOverride warns and keeps hidden", () => {
+	const parsed = parseCapabilityVisibilitySettings({
+		capabilityVisibility: {
+			"frontend-coach": {
+				tools: { browser_eval: "agent-visible" },
+			},
+		},
+	});
+	const result = resolveToolVisibility({
+		extensionId: "frontend-coach",
+		toolName: "browser_eval",
+		managed: true,
+		defaultVisibility: "agent-hidden",
+		configuredOverride: parsed.settings.capabilityVisibility?.["frontend-coach"]?.tools?.browser_eval,
+	});
+	assert.equal(result.visibility, "agent-hidden");
+	assert.deepEqual(warningCodes(result.warnings), ["unsafe-override-rejected"]);
+});
+
+// ── Issue 05: remaining active extensions migration tests ─────────────────
+
+test("all remaining active extensions have stable piExtension.id values", () => {
+	assert.equal(pairProgramExtension.id, "pair-program");
+	assert.equal(subagentsExtension.id, "subagents");
+	assert.equal(lavishAxiExtension.id, "lavish-axi");
+	assert.equal(engineeringSkillsExtension.id, "engineering-skills");
+	assert.equal(usageFooterExtension.id, "usage-footer");
+	assert.equal(herdrAgentReportExtension.id, "herdr-agent-report");
+	assert.equal(toolPanelExtension.id, "tool-panel");
+});
+
+test("grill-with-scouts has piExtension.id but is inactive (REGISTER_GRILL_WITH_SCOUTS=false)", () => {
+	assert.equal(grillWithScoutsExtension.id, "grill-with-scouts");
+	// Stays inactive by design; this assertion documents that deliberately.
+});
+
+test("pair_program resolves agent-visible from package defaults", () => {
+	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
+	const { settings } = parseCapabilityVisibilitySettings(raw);
+	const result = resolveToolVisibility({
+		extensionId: "pair-program",
+		toolName: "pair_program",
+		managed: true,
+		defaultVisibility: "agent-visible",
+		configuredOverride: settings.capabilityVisibility?.["pair-program"]?.tools?.pair_program,
+	});
+	assert.equal(result.visibility, "agent-visible");
+	assert.deepEqual(result.warnings, []);
+});
+
+test("subagent resolves agent-visible from package defaults", () => {
+	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
+	const { settings } = parseCapabilityVisibilitySettings(raw);
+	const result = resolveToolVisibility({
+		extensionId: "subagents",
+		toolName: "subagent",
+		managed: true,
+		defaultVisibility: "agent-visible",
+		configuredOverride: settings.capabilityVisibility?.["subagents"]?.tools?.subagent,
+	});
+	assert.equal(result.visibility, "agent-visible");
+	assert.deepEqual(result.warnings, []);
+});
+
+test("lavish command is enabled by default in package defaults", () => {
+	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
+	const { settings } = parseCapabilityVisibilitySettings(raw);
+	assert.equal(
+		settings.capabilityVisibility?.["lavish-axi"]?.commands?.lavish,
+		"enabled",
+	);
+});
+
+

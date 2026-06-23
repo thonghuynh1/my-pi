@@ -327,6 +327,103 @@ export function resolveToolVisibility(params: ResolveToolVisibilityParams): Reso
 	};
 }
 
+// ── Managed extension registration helper ──────────────────────────────────
+
+/**
+ * Subset of ExtensionAPI required by createManagedExtension.
+ * Structurally compatible with the real ExtensionAPI via TypeScript method bivariance.
+ */
+export interface ManagedExtensionPiApi {
+	registerTool(tool: unknown): void;
+	registerCommand(name: string, options: unknown): void;
+	getActiveTools(): string[];
+	setActiveTools(toolNames: string[]): void;
+	/** Register a lifecycle event handler. Used internally to defer action-method calls past extension loading. */
+	on(event: string, handler: (...args: any[]) => void): void;
+}
+
+export interface CreateManagedExtensionOptions {
+	id: string;
+	/** Merged capability visibility settings. If omitted, package defaults apply only. */
+	visibility?: CapabilityVisibilitySettings;
+}
+
+export interface ManagedExtension {
+	readonly id: string;
+	/**
+	 * Register a tool under the managed extension.
+	 * Pass `defaultVisibility` alongside normal ToolDefinition fields.
+	 * agent-hidden tools are registered (internal metadata preserved) but removed from active tools.
+	 */
+	registerTool(options: { name: string; defaultVisibility?: ToolVisibility; [key: string]: unknown }): void;
+	/**
+	 * Register a command under the managed extension.
+	 * Disabled commands (via visibility settings) are silently skipped.
+	 */
+	registerCommand(name: string, options: { [key: string]: unknown }): void;
+}
+
+/** Module-level registry to catch duplicate managed extension IDs at startup. */
+const managedExtensionRegistry = new Set<string>();
+
+export function createManagedExtension(
+	pi: ManagedExtensionPiApi,
+	options: CreateManagedExtensionOptions,
+): ManagedExtension {
+	const { id, visibility } = options;
+
+	if (managedExtensionRegistry.has(id)) {
+		throw new Error(
+			`Duplicate managed extension ID "${id}". Each managed extension must have a unique ID.`,
+		);
+	}
+	managedExtensionRegistry.add(id);
+
+	// Collect agent-hidden tool names during loading and apply them after loading
+	// completes. pi forbids getActiveTools/setActiveTools during extension loading.
+	const hiddenTools = new Set<string>();
+	pi.on("session_start", () => {
+		if (hiddenTools.size === 0) return;
+		pi.setActiveTools(pi.getActiveTools().filter((n) => !hiddenTools.has(n)));
+	});
+
+	return {
+		id,
+
+		registerTool(toolOptions) {
+			const toolName = toolOptions.name;
+			const { defaultVisibility, ...toolDef } = toolOptions;
+
+			const resolved = resolveToolVisibility({
+				extensionId: id,
+				toolName,
+				configuredOverride: visibility?.capabilityVisibility?.[id]?.tools?.[toolName],
+				defaultVisibility,
+				managed: true,
+			});
+
+			for (const warning of resolved.warnings) {
+				console.warn(`[capability-visibility] ${warning.message}`);
+			}
+
+			pi.registerTool(toolDef);
+
+			if (resolved.visibility === "agent-hidden") {
+				hiddenTools.add(toolName);
+			}
+		},
+
+		registerCommand(name, commandOptions) {
+			const commandVisibility =
+				visibility?.capabilityVisibility?.[id]?.commands?.[name] ?? "enabled";
+
+			if (commandVisibility === "disabled") return;
+
+			pi.registerCommand(name, commandOptions);
+		},
+	};
+}
+
 export function resolveExtensionCapabilityVisibility(
 	params: ResolveExtensionCapabilityVisibilityParams,
 ): ResolveExtensionCapabilityVisibilityResult {

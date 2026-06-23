@@ -249,6 +249,8 @@ function latestCheckpointContent(state: SessionState): string | null {
 
 const REGISTER_GRILL_WITH_SCOUTS = false;
 
+export const piExtension = { id: "grill-with-scouts" };
+
 export default function grillWithScouts(pi: ExtensionAPI) {
 	if (!REGISTER_GRILL_WITH_SCOUTS) {
 		// Backlog for later: keep the implementation in-repo, but do not register

@@ -38,6 +38,7 @@
     ],
     "prompts": [
       "./prompts"
-    ]
+    ],
+    "settings": "./pi.settings.json"
   }
 }

@@ -25,6 +25,13 @@ import type {
 	ExtensionContext,
 	Theme,
 } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+	createManagedExtension,
+	parseCapabilityVisibilitySettings,
+	type CapabilityVisibilitySettings,
+} from "./lib/capability-visibility.ts";
 import {
 	createBashTool,
 	createEditTool,
@@ -346,6 +353,8 @@ function attributePendingTools(ctx: ExtensionContext): void {
 // Extension
 // ---------------------------------------------------------------------------
 
+export const piExtension = { id: "tool-panel" };
+
 export default function (pi: ExtensionAPI) {
 	let tuiRef: { requestRender: () => void } | undefined;
 
@@ -553,18 +562,27 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// ----- commands ------------------------------------------------------
-	pi.registerCommand("tool-panel", {
+	let piSettings: CapabilityVisibilitySettings = {};
+	try {
+		const { settings } = parseCapabilityVisibilitySettings(
+			JSON.parse(readFileSync(resolve(process.cwd(), "pi.settings.json"), "utf8"))
+		);
+		piSettings = settings;
+	} catch { /* proceed with declared defaults */ }
+	const managed = createManagedExtension(pi, { id: piExtension.id, visibility: piSettings });
+
+	managed.registerCommand("tool-panel", {
 		description: "Toggle the tool activity panel above the editor",
-		handler: async (_args, ctx) => {
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			panelEnabled = !panelEnabled;
 			refreshWidget(ctx);
 			ctx.ui.notify(`Tool panel ${panelEnabled ? "enabled" : "disabled"}`, "info");
 		},
 	});
 
-	pi.registerCommand("tools", {
+	managed.registerCommand("tools", {
 		description: "Open the full tool-usage history in an overlay",
-		handler: async (_args, ctx: ExtensionCommandContext) => {
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			if (!ctx.hasUI || ctx.mode !== "tui") {
 				ctx.ui.notify(`${records.length} tool calls recorded`, "info");
 				return;

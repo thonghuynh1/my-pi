@@ -1,4 +1,11 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+  createManagedExtension,
+  parseCapabilityVisibilitySettings,
+  type CapabilityVisibilitySettings,
+} from "./lib/capability-visibility.ts";
 
 type AssistantUsage = {
   input?: number;
@@ -231,6 +238,8 @@ function installUsageFooter(pi: ExtensionAPI, ctx: ExtensionContext): void {
   }));
 }
 
+export const piExtension = { id: "usage-footer" };
+
 export default function usageFooter(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => installUsageFooter(pi, ctx));
   pi.on("model_select", async (_event, ctx) => installUsageFooter(pi, ctx));
@@ -239,9 +248,18 @@ export default function usageFooter(pi: ExtensionAPI) {
   pi.on("turn_end", async (_event, ctx) => installUsageFooter(pi, ctx));
   pi.on("agent_end", async (_event, ctx) => installUsageFooter(pi, ctx));
 
-  pi.registerCommand("usage-footer", {
+  let piSettings: CapabilityVisibilitySettings = {};
+  try {
+    const { settings } = parseCapabilityVisibilitySettings(
+      JSON.parse(readFileSync(resolve(process.cwd(), "pi.settings.json"), "utf8"))
+    );
+    piSettings = settings;
+  } catch { /* proceed with declared defaults */ }
+  const managed = createManagedExtension(pi, { id: piExtension.id, visibility: piSettings });
+
+  managed.registerCommand("usage-footer", {
     description: "Enable or disable the custom usage footer. Usage: /usage-footer [on|off]",
-    handler: async (args, ctx) => {
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
       const action = args.trim().toLowerCase();
       if (!action || action === "on") {
         installUsageFooter(pi, ctx);

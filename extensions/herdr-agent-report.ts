@@ -1,4 +1,11 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+  createManagedExtension,
+  parseCapabilityVisibilitySettings,
+  type CapabilityVisibilitySettings,
+} from "./lib/capability-visibility.ts";
 
 type HerdrAgentState = "idle" | "working" | "blocked" | "unknown";
 
@@ -13,6 +20,8 @@ function nextSeq(): number {
   (globalThis as Record<symbol, number>)[SEQ_KEY] = seq;
   return seq;
 }
+
+export const piExtension = { id: "herdr-agent-report" };
 
 export default function (pi: ExtensionAPI) {
   const herdrPaneId = process.env.HERDR_PANE_ID;
@@ -95,9 +104,18 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.registerCommand("herdr-agent", {
+  let piSettings: CapabilityVisibilitySettings = {};
+  try {
+    const { settings } = parseCapabilityVisibilitySettings(
+      JSON.parse(readFileSync(resolve(process.cwd(), "pi.settings.json"), "utf8"))
+    );
+    piSettings = settings;
+  } catch { /* proceed with declared defaults */ }
+  const managed = createManagedExtension(pi, { id: piExtension.id, visibility: piSettings });
+
+  managed.registerCommand("herdr-agent", {
     description: "Report this Pi pane to Herdr as idle, working, blocked, unknown, or release it",
-    handler: async (args, ctx) => {
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
       const action = args.trim() || "status";
 
       if (action === "status") {

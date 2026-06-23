@@ -1,4 +1,11 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+	createManagedExtension,
+	parseCapabilityVisibilitySettings,
+	type CapabilityVisibilitySettings,
+} from "./lib/capability-visibility.ts";
 
 const LAVISH_AXI_PROMPT = `
 
@@ -36,6 +43,8 @@ Rules:
 - Do not start this workflow unless the user explicitly requested it.
 `;
 
+export const piExtension = { id: "lavish-axi" };
+
 export default function lavishAxiExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", (event) => {
 		return {
@@ -43,9 +52,18 @@ export default function lavishAxiExtension(pi: ExtensionAPI) {
 		};
 	});
 
-	pi.registerCommand("lavish", {
+	let piSettings: CapabilityVisibilitySettings = {};
+	try {
+		const { settings } = parseCapabilityVisibilitySettings(
+			JSON.parse(readFileSync(resolve(process.cwd(), "pi.settings.json"), "utf8"))
+		);
+		piSettings = settings;
+	} catch { /* proceed with declared defaults */ }
+	const managed = createManagedExtension(pi, { id: piExtension.id, visibility: piSettings });
+
+	managed.registerCommand("lavish", {
 		description: "Explicitly ask the agent to create/open a Lavish AXI HTML review artifact.",
-		handler: async (args, ctx) => {
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			await ctx.waitForIdle();
 
 			const request = args?.trim() || "Create a visual review artifact for the current work or plan.";

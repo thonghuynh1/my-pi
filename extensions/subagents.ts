@@ -10,6 +10,11 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import {
+	createManagedExtension,
+	parseCapabilityVisibilitySettings,
+	type CapabilityVisibilitySettings,
+} from "./lib/capability-visibility.ts";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { Message } from "@earendil-works/pi-ai";
 import {
@@ -22,6 +27,7 @@ import {
 	parseFrontmatter,
 	SessionManager,
 	type ExtensionAPI,
+	type ExtensionCommandContext,
 	type ExtensionContext,
 	type Theme,
 	type ToolDefinition,
@@ -1391,6 +1397,8 @@ async function runSubagent(
 	}
 }
 
+export const piExtension = { id: "subagents" };
+
 export default function (pi: ExtensionAPI) {
 	// Allow non-interactive runs (e.g. ralph-loop spawning pi) to start with
 	// subagent workflow mode already enabled, so the model is steered to use the
@@ -1417,6 +1425,15 @@ export default function (pi: ExtensionAPI) {
 	const activeSubagents = new Map<string, RunningSubagentStatus>();
 	let tuiRef: { requestRender: () => void } | undefined;
 	let spinnerTimer: ReturnType<typeof setInterval> | undefined;
+
+	let _piSettings: CapabilityVisibilitySettings = {};
+	try {
+		const { settings } = parseCapabilityVisibilitySettings(
+			JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "pi.settings.json"), "utf8"))
+		);
+		_piSettings = settings;
+	} catch { /* proceed with declared defaults */ }
+	const managed = createManagedExtension(pi, { id: piExtension.id, visibility: _piSettings });
 
 	// Shared global so other extensions (e.g. usage-footer) can render our status
 	// and include real subagent billing in the session totals. Subagents run in
@@ -1503,7 +1520,7 @@ export default function (pi: ExtensionAPI) {
 		publishStateLabel();
 		pi.appendEntry("subagent-mode", { enabled, timestamp: Date.now() });
 		// Re-register tool with updated prompting metadata
-		pi.registerTool(buildSubagentToolDef(enabled));
+		managed.registerTool({ ...buildSubagentToolDef(enabled), defaultVisibility: "agent-visible" as const });
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -1524,7 +1541,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		// Sync the tool's prompting metadata with the resolved mode so a flag/env
 		// enabled run gets the steering snippet from the first turn.
-		pi.registerTool(buildSubagentToolDef(subagentModeEnabled));
+		managed.registerTool({ ...buildSubagentToolDef(subagentModeEnabled), defaultVisibility: "agent-visible" as const });
 		refreshSubagentStatusWidget(ctx);
 	});
 
@@ -1729,11 +1746,11 @@ export default function (pi: ExtensionAPI) {
 
 	// Initial registration. Defaults OFF unless PI_SUBAGENT_MODE enables it, in
 	// which case the prompting metadata is included from startup.
-	pi.registerTool(buildSubagentToolDef(subagentModeEnvDefault));
+	managed.registerTool({ ...buildSubagentToolDef(subagentModeEnvDefault), defaultVisibility: "agent-visible" as const });
 
-	pi.registerCommand("subagent", {
+	managed.registerCommand("subagent", {
 		description: "Enable, disable, or show session-level subagent workflow instructions",
-		handler: async (args, ctx) => {
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			const action = args.trim().toLowerCase();
 			if (!action || action === "on" || action === "enable") {
 				setSubagentMode(true);
@@ -1757,9 +1774,9 @@ export default function (pi: ExtensionAPI) {
 	});
 
 
-	pi.registerCommand("subagents", {
+	managed.registerCommand("subagents", {
 		description: "List available custom subagents",
-		handler: async (_args, ctx) => {
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const agents = discoverCustomAgents(ctx.cwd);
 			if (agents.length === 0) {
 				ctx.ui.notify(
@@ -1775,9 +1792,9 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("subagents-model", {
+	managed.registerCommand("subagents-model", {
 		description: "Open a TUI editor for per-subagent model choices",
-		handler: async (_args, ctx) => {
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			if (!ctx.hasUI || ctx.mode !== "tui") {
 				ctx.ui.notify("/subagents-model requires TUI mode.", "error");
 				return;

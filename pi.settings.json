@@ -1,0 +1,64 @@
+{
+  "capabilityVisibility": {
+    "frontend-coach": {
+      "tools": {
+        "browser_highlight": "agent-visible",
+        "browser_inspect": "agent-visible",
+        "browser_record_test": "agent-visible",
+        "coach_resolve_widget": "agent-visible",
+        "coach_list_widgets": "agent-visible",
+        "browser_record_for_widget": "agent-visible",
+        "browser_eval": "agent-hidden"
+      },
+      "commands": {
+        "coach-launch-edge": "enabled",
+        "coach-stop-edge": "enabled"
+      }
+    },
+    "pair-program": {
+      "tools": {
+        "pair_program": "agent-visible"
+      },
+      "commands": {
+        "pair-program": "enabled"
+      }
+    },
+    "subagents": {
+      "tools": {
+        "subagent": "agent-visible"
+      },
+      "commands": {
+        "subagent": "enabled",
+        "subagents": "enabled",
+        "subagents-model": "enabled"
+      }
+    },
+    "lavish-axi": {
+      "commands": {
+        "lavish": "enabled"
+      }
+    },
+    "engineering-skills": {
+      "commands": {
+        "engineering-skill": "enabled",
+        "engineering-skills-mcp-setup": "enabled"
+      }
+    },
+    "usage-footer": {
+      "commands": {
+        "usage-footer": "enabled"
+      }
+    },
+    "herdr-agent-report": {
+      "commands": {
+        "herdr-agent": "enabled"
+      }
+    },
+    "tool-panel": {
+      "commands": {
+        "tool-panel": "enabled",
+        "tools": "enabled"
+      }
+    }
+  }
+}

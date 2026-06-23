@@ -22,7 +22,7 @@
  *   /coach-bookmarklet  print bookmarklet for manual injection
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
@@ -55,10 +55,13 @@ import {
 } from "./widgets.ts";
 import { spawnSync } from "node:child_process";
 import { resolve as resolvePath } from "node:path";
+import { createManagedExtension, parseCapabilityVisibilitySettings, type CapabilityVisibilitySettings } from "../lib/capability-visibility.ts";
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.FRONTEND_COACH_PORT ?? 7777);
 const AUTO_START = /^(1|true|yes)$/i.test(process.env.FRONTEND_COACH_AUTO_START ?? "");
+
+export const piExtension = { id: "frontend-coach" };
 
 export default async function (pi: ExtensionAPI) {
 	const here = dirname(fileURLToPath(import.meta.url));
@@ -283,18 +286,34 @@ export default async function (pi: ExtensionAPI) {
 		}
 	}
 
+	// ------- Managed extension (capability visibility) -------
+	let piSettings: CapabilityVisibilitySettings = {};
+	try {
+		const { settings, warnings } = parseCapabilityVisibilitySettings(
+			JSON.parse(readFileSync(join(here, "../../pi.settings.json"), "utf8"))
+		);
+		for (const w of warnings) {
+			console.warn(`[frontend-coach] capability-visibility: ${w.message}`);
+		}
+		piSettings = settings;
+	} catch {
+		// pi.settings.json missing or unreadable; proceed with declared defaults
+	}
+	const managed = createManagedExtension(pi, { id: "frontend-coach", visibility: piSettings });
+
 	// ------- Tools the LLM can call back into the page -------
 	// Registered unconditionally so they remain available across /coach-on/off.
 	// They report a clear error when the server isn't running.
-	pi.registerTool({
+	managed.registerTool({
 		name: "browser_highlight",
+		defaultVisibility: "agent-visible",
 		label: "Highlight element",
 		description: "Briefly outline a CSS selector in the user's browser tab. Useful to visually confirm you're about to edit the right element.",
 		parameters: Type.Object({
 			selector: Type.String({ description: "CSS selector to highlight in the page" }),
 			color: Type.Optional(Type.String({ description: "CSS color, default lime" })),
 		}),
-		async execute(_id, params: { selector: string; color?: string }) {
+		async execute(_id: string, params: { selector: string; color?: string }) {
 			if (!coachState.running) {
 				return {
 					content: [{ type: "text", text: "frontend-coach is off in this pi instance (run /coach-on to enable)." }],
@@ -310,14 +329,15 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
+	managed.registerTool({
 		name: "browser_inspect",
+		defaultVisibility: "agent-visible",
 		label: "Inspect element",
 		description: "Return outerHTML + computed styles + bounding rect for a CSS selector in the user's browser.",
 		parameters: Type.Object({
 			selector: Type.String({ description: "CSS selector to inspect" }),
 		}),
-		async execute(_id, params: { selector: string }) {
+		async execute(_id: string, params: { selector: string }) {
 			const result = await request<any>("inspect", { selector: params.selector }, 5000);
 			return {
 				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -351,8 +371,9 @@ export default async function (pi: ExtensionAPI) {
 		description: Type.String({ description: "Human-readable description, shown in the report." }),
 		expression: Type.String({ description: "JS expression evaluated in the page; truthy = pass. Example: document.querySelector('#send[disabled]') !== null" }),
 	});
-	pi.registerTool({
+	managed.registerTool({
 		name: "browser_record_test",
+		defaultVisibility: "agent-visible",
 		label: "Record browser test",
 		description:
 			"Run an autonomous UI test in the controlled Edge tab (no user prompts) and save a .webm screen recording " +
@@ -372,7 +393,7 @@ export default async function (pi: ExtensionAPI) {
 				height: Type.Number(),
 			}, { description: "Override viewport size for this test." })),
 		}),
-		async execute(_id, params: RecordTestInput) {
+		async execute(_id: string, params: RecordTestInput) {
 			try {
 				const { report } = await recordTest(params);
 				const lines: string[] = [];
@@ -432,8 +453,9 @@ export default async function (pi: ExtensionAPI) {
 		Type.Literal("mybusiness"),
 	], { description: "Which shell to target. Auto-detected from the live Edge tab origin (5050=MyOffice, 5000=MyBusiness) when omitted." });
 
-	pi.registerTool({
+	managed.registerTool({
 		name: "coach_resolve_widget",
+		defaultVisibility: "agent-visible",
 		label: "Resolve MyOffice widget",
 		description:
 			"Map a file path / widget uid / scope to the concrete MyOffice widget(s) it lives in. " +
@@ -448,7 +470,7 @@ export default async function (pi: ExtensionAPI) {
 			serviceName: Type.Optional(Type.String({ description: "ServiceName / repo name (e.g. 'Documents', 'Activities')." })),
 			app: Type.Optional(AppSchema),
 		}),
-		async execute(_id, params: { file?: string; uid?: string; scope?: Scope; serviceName?: string; app?: AppKind }) {
+		async execute(_id: string, params: { file?: string; uid?: string; scope?: Scope; serviceName?: string; app?: AppKind }) {
 			try {
 				const hits = await resolveWidget(params, { app: params.app });
 				if (hits.length === 0) {
@@ -479,8 +501,9 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
+	managed.registerTool({
 		name: "coach_list_widgets",
+		defaultVisibility: "agent-visible",
 		label: "List MyOffice widgets",
 		description:
 			"List every known MyOffice widget (optionally filtered by scope / serviceName). " +
@@ -491,7 +514,7 @@ export default async function (pi: ExtensionAPI) {
 			serviceName: Type.Optional(Type.String()),
 			app: Type.Optional(AppSchema),
 		}),
-		async execute(_id, params: { scope?: Scope; serviceName?: string; app?: AppKind }) {
+		async execute(_id: string, params: { scope?: Scope; serviceName?: string; app?: AppKind }) {
 			try {
 				const all = await listWidgets(params, { app: params.app });
 				const lines = all.map((w) =>
@@ -514,8 +537,9 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
+	managed.registerTool({
 		name: "browser_record_for_widget",
+		defaultVisibility: "agent-visible",
 		label: "Record test for widget",
 		description:
 			"End-to-end widget-aware recording. Pick the target widget by `uid`, by `file` (changed " +
@@ -536,7 +560,7 @@ export default async function (pi: ExtensionAPI) {
 			app: Type.Optional(AppSchema),
 			shellOrigin: Type.Optional(Type.String({ description: "Override shell origin (default https://localhost:5050 for MyOffice, https://localhost:5000 for MyBusiness)." })),
 		}),
-		async execute(_id, params: {
+		async execute(_id: string, params: {
 			uid?: string;
 			file?: string;
 			fromGitDiff?: boolean;
@@ -635,14 +659,15 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
+	managed.registerTool({
 		name: "browser_eval",
+		defaultVisibility: "agent-hidden",
 		label: "Evaluate JS in page",
 		description: "Run a JavaScript expression in the user's browser tab and return the JSON-serializable result. Use sparingly.",
 		parameters: Type.Object({
 			expression: Type.String({ description: "A JavaScript expression to evaluate (e.g. 'document.title')" }),
 		}),
-		async execute(_id, params: { expression: string }) {
+		async execute(_id: string, params: { expression: string }) {
 			const result = await request<any>("eval", { expression: params.expression }, 5000);
 			return {
 				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -653,9 +678,9 @@ export default async function (pi: ExtensionAPI) {
 
 	// ------- Commands -------
 	// ------- Edge launch + recording commands -------
-	pi.registerCommand("coach-inject-picker", {
+	managed.registerCommand("coach-inject-picker", {
 		description: "Force-install the Alt+P picker into the controlled Edge (auto-injects on every navigation thereafter). Useful if Alt+P stopped responding.",
-		handler: async (_args, ctx) => {
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			try {
 				const browser = await ensureBrowser();
 				const context = browser.contexts()[0] ?? (await browser.newContext());
@@ -672,9 +697,9 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("coach-launch-edge", {
+	managed.registerCommand("coach-launch-edge", {
 		description: "Launch a controlled Microsoft Edge window with CDP enabled so the agent can drive + record tabs without permission prompts. Usage: /coach-launch-edge [url]",
-		handler: async (args, ctx) => {
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			const url = (args ?? "").trim() || process.env.FRONTEND_COACH_URL || undefined;
 			ctx.ui.notify(`Launching Edge on CDP port ${DEFAULT_CDP_PORT}…`, "info");
 			const r = await launchEdge({ url });
@@ -703,9 +728,9 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("coach-edge-status", {
+	managed.registerCommand("coach-edge-status", {
 		description: "Show whether the controlled Edge instance is reachable.",
-		handler: async (_args, ctx) => {
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const bin = findEdgeBinary();
 			let alive = false;
 			try {
@@ -724,9 +749,9 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("coach-stop-edge", {
+	managed.registerCommand("coach-stop-edge", {
 		description: "Kill the controlled Edge window spawned by /coach-launch-edge (does not touch your normal Edge).",
-		handler: async (_args, ctx) => {
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			if (!isEdgeRunning()) {
 				ctx.ui.notify("No Edge instance was spawned by this pi (nothing to kill).", "info");
 				return;
@@ -736,9 +761,9 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("coach-records", {
+	managed.registerCommand("coach-records", {
 		description: "List the latest browser_record_test recordings (pass/fail, video paths).",
-		handler: async (_args, ctx) => {
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const rs = listRecords(30);
 			if (rs.length === 0) {
 				ctx.ui.notify(`No records yet. Folder: ${recordsDir()}`, "info");
@@ -752,9 +777,9 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("coach-record", {
+	managed.registerCommand("coach-record", {
 		description: "Print the markdown report for a recording. Usage: /coach-record <id>",
-		handler: async (args, ctx) => {
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			const id = (args ?? "").trim();
 			if (!id) {
 				ctx.ui.notify("Usage: /coach-record <id>  (see /coach-records for ids)", "error");
@@ -772,9 +797,9 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("coach-records-open", {
+	managed.registerCommand("coach-records-open", {
 		description: "Open the ./.frontend-coach/records/ folder in your OS file explorer.",
-		handler: async (_args, ctx) => {
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const dir = recordsDir();
 			try {
 				if (process.platform === "win32") spawn("explorer", [dir], { detached: true, stdio: "ignore" }).unref();
@@ -787,9 +812,9 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("coach-widgets", {
+	managed.registerCommand("coach-widgets", {
 		description: "Print the resolved widget catalog for the active shell (uid · scope · service · URL). Source: WidgetDataProvider.cs. Usage: /coach-widgets [myoffice|mybusiness]",
-		handler: async (args, ctx) => {
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			try {
 				const forced = (args ?? "").trim().toLowerCase();
 				const app = forced === "mybusiness" || forced === "myoffice" ? (forced as AppKind) : undefined;
@@ -815,9 +840,9 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("coach-env", {
+	managed.registerCommand("coach-env", {
 		description: "Show the active shell + resolved vars (userId/clientId/companyId) the widget resolver will use, and where each came from.",
-		handler: async (_args, ctx) => {
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const app = await detectApp();
 			const vars = await coachEnv();
 			const lines = [
@@ -833,9 +858,9 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("coach-bookmarklet", {
+	managed.registerCommand("coach-bookmarklet", {
 		description: "Print a bookmarklet you can drag to your bookmarks bar to inject the picker.",
-		handler: async (_args, ctx) => {
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const bm = `javascript:(()=>{const s=document.createElement('script');s.src='http://localhost:${PORT}/picker.js?t='+Date.now();document.body.appendChild(s);})();`;
 			ctx.ui.notify("Copy the bookmarklet from the terminal output", "info");
 			console.log("\n--- frontend-coach bookmarklet ---");
@@ -844,9 +869,9 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("coach-status", {
+	managed.registerCommand("coach-status", {
 		description: "Show frontend-coach state (running/off, port, connected browsers).",
-		handler: async (_args, ctx) => {
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const lines = [
 				`state    : ${coachState.running ? "running" : "off"}`,
 				`port     : ${HOST}:${PORT}`,
@@ -858,9 +883,9 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("coach", {
+	managed.registerCommand("coach", {
 		description: "Enable or disable the frontend-coach server. Usage: /coach [on|off]",
-		handler: async (args, ctx) => {
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			const action = args.trim().toLowerCase();
 			if (!action || action === "on") {
 				if (coachState.running) {

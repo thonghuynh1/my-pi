@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import {
@@ -38,6 +38,11 @@ import {
   releaseRun,
   type PstackRegistry,
 } from "./lib/pair-program-helpers.ts";
+import {
+  createManagedExtension,
+  parseCapabilityVisibilitySettings,
+  type CapabilityVisibilitySettings,
+} from "./lib/capability-visibility.ts";
 
 // ---------------------------------------------------------------------------
 // Parameter schema (MICRO-001, MICRO-003)
@@ -618,6 +623,8 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
 // Extension entry point
 // ---------------------------------------------------------------------------
 
+export const piExtension = { id: "pair-program" };
+
 let activeRunId: string | undefined;
 
 export default function pairProgramExtension(pi: ExtensionAPI) {
@@ -629,16 +636,25 @@ export default function pairProgramExtension(pi: ExtensionAPI) {
     return;
   }
 
+  let piSettings: CapabilityVisibilitySettings = {};
+  try {
+    const { settings } = parseCapabilityVisibilitySettings(
+      JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "pi.settings.json"), "utf8"))
+    );
+    piSettings = settings;
+  } catch { /* proceed with declared defaults */ }
+  const managed = createManagedExtension(pi, { id: piExtension.id, visibility: piSettings });
+
   pi.on("session_start", async () => {
     activeRunId = undefined;
   });
 
-  pi.registerTool(buildPairProgramToolDef(pi));
+  managed.registerTool({ ...buildPairProgramToolDef(pi), defaultVisibility: "agent-visible" as const });
 
   // Register slash command so /pair-program <task> works from the editor
-  pi.registerCommand("pair-program", {
+  managed.registerCommand("pair-program", {
     description: "Start a pstack-driven pair-programming session. Usage: /pair-program <task description>",
-    handler: async (args, ctx) => {
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
       const task = args?.trim();
       if (!task) {
         ctx.ui.notify("Usage: /pair-program <task description>", "error");

@@ -1,5 +1,5 @@
 ---
-status: ready-for-agent
+status: closed
 ---
 # Capability visibility resolver and schema
 Status: ready-for-agent

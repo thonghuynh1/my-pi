@@ -2,6 +2,11 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import {
+  createManagedExtension,
+  parseCapabilityVisibilitySettings,
+  type CapabilityVisibilitySettings,
+} from "./lib/capability-visibility.ts";
 
 const SERVER_NAME = "engineering-skills";
 const STATUS_KEY = "engineering-skills";
@@ -84,6 +89,8 @@ function updateStatus(ctx: { hasUI: boolean; ui: { setStatus: (key: string, valu
   );
 }
 
+export const piExtension = { id: "engineering-skills" };
+
 export default function engineeringSkills(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => updateStatus(ctx));
 
@@ -114,12 +121,21 @@ export default function engineeringSkills(pi: ExtensionAPI) {
     }
   }
 
-  pi.registerCommand("engineering-skill", {
+  let piSettings: CapabilityVisibilitySettings = {};
+  try {
+    const { settings } = parseCapabilityVisibilitySettings(
+      JSON.parse(readFileSync(resolve(process.cwd(), "pi.settings.json"), "utf8"))
+    );
+    piSettings = settings;
+  } catch { /* proceed with declared defaults */ }
+  const managed = createManagedExtension(pi, { id: piExtension.id, visibility: piSettings });
+
+  managed.registerCommand("engineering-skill", {
     description: "Configure engineering-skills MCP. Usage: /engineering-skill <path-to-engineering-skills-mcp-repo>",
     handler: setupEngineeringSkills,
   });
 
-  pi.registerCommand("engineering-skills-mcp-setup", {
+  managed.registerCommand("engineering-skills-mcp-setup", {
     description: "Alias for /engineering-skill <path-to-engineering-skills-mcp-repo>.",
     handler: setupEngineeringSkills,
   });

@@ -9,7 +9,10 @@
     "mcp"
   ],
   "scripts": {
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "accordion:install": "npm install --prefix vendor/accordion/app && npm install --prefix vendor/accordion/extension",
+    "accordion:build": "npm run build --prefix vendor/accordion/app",
+    "setup:accordion": "npm run accordion:install && npm run accordion:build"
   },
   "dependencies": {
     "@ogulcancelik/pi-herdr": "^0.2.5",
@@ -34,6 +37,7 @@
     "extensions": [
       "./node_modules/pi-mcp-adapter/index.ts",
       "./node_modules/@ogulcancelik/pi-herdr/index.ts",
+      "./vendor/accordion/extension/accordion.ts",
       "./extensions"
     ],
     "prompts": [

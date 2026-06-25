@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
   createManagedExtension,
-  parseCapabilityVisibilitySettings,
+  loadCapabilityVisibilitySettings,
   type CapabilityVisibilitySettings,
 } from "./lib/capability-visibility.ts";
 
@@ -122,12 +122,11 @@ export default function engineeringSkills(pi: ExtensionAPI) {
   }
 
   let piSettings: CapabilityVisibilitySettings = {};
-  try {
-    const { settings } = parseCapabilityVisibilitySettings(
-      JSON.parse(readFileSync(resolve(process.cwd(), "pi.settings.json"), "utf8"))
-    );
-    piSettings = settings;
-  } catch { /* proceed with declared defaults */ }
+  const visibilityResult = loadCapabilityVisibilitySettings();
+  for (const warning of visibilityResult.warnings) {
+    console.warn(`[engineering-skills] capability-visibility: ${warning.message}`);
+  }
+  piSettings = visibilityResult.settings;
   const managed = createManagedExtension(pi, { id: piExtension.id, visibility: piSettings });
 
   managed.registerCommand("engineering-skill", {

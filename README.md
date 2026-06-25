@@ -14,10 +14,33 @@ Personal Pi package that bundles:
 ```bash
 cd F:/MyWork/my-pi
 npm install
+npm run setup:accordion
 pi install F:/MyWork/my-pi
 ```
 
 Restart Pi or run `/reload`.
+
+## Accordion
+
+This repo vendors [Accordion](https://github.com/a-Fig/accordion) under `vendor/accordion` and registers its Pi extension automatically.
+
+One-time setup after cloning:
+
+```bash
+cd F:/MyWork/my-pi
+npm run setup:accordion
+```
+
+Then in Pi:
+
+```text
+/accordion
+```
+
+Notes:
+
+- `npm run setup:accordion` installs Accordion's nested dependencies and builds its browser app.
+- Accordion is shipped as vendored source, so keep the full `vendor/accordion` tree intact.
 
 ## Configure engineering-skills MCP
 
@@ -143,6 +166,8 @@ Push this package to git, then install:
 
 ```bash
 pi install git:github.com/<you>/my-pi
+cd F:/MyWork/my-pi
+npm run setup:accordion
 ```
 
 Then clone/build `hackathon-grill-me` on that PC and run:

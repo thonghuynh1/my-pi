@@ -55,7 +55,7 @@ import {
 } from "./widgets.ts";
 import { spawnSync } from "node:child_process";
 import { resolve as resolvePath } from "node:path";
-import { createManagedExtension, parseCapabilityVisibilitySettings, type CapabilityVisibilitySettings } from "../lib/capability-visibility.ts";
+import { createManagedExtension, loadCapabilityVisibilitySettings, type CapabilityVisibilitySettings } from "../lib/capability-visibility.ts";
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.FRONTEND_COACH_PORT ?? 7777);
@@ -288,17 +288,11 @@ export default async function (pi: ExtensionAPI) {
 
 	// ------- Managed extension (capability visibility) -------
 	let piSettings: CapabilityVisibilitySettings = {};
-	try {
-		const { settings, warnings } = parseCapabilityVisibilitySettings(
-			JSON.parse(readFileSync(join(here, "../../pi.settings.json"), "utf8"))
-		);
-		for (const w of warnings) {
-			console.warn(`[frontend-coach] capability-visibility: ${w.message}`);
-		}
-		piSettings = settings;
-	} catch {
-		// pi.settings.json missing or unreadable; proceed with declared defaults
+	const visibilityResult = loadCapabilityVisibilitySettings();
+	for (const warning of visibilityResult.warnings) {
+		console.warn(`[frontend-coach] capability-visibility: ${warning.message}`);
 	}
+	piSettings = visibilityResult.settings;
 	const managed = createManagedExtension(pi, { id: "frontend-coach", visibility: piSettings });
 
 	// ------- Tools the LLM can call back into the page -------

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   createManagedExtension,
-  parseCapabilityVisibilitySettings,
+  loadCapabilityVisibilitySettings,
   type CapabilityVisibilitySettings,
 } from "./lib/capability-visibility.ts";
 
@@ -249,12 +249,11 @@ export default function usageFooter(pi: ExtensionAPI) {
   pi.on("agent_end", async (_event, ctx) => installUsageFooter(pi, ctx));
 
   let piSettings: CapabilityVisibilitySettings = {};
-  try {
-    const { settings } = parseCapabilityVisibilitySettings(
-      JSON.parse(readFileSync(resolve(process.cwd(), "pi.settings.json"), "utf8"))
-    );
-    piSettings = settings;
-  } catch { /* proceed with declared defaults */ }
+  const visibilityResult = loadCapabilityVisibilitySettings();
+  for (const warning of visibilityResult.warnings) {
+    console.warn(`[usage-footer] capability-visibility: ${warning.message}`);
+  }
+  piSettings = visibilityResult.settings;
   const managed = createManagedExtension(pi, { id: piExtension.id, visibility: piSettings });
 
   managed.registerCommand("usage-footer", {

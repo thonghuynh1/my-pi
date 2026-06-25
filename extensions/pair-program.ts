@@ -40,7 +40,7 @@ import {
 } from "./lib/pair-program-helpers.ts";
 import {
   createManagedExtension,
-  parseCapabilityVisibilitySettings,
+  loadCapabilityVisibilitySettings,
   type CapabilityVisibilitySettings,
 } from "./lib/capability-visibility.ts";
 
@@ -637,12 +637,11 @@ export default function pairProgramExtension(pi: ExtensionAPI) {
   }
 
   let piSettings: CapabilityVisibilitySettings = {};
-  try {
-    const { settings } = parseCapabilityVisibilitySettings(
-      JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "pi.settings.json"), "utf8"))
-    );
-    piSettings = settings;
-  } catch { /* proceed with declared defaults */ }
+  const visibilityResult = loadCapabilityVisibilitySettings();
+  for (const warning of visibilityResult.warnings) {
+    console.warn(`[pair-program] capability-visibility: ${warning.message}`);
+  }
+  piSettings = visibilityResult.settings;
   const managed = createManagedExtension(pi, { id: piExtension.id, visibility: piSettings });
 
   pi.on("session_start", async () => {

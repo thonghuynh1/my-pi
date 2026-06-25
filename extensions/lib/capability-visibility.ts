@@ -1,3 +1,7 @@
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
+
 export type ToolVisibility = "agent-visible" | "agent-hidden";
 export type CommandVisibility = "enabled" | "disabled";
 
@@ -286,6 +290,37 @@ function normalizeToolVisibilityOverride(override: ToolVisibilityOverride): {
 } {
 	if (typeof override === "string") return { visibility: override };
 	return override;
+}
+
+export interface LoadCapabilityVisibilitySettingsOptions {
+	cwd?: string;
+	projectSettingsPath?: string;
+	globalSettingsPath?: string;
+}
+
+export function loadCapabilityVisibilitySettings(
+	options: LoadCapabilityVisibilitySettingsOptions = {},
+): ParseCapabilityVisibilitySettingsResult {
+	const cwd = options.cwd ?? process.cwd();
+	const projectSettingsPath = options.projectSettingsPath ?? path.resolve(cwd, "pi.settings.json");
+	const globalSettingsPath = options.globalSettingsPath ?? path.join(homedir(), ".pi", "agent", "pi.settings.json");
+	const warnings: CapabilityVisibilityWarning[] = [];
+	const settingsBySource: CapabilityVisibilitySettings[] = [];
+	const seenPaths = new Set<string>();
+
+	for (const settingsPath of [projectSettingsPath, globalSettingsPath]) {
+		const resolvedPath = path.resolve(settingsPath);
+		if (seenPaths.has(resolvedPath) || !existsSync(resolvedPath)) continue;
+		seenPaths.add(resolvedPath);
+		const parsed = parseCapabilityVisibilityJson(readFileSync(resolvedPath, "utf8"), resolvedPath);
+		warnings.push(...parsed.warnings);
+		settingsBySource.push(parsed.settings);
+	}
+
+	return {
+		settings: mergeCapabilityVisibility(...settingsBySource),
+		warnings,
+	};
 }
 
 export function resolveToolVisibility(params: ResolveToolVisibilityParams): ResolveToolVisibilityResult {

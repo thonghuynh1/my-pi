@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
@@ -9,6 +10,7 @@ import {
 	resolveExtensionCapabilityVisibility,
 	resolveToolVisibility,
 	createManagedExtension,
+	loadCapabilityVisibilitySettings,
 	type CapabilityVisibilityWarning,
 	type ManagedExtensionPiApi,
 } from "../lib/capability-visibility.ts";
@@ -61,6 +63,58 @@ test("global override precedence", () => {
 		merged.capabilityVisibility?.["frontend-coach"]?.tools?.browser_eval,
 		"agent-hidden",
 	);
+});
+
+test("loadCapabilityVisibilitySettings merges project and global settings with global precedence", () => {
+	const workspaceDir = mkdtempSync(path.join(tmpdir(), "capability-visibility-"));
+	const globalDir = path.join(workspaceDir, "global");
+	const projectDir = path.join(workspaceDir, "project");
+	mkdirSync(globalDir, { recursive: true });
+	mkdirSync(projectDir, { recursive: true });
+
+	const globalSettingsPath = path.join(globalDir, "pi.settings.json");
+	const projectSettingsPath = path.join(projectDir, "pi.settings.json");
+	writeFileSync(projectSettingsPath, JSON.stringify({
+		capabilityVisibility: {
+			"pair-program": {
+				tools: {
+					pair_program: "agent-visible",
+				},
+			},
+		},
+	}));
+	writeFileSync(globalSettingsPath, JSON.stringify({
+		capabilityVisibility: {
+			"pair-program": {
+				tools: {
+					pair_program: "agent-hidden",
+				},
+				commands: {
+					"pair-program": "disabled",
+				},
+			},
+		},
+	}));
+
+	try {
+		const result = loadCapabilityVisibilitySettings({
+			cwd: projectDir,
+			projectSettingsPath,
+			globalSettingsPath,
+		});
+
+		assert.equal(
+			result.settings.capabilityVisibility?.["pair-program"]?.tools?.pair_program,
+			"agent-hidden",
+		);
+		assert.equal(
+			result.settings.capabilityVisibility?.["pair-program"]?.commands?.["pair-program"],
+			"disabled",
+		);
+		assert.deepEqual(result.warnings, []);
+	} finally {
+		rmSync(workspaceDir, { recursive: true, force: true });
+	}
 });
 
 test("invalid tool value warning", () => {

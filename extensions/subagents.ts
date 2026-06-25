@@ -12,7 +12,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
 	createManagedExtension,
-	parseCapabilityVisibilitySettings,
+	loadCapabilityVisibilitySettings,
 	type CapabilityVisibilitySettings,
 } from "./lib/capability-visibility.ts";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -1427,12 +1427,11 @@ export default function (pi: ExtensionAPI) {
 	let spinnerTimer: ReturnType<typeof setInterval> | undefined;
 
 	let _piSettings: CapabilityVisibilitySettings = {};
-	try {
-		const { settings } = parseCapabilityVisibilitySettings(
-			JSON.parse(fs.readFileSync(path.resolve(process.cwd(), "pi.settings.json"), "utf8"))
-		);
-		_piSettings = settings;
-	} catch { /* proceed with declared defaults */ }
+	const visibilityResult = loadCapabilityVisibilitySettings();
+	for (const warning of visibilityResult.warnings) {
+		console.warn(`[subagents] capability-visibility: ${warning.message}`);
+	}
+	_piSettings = visibilityResult.settings;
 	const managed = createManagedExtension(pi, { id: piExtension.id, visibility: _piSettings });
 
 	// Shared global so other extensions (e.g. usage-footer) can render our status

@@ -36,6 +36,14 @@ The practical verification level for Scout-Grounded Handoffs. The Grill With Sco
 
 The MCP server named `engineering-skills` that exposes reusable engineering skills and prompts, including `grill-with-docs`, `to-prd`, and `skill-tdd`. It is the contract source for planning, PRD handoff, and TDD workflow protocols that Pi tools should follow. Pair Program Tool runs in TDD mode should depend on this MCP capability rather than hardcoded skill file paths.
 
+## Global Accordion Dashboard
+
+A browser-served Accordion dashboard that can discover and monitor multiple local Pi sessions from one URL, including sessions running in different repositories or Pi processes. It is distinct from subagent monitoring: the primary unit is a Pi session advertised through Accordion's local session registry.
+
+## Accordion Browser Broker
+
+A local HTTP/WebSocket service that makes Accordion's filesystem-backed session registry available to a plain browser dashboard. It owns browser discovery APIs, session list updates, and routing browser connections to per-session Accordion extension servers without requiring the Tauri desktop app.
+
 ## Capability Visibility
 
 A `my-pi` configuration layer that controls which managed custom extension tools are exposed to the agent and which managed commands are registered for human slash-command use.

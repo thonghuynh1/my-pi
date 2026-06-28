@@ -383,6 +383,8 @@ export interface CreateManagedExtensionOptions {
 	visibility?: CapabilityVisibilitySettings;
 }
 
+const managedExtensionIdsByPi = new WeakMap<ManagedExtensionPiApi, Set<string>>();
+
 export interface ManagedExtension {
 	readonly id: string;
 	/**
@@ -403,6 +405,12 @@ export function createManagedExtension(
 	options: CreateManagedExtensionOptions,
 ): ManagedExtension {
 	const { id, visibility } = options;
+	const managedExtensionIds = managedExtensionIdsByPi.get(pi) ?? new Set<string>();
+	if (managedExtensionIds.has(id)) {
+		throw new Error(`Duplicate managed extension ID "${id}".`);
+	}
+	managedExtensionIds.add(id);
+	managedExtensionIdsByPi.set(pi, managedExtensionIds);
 
 	// Collect agent-hidden tool names during loading and apply them after loading
 	// completes. pi forbids getActiveTools/setActiveTools during extension loading.

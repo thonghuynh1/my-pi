@@ -522,7 +522,7 @@ test("grill-with-scouts has piExtension.id but is inactive (REGISTER_GRILL_WITH_
 	// Stays inactive by design; this assertion documents that deliberately.
 });
 
-test("pair_program resolves agent-visible from package defaults", () => {
+test("pair_program resolves agent-hidden from package settings", () => {
 	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
 	const { settings } = parseCapabilityVisibilitySettings(raw);
 	const result = resolveToolVisibility({
@@ -532,7 +532,7 @@ test("pair_program resolves agent-visible from package defaults", () => {
 		defaultVisibility: "agent-visible",
 		configuredOverride: settings.capabilityVisibility?.["pair-program"]?.tools?.pair_program,
 	});
-	assert.equal(result.visibility, "agent-visible");
+	assert.equal(result.visibility, "agent-hidden");
 	assert.deepEqual(result.warnings, []);
 });
 

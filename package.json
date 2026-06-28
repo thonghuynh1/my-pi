@@ -9,11 +9,13 @@
     "mcp"
   ],
   "scripts": {
+    "postinstall": "node scripts/postinstall.mjs",
     "check": "tsc --noEmit",
     "accordion:install": "npm install --prefix vendor/accordion/app && npm install --prefix vendor/accordion/extension",
     "accordion:build": "npm run build --prefix vendor/accordion/app",
-    "setup:accordion": "npm run accordion:install && npm run accordion:build",
-    "accordion:update": "git submodule update --remote --merge vendor/accordion"
+    "accordion:overlay": "node overlays/accordion/apply-overlay.mjs",
+    "setup:accordion": "npm run accordion:install && npm run accordion:overlay && npm run accordion:build",
+    "accordion:update": "npm run accordion:overlay && npm run accordion:build"
   },
   "dependencies": {
     "@ogulcancelik/pi-herdr": "^0.2.5",

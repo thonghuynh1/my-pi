@@ -1,0 +1,21 @@
+import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = dirname(dirname(fileURLToPath(import.meta.url)));
+
+function run(cmd) {
+	console.log(`postinstall: ${cmd}`);
+	execSync(cmd, { cwd: root, stdio: "inherit" });
+}
+
+if (!existsSync(join(root, "vendor", "accordion", "app", "node_modules"))) {
+	run("npm run accordion:install");
+}
+
+run("npm run accordion:overlay");
+
+if (!existsSync(join(root, "vendor", "accordion", "app", "build", "index.html"))) {
+	run("npm run accordion:build");
+}

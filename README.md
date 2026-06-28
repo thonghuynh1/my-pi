@@ -13,23 +13,21 @@ Personal Pi package that bundles:
 
 ```bash
 cd F:/MyWork/my-pi
-git submodule update --init --recursive
 npm install
-npm run setup:accordion
 pi install F:/MyWork/my-pi
 ```
 
 Restart Pi or run `/reload`.
 
+The `postinstall` script handles Accordion overlay and build automatically.
+
 ## Accordion
 
-This repo includes [Accordion](https://github.com/a-Fig/accordion) as a git submodule under `vendor/accordion` and registers its Pi extension automatically.
+This repo vendors [Accordion](https://github.com/a-Fig/accordion) under `vendor/accordion` and registers its Pi extension automatically.
 
-One-time setup after cloning:
+Setup is automatic via `postinstall`. Manual steps only if needed:
 
 ```bash
-cd F:/MyWork/my-pi
-git submodule update --init --recursive
 npm run setup:accordion
 ```
 
@@ -39,11 +37,31 @@ Then in Pi:
 /accordion
 ```
 
+### Custom conductor overlay
+
+This repo ships a custom conductor (`MCP-preserving GC`) that garbage-collects old context but never folds MCP tool results. It lives in `overlays/accordion/` and is injected into the vendor submodule at install time.
+
+Defaults applied by the overlay:
+
+- Conductor: `MCP-preserving GC`
+- Steering (live folding): ON
+- Budget: min(contextWindow, 100k)
+
+The overlay is idempotent and re-applied on every `npm run accordion:overlay` or `npm run accordion:update`.
+
+To pull upstream Accordion changes without losing the custom conductor:
+
+```bash
+npm run accordion:update
+```
+
+This re-applies the overlay and rebuilds. To incorporate new upstream Accordion code, update the vendored files in `vendor/accordion/` first, then run this command. If an upstream change breaks an anchor, the script fails with the exact missing line.
+
 Notes:
 
-- `git submodule update --init --recursive` fetches the Accordion source into `vendor/accordion`.
-- `npm run setup:accordion` installs Accordion's nested dependencies and builds its browser app.
-- Accordion depends on its full repo layout, so keep the full `vendor/accordion` tree intact.
+- Keep local customizations in `overlays/accordion/` when possible so they can be re-applied after refreshing the vendored Accordion files.
+- The overlay script handles CRLF/LF differences.
+- You can still switch conductors in the Accordion UI. The overlay only sets the default.
 
 ## Configure engineering-skills MCP
 
@@ -165,14 +183,17 @@ Edit per-agent model choices in a TUI and save them back to `models.json`:
 
 ## Install on another PC
 
-Push this package to git, then install:
+Push this package to git, then:
 
 ```bash
 pi install git:github.com/<you>/my-pi
-cd F:/MyWork/my-pi
-git submodule update --init --recursive
-npm run setup:accordion
 ```
+
+The `postinstall` script runs automatically and handles:
+
+1. `npm run accordion:install`
+2. `npm run accordion:overlay`
+3. `npm run accordion:build` (if not already built)
 
 Then clone/build `hackathon-grill-me` on that PC and run:
 

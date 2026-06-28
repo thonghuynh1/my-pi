@@ -169,18 +169,25 @@ function totalCostOf(usage: AssistantUsage | undefined): number {
 // --- Batch-coach detection state and helpers ---
 // This hook lives in subagents.ts because it is intentionally gated by subagentModeEnabled (MESO-001).
 
-const BATCH_COACH_TOOLS: ReadonlySet<string> = new Set(["bash", "read", "grep", "ls", "mcp"]);
+const BATCH_COACH_TOOLS: ReadonlySet<string> = new Set(["bash", "find", "grep", "ls", "mcp", "read"]);
 const BATCH_COACH_BUFFER_MAX = 10;
 const BATCH_COACH_N = 3;
 const DEPENDENCY_MIN_CHARS = 6;
 const SELF_NARRATED_BATCHING_RE =
 	/\b(in parallel|concurrently|simultaneously|in one (call|message|turn)|batch (these|them|the)|batched)\b/i;
 
+interface BatchCoachToolProbe {
+	name: string;
+	inputSummary: string;
+}
+
 interface BatchCoachTurnRecord {
 	turnIndex: number;
 	toolCallCount: number;
 	toolName?: string;
 	inputSummary?: string;
+	batchableToolCalls: BatchCoachToolProbe[];
+	hasSubagentCall: boolean;
 	outputSample?: string;
 	visibleText: string;
 	isError: boolean;
@@ -190,6 +197,7 @@ function batchCoachExtractToolInputSummary(toolName: string, args: Record<string
 	if (toolName === "bash") return String(args.command ?? "").slice(0, 120);
 	if (toolName === "read") return String(args.path ?? "").slice(0, 120);
 	if (toolName === "grep") return String(args.pattern ?? args.query ?? "").slice(0, 120);
+	if (toolName === "find") return String(args.pattern ?? args.path ?? "").slice(0, 120);
 	if (toolName === "ls") return String(args.path ?? "").slice(0, 120);
 	const fallback = args.path ?? args.query ?? args.command ?? args.tool ?? "";
 	return String(fallback).slice(0, 120);
@@ -203,6 +211,15 @@ function batchCoachSummarizeTurn(event: TurnEndEvent): BatchCoachTurnRecord | un
 	const toolCalls = content.filter((p) => p.type === "toolCall");
 	const toolCallCount = toolCalls.length;
 	const toolName = toolCalls.length === 1 ? toolCalls[0].name : undefined;
+	const hasSubagentCall = toolCalls.some((toolCall) => toolCall.name === "subagent");
+	const batchableToolCalls = toolCalls
+		.filter((toolCall): toolCall is { type?: string; text?: string; name: string; arguments?: Record<string, unknown> } =>
+			typeof toolCall.name === "string" && BATCH_COACH_TOOLS.has(toolCall.name),
+		)
+		.map((toolCall) => ({
+			name: toolCall.name,
+			inputSummary: batchCoachExtractToolInputSummary(toolCall.name, toolCall.arguments ?? {}),
+		}));
 
 	// Scan visible text content blocks only, not thinking blocks (issue 03 requirement).
 	let visibleText = "";
@@ -228,19 +245,36 @@ function batchCoachSummarizeTurn(event: TurnEndEvent): BatchCoachTurnRecord | un
 		}
 	}
 
-	return { turnIndex: event.turnIndex, toolCallCount, toolName, inputSummary, outputSample, visibleText, isError };
+	return {
+		turnIndex: event.turnIndex,
+		toolCallCount,
+		toolName,
+		inputSummary,
+		batchableToolCalls,
+		hasSubagentCall,
+		outputSample,
+		visibleText,
+		isError,
+	};
+}
+
+function batchCoachRecordInputSummaries(record: BatchCoachTurnRecord): string[] {
+	if (record.batchableToolCalls.length > 0) return record.batchableToolCalls.map((toolCall) => toolCall.inputSummary);
+	return record.inputSummary ? [record.inputSummary] : [];
 }
 
 function batchCoachInputDependsOnPriorOutput(priorRecords: BatchCoachTurnRecord[], nextRecord: BatchCoachTurnRecord): boolean {
-	const nextInput = nextRecord.inputSummary;
-	if (!nextInput) return false;
+	const nextInputs = batchCoachRecordInputSummaries(nextRecord);
+	if (nextInputs.length === 0) return false;
 	for (const priorRecord of priorRecords) {
 		const outputSample = priorRecord.outputSample;
 		if (!outputSample || outputSample.length < DEPENDENCY_MIN_CHARS) continue;
-		if (nextInput.includes(outputSample)) return true;
-		if (outputSample.includes(nextInput)) return true;
-		const words = outputSample.split(/\s+/).filter((w) => w.length >= DEPENDENCY_MIN_CHARS);
-		if (words.some((w) => nextInput.includes(w))) return true;
+		for (const nextInput of nextInputs) {
+			if (nextInput.includes(outputSample)) return true;
+			if (outputSample.includes(nextInput)) return true;
+			const words = outputSample.split(/\s+/).filter((w) => w.length >= DEPENDENCY_MIN_CHARS);
+			if (words.some((w) => nextInput.includes(w))) return true;
+		}
 	}
 	return false;
 }
@@ -256,22 +290,44 @@ function batchCoachHasDependency(results: BatchCoachTurnRecord[]): boolean {
 	return false;
 }
 
+function batchCoachSelectNudgeRecords(records: BatchCoachTurnRecord[]): BatchCoachTurnRecord[] | undefined {
+	let lastSubagentIndex = -1;
+	for (let i = records.length - 1; i >= 0; i--) {
+		if (records[i].hasSubagentCall) {
+			lastSubagentIndex = i;
+			break;
+		}
+	}
+	const sinceLastSubagent = records.slice(lastSubagentIndex + 1);
+	if (sinceLastSubagent.length === 0) return undefined;
+
+	const selected: BatchCoachTurnRecord[] = [];
+	let probeCount = 0;
+	for (let i = sinceLastSubagent.length - 1; i >= 0 && probeCount < BATCH_COACH_N; i--) {
+		const record = sinceLastSubagent[i];
+		if (record.batchableToolCalls.length === 0) break;
+		selected.unshift(record);
+		probeCount += record.batchableToolCalls.length;
+	}
+
+	if (probeCount < BATCH_COACH_N) return undefined;
+	if (batchCoachHasDependency(selected)) return undefined;
+	return selected;
+}
+
 function batchCoachBuildNudge(records: BatchCoachTurnRecord[], selfNarratedMatch: string | undefined): string {
-	const slice = records.slice(-BATCH_COACH_N);
+	const probes = records.flatMap((record) => record.batchableToolCalls).slice(-BATCH_COACH_N);
 	let text = "";
 	if (selfNarratedMatch) {
 		text += `You wrote "${selfNarratedMatch}" but then executed the calls sequentially.\n\n`;
 	}
-	text += "Your last turns were independent single-call probes:\n";
-	for (let i = 0; i < slice.length; i++) {
-		const r = slice[i];
-		text += `${i + 1}. ${r.toolName}(${r.inputSummary ?? "..."})\n`;
+	text += "Subagent mode is on. You just used several direct exploration tools without calling a subagent:\n";
+	for (let i = 0; i < probes.length; i++) {
+		const probe = probes[i];
+		text += `${i + 1}. ${probe.name}(${probe.inputSummary || "..."})\n`;
 	}
-	text += `\nBefore your next tool call, plan the next 2\u20133 calls together. If independent, batch them via:\n`;
-	text += `- one chained bash command: \`cmd1 && cmd2\`\n`;
-	text += `- multiple tool calls in the same assistant message\n`;
-	text += `- a focused subagent when the work spans several files\n`;
-	text += `\nContinue your work \u2014 but batched.`;
+	text += "\nFor broad or multi-file investigation, stop direct exploration and spawn 2 to 4 parallel subagents unless this is now a narrow follow-up.\n";
+	text += "Use explore for code mapping. Use shell for commands, tests, logs, git history, reproduction, or generated output.";
 	return text;
 }
 
@@ -1545,7 +1601,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Batch-coach: active only when subagent mode is enabled (MESO-001).
-	// Detects three consecutive same-tool single-call turns that appear independent
+	// Detects direct exploration stretches that should have started with subagents
 	// and injects a steering message before the next LLM call.
 	const batchCoachBuffer: BatchCoachTurnRecord[] = [];
 	let batchCoachNudged = false;
@@ -1559,43 +1615,15 @@ export default function (pi: ExtensionAPI) {
 		batchCoachBuffer.push(record);
 		if (batchCoachBuffer.length > BATCH_COACH_BUFFER_MAX) batchCoachBuffer.shift();
 
-		// Reset nudge flag when the streak of same-tool turns breaks.
-		if (batchCoachNudged && batchCoachBuffer.length >= BATCH_COACH_N) {
-			const last3 = batchCoachBuffer.slice(-BATCH_COACH_N);
-			const allSingleSameTool =
-				last3.every((r) => r.toolCallCount === 1) &&
-				new Set(last3.map((r) => r.toolName)).size === 1;
-			const isIndependentBatchableStretch =
-				allSingleSameTool &&
-				BATCH_COACH_TOOLS.has(last3[0].toolName ?? "") &&
-				!batchCoachHasDependency(last3);
-			if (!isIndependentBatchableStretch) {
-				const currentRecord = last3[last3.length - 1];
-				const currentRecordCanStartNewStretch =
-					currentRecord.toolCallCount === 1 &&
-					BATCH_COACH_TOOLS.has(currentRecord.toolName ?? "") &&
-					!batchCoachInputDependsOnPriorOutput(last3.slice(0, -1), currentRecord);
-				batchCoachNudged = false;
-				batchCoachBuffer.length = 0;
-				if (currentRecordCanStartNewStretch) batchCoachBuffer.push(currentRecord);
-				return;
-			}
+		const nudgeRecords = batchCoachSelectNudgeRecords(batchCoachBuffer);
+		if (!nudgeRecords) {
+			batchCoachNudged = false;
+			return;
 		}
-
-		if (batchCoachBuffer.length < BATCH_COACH_N) return;
-
-		const last3 = batchCoachBuffer.slice(-BATCH_COACH_N);
-		const allSingleSameTool =
-			last3.every((r) => r.toolCallCount === 1) &&
-			new Set(last3.map((r) => r.toolName)).size === 1;
-
-		if (!allSingleSameTool) return;
-		if (!BATCH_COACH_TOOLS.has(last3[0].toolName ?? "")) return;
-		if (batchCoachHasDependency(last3)) return;
 		if (batchCoachNudged) return;
 
 		// Self-narration detection: scan visible text only, not thinking blocks.
-		const recentText = last3.map((r) => r.visibleText).join("\n");
+		const recentText = nudgeRecords.map((r) => r.visibleText).join("\n");
 		const selfNarratedMatch = SELF_NARRATED_BATCHING_RE.exec(recentText)?.[0];
 
 		// display: false keeps the nudge out of the TUI but it IS model-visible.
@@ -1607,17 +1635,16 @@ export default function (pi: ExtensionAPI) {
 		//
 		// Manual verification recipe:
 		//   1. Run pi with /subagent on.
-		//   2. Trigger 3+ consecutive single-call tool turns on a batchable tool
-		//      (e.g. grep, read, ls) without dependencies between them.
-		//   3. Confirm the model reacts to the nudge (e.g. starts batching
-		//      subagent calls) on the next turn.
+		//   2. Trigger 3+ direct exploration calls across read, grep, find,
+		//      ls, bash, or mcp without a subagent call between them.
+		//   3. Confirm the model reacts to the nudge by spawning subagents
+		//      when the work is still broad.
 		//   4. Run pi with /subagent off, repeat the same pattern.
-		//   5. Confirm no nudge fires (batch-coach returns early at the
-		//      subagentModeEnabled guard).
+		//   5. Confirm no nudge fires because of the mode guard.
 		pi.sendMessage(
 			{
 				customType: "subagent-batch-coach",
-				content: batchCoachBuildNudge(last3, selfNarratedMatch),
+				content: batchCoachBuildNudge(nudgeRecords, selfNarratedMatch),
 				display: false,
 			},
 			{ deliverAs: "steer" },
@@ -1641,17 +1668,17 @@ export default function (pi: ExtensionAPI) {
 				? "Run an isolated in-process Pi subagent. **BATCH IN PARALLEL**: emit multiple subagent calls in one assistant message and they run concurrently — always prefer a parallel batch over sequential one-by-one. Types: explore (read-only codebase investigation), shell (command-oriented investigation), custom (markdown agent from ~/.pi/agent/agents or .pi/agents)."
 				: "Run an isolated in-process Pi subagent.",
 			promptSnippet: enabled
-				? "Delegate focused investigation to an isolated in-process subagent (explore = read-only, shell = with bash, custom = specialized). **Always batch independent questions as parallel subagent calls in the SAME assistant message** — they run concurrently, so 4 in parallel ≈ wall-clock cost of 1."
+				? "When subagent mode is enabled, start broad work with subagents by default. Delegate focused investigation to an isolated in-process subagent (explore = read-only, shell = with bash, custom = specialized). **Always batch independent questions as parallel subagent calls in the SAME assistant message** — they run concurrently, so 4 in parallel ≈ wall-clock cost of 1."
 				: "",
 			promptGuidelines: enabled
 				? [
-					"**BATCH IN PARALLEL — this is the #1 rule.** Multiple `subagent` calls in the same assistant message execute concurrently. Before launching any subagent, ask: 'can I split this into 2–5 independent sub-questions?' If yes, emit them all in one message. Sequential one-by-one is almost always wrong.",
+					"**BATCH IN PARALLEL — this is the #1 rule.** Multiple `subagent` calls in the same assistant message execute concurrently. Before launching any subagent, ask: 'can I split this work into 2–5 independent sub-questions?' If yes, emit them all in one message before doing direct repo exploration. Sequential one-by-one is almost always wrong.",
+					"When subagent mode is enabled, start broad work with subagents by default. Use `subagent` first if the task may touch more than 2 files, asks to investigate/debug/review/trace/explain why or how, needs evidence from multiple areas, may produce long tool output, or would likely take more than 2 direct read/search/list/shell commands.",
+					"Use direct tools only for narrow work: reading one known file, inspecting one known symbol, making a small edit in one known location, a quick follow-up after a subagent result, or one focused command with small output.",
 					"Concrete batch examples: understanding a feature → 3 parallel explores (API route, DB model, UI call site). Debugging → 1 shell (run test) + 1 explore (map modules), fanned out together. Refactor planning → one explore per affected layer, all dispatched at once.",
-					"`subagent` spins up an isolated child agent with its own context window and returns a concise summary. Useful when an investigation would take more than a couple of read/grep calls or would clutter the main context.",
-					"type=explore for read-only codebase questions (read/grep/find/ls). type=shell when commands, tests, or logs are needed. type=custom with `customAgent` for specialized agents.",
-					"Keep each subagent's task NARROW and focused. Don't stuff multiple questions into one mega-task — narrow tasks return faster, cleaner summaries. Split first, batch second.",
+					"Default broad-investigation split: use 2–4 subagents before direct exploration. Use type=explore for codebase mapping, call paths, files, docs, config, and read-only history searches. Use type=shell for commands, tests, logs, git history, reproduction, or generated output.",
+					"Keep each subagent's task NARROW and focused. Don't stuff multiple questions into one mega-task — narrow, focused tasks return faster, cleaner summaries. Split first, batch second.",
 					"For broad repo exploration, omit `timeoutSeconds` or use at least 600 seconds.",
-					"Direct read/grep/edit in the main agent stays appropriate for single-file edits, targeted lookups, and quick follow-ups on subagent results — don't use a subagent to read one known file.",
 				]
 				: [],
 			parameters: SubagentParams,
@@ -1739,7 +1766,55 @@ export default function (pi: ExtensionAPI) {
 		return {
 			systemPrompt:
 				event.systemPrompt +
-				`\n\n=== Subagent workflow mode is enabled ===\n\nYou have an extra capability in this session: the \\\`subagent\\\` tool. It spins up an isolated child Pi agent with its own context window, so investigations done inside a subagent do not consume your main context. The child returns only a concise summary.\n\n## PLAN FIRST, THEN FAN OUT WIDE\n\nBefore you start investigating, pause and ask: **\"Can I split this work into independent sub-questions that don't depend on each other's answers?\"** If yes, dispatch them as a SINGLE BATCH of parallel \\\`subagent\\\` calls in one assistant message. Subagents run concurrently — 4 subagents in parallel finish in roughly the same wall-clock time as 1. Sequential one-by-one investigation is the slow, wrong default.\n\nA good batch is typically 2–5 subagents, each with a narrow, well-scoped task. Don't be shy about going wide — if you can frame 4 independent questions, launch 4 subagents.\n\n### Example batches (do this)\n- Understanding a feature: launch 3 explores in parallel — (1) where the API route is defined, (2) where the DB model lives, (3) where the UI calls it.\n- Debugging a failing test: launch 2 in parallel — one \"shell\" to run the test and capture the stack, one \"explore\" to map the involved modules.\n- Refactor planning: one explore per affected layer (data, service, controller, view) all dispatched together.\n- Reviewing a PR-sized change: one explore per touched subsystem, fanned out simultaneously.\n\n### Anti-patterns (don't do this)\n- ❌ Run one subagent, wait for the result, then run the next one to ask a related-but-independent question. That doubles your wall-clock time for no reason.\n- ❌ Stuff every question into one giant subagent prompt. Narrow, focused tasks return faster and cleaner summaries than one bloated mega-task.\n- ❌ Use a subagent for a single \\\`read\\\` of a known file — just read it directly.\n\n## Available subagent types\n- type=\"explore\" — read-only codebase reconnaissance. The child only has read/grep/find/ls. Good for \"where is X defined\", \"how is Y wired\", \"explain this module\", or any multi-file investigation.\n- type=\"shell\" — same as explore plus \\\`bash\\\`. Good for running tests, inspecting logs, reproducing a failure, or any diagnosis that needs commands.\n- type=\"custom\" with \\\`customAgent\\\` — a specialized markdown-defined agent (see list below).\n\n## When a subagent is a good fit\n- The investigation will likely take more than a couple of read/grep calls.\n- The findings would otherwise clutter your main context with details you only need to summarize.\n- You need to run tests or other commands whose long output you do not want in your main context.\n- You have multiple independent questions — dispatch them as a parallel batch.\n\n## When direct read/grep/edit/bash from the main agent is fine\n- Reading a single known file before editing it.\n- A single targeted lookup at a known location.\n- Quick follow-ups after a subagent has already returned.\n\n## Available custom subagents\n${customAgentsText}`,
+				`
+
+=== Subagent workflow mode is enabled ===
+
+You have an extra capability in this session: the \`subagent\` tool. It spins up an isolated child Pi agent with its own context window, so investigations done inside a subagent do not consume your main context. The child returns only a concise summary.
+
+## Start broad work with subagents
+
+Before you use direct \`read\`, \`grep\`, \`find\`, \`ls\`, \`bash\`, or \`mcp\` for investigation, classify the task. If the task is broad, spawn subagents first.
+
+Use \`subagent\` first when any of these are true:
+- The task may touch more than 2 files.
+- The task asks to investigate, debug, review, trace, explain why, or explain how.
+- You expect more than 2 search, read, list, shell, or MCP calls.
+- The answer needs evidence from multiple areas.
+- Tool output may be long.
+- There are independent angles that can run in parallel.
+
+Use direct tools only for narrow work:
+- Read one known file.
+- Inspect one known symbol.
+- Make a small edit in one known location.
+- Follow up on a subagent result.
+- Run one focused command whose output is small.
+
+## Batch in parallel
+
+If using subagents, dispatch them as a SINGLE BATCH in one assistant message. Do not run one subagent, wait, then run another independent subagent. A good batch is usually 2 to 4 narrow tasks.
+
+Default split:
+- type=\"explore\" for codebase mapping, call paths, files, docs, config, and read-only history searches.
+- type=\"shell\" for commands, tests, logs, git history, reproduction, or generated output.
+- type=\"custom\" with \`customAgent\` for a specialized markdown-defined agent.
+
+Examples:
+- Understanding a feature: launch 3 explores in parallel. One for the API route, one for the data model, and one for the UI call site.
+- Debugging a failure: launch 1 shell to run or reproduce it, plus 1 explore to map involved modules.
+- Investigating two displayed numbers: launch one explore for each subsystem and one shell for git history or command evidence.
+- Reviewing a PR-sized change: launch one explore per touched subsystem.
+
+Anti-patterns:
+- Do not use a subagent for a single \`read\` of a known file. Read it directly.
+- Do not stuff every question into one giant subagent prompt. Split first, batch second.
+- Do not do a broad direct grep/read sweep before spawning subagents. That defeats the point of this mode.
+
+For broad repo exploration, omit \`timeoutSeconds\` or use at least 600 seconds.
+
+## Available custom subagents
+${customAgentsText}`,
 		};
 	});
 

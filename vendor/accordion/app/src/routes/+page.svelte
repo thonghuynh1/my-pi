@@ -11,8 +11,10 @@
 	import { folding } from "$lib/live/folding.svelte";
 	import { foldAlarm, runFoldCheck } from "$lib/live/foldAlarm.svelte";
 	import { DEFAULT_PORT, PROTOCOL_VERSION } from "$lib/live/protocol";
-	import { detectBrokerMode } from "$lib/live/brokerMode";
+	import { detectBrokerMode, type BrokerMeta } from "$lib/live/brokerMode";
+	import { REGISTRY_PROTOCOL } from "$lib/live/registry";
 	import type { SessionEntry } from "$lib/live/registry";
+	import { slotRegistry, activeSlot, ensureSlot, focusSlot, removeSlot, connectSlot } from "$lib/live/sessionSlots.svelte";
 	import type { ClaudeCodeSession } from "$lib/live/claude";
 	import SessionsSidebar from "$lib/ui/live/SessionsSidebar.svelte";
 	import MapHeader from "$lib/ui/map/MapHeader.svelte";
@@ -29,6 +31,8 @@
 	let servedSessionId = $state<string | null>(null);
 	let brokerMode = $state<"broker" | "direct" | null>(null);
 	let brokerModeError = $state<string | null>(null);
+	let brokerMeta = $state<BrokerMeta | null>(null);
+	let brokerPollTimer = $state<ReturnType<typeof setInterval> | null>(null);
 
 	// Which session source the sidebar lists: live pi vs read-only Claude Code.
 	const SRC_KEY = "accordion.sidebar.source";
@@ -62,8 +66,8 @@
 	// booting. Once discovery sees the heartbeat, isLaunching clears, conductors changes,
 	// and this effect re-runs to attach the real RemoteRunner.
 	$effect(() => {
-		void conductorRetry.tick; // re-fire on a remote-drop retry tick (recover a same-process socket drop)
-		const store = session.store;
+		void conductorRetry.tick;
+		const store = displayStore;
 		const activeId = conductorState.activeId;
 		const list = conductors;
 		if (!store) return;
@@ -81,7 +85,7 @@
 	// show a "set your key" prompt instead of failing mid-fold. Aggressiveness is fixed at 0.2
 	// here (the single place it's specified); the host contract keeps it off the call surface.
 	$effect(() => {
-		const store = session.store;
+		const store = displayStore;
 		if (!store) return;
 		const key = settings.bear2ApiKey;
 		if (isTauriEnv && key.trim() !== "") {
@@ -98,21 +102,48 @@
 		}
 	});
 
+	/**
+	 * In broker mode: the active slot's store drives the main view.
+	 * In direct mode: the singleton session.store (unchanged path).
+	 */
+	const displayStore = $derived(
+		brokerMode === "broker" ? (activeSlot()?.store ?? null) : session.store,
+	);
+
 	const selectedBlock = $derived(
-		session.store && selectedId ? session.store.blocks.find((b) => b.id === selectedId) ?? null : null,
+		displayStore && selectedId ? displayStore.blocks.find((b) => b.id === selectedId) ?? null : null,
 	);
 	const selectedGroup = $derived(
-		session.store && selectedId ? session.store.groupById(selectedId) ?? null : null,
+		displayStore && selectedId ? displayStore.groupById(selectedId) ?? null : null,
 	);
 	const demoSelected = $derived(discovery.selected === DEMO_ID);
 
+	// In broker mode, project slot data into SessionEntry shape for the existing sidebar.
+	const brokerSessionEntries: SessionEntry[] = $derived(
+		slotRegistry.slots.map((slot) => ({
+			registryProtocol: REGISTRY_PROTOCOL,
+			protocolVersion: PROTOCOL_VERSION,
+			sessionId: slot.sessionId,
+			port: 0,
+			pid: 0,
+			cwd: slot.store.meta.cwd || slot.entry.cwd,
+			title: slot.store.meta.title || slot.entry.title || slot.sessionId,
+			model: slot.store.meta.model || slot.entry.model,
+			tokens: null,
+			contextWindow: slot.store.contextWindow,
+			startedAt: slot.entry.startedAt,
+			heartbeatAt: slot.entry.heartbeatAt,
+		}))
+	);
+
 	// Drop any open Inspector selection when the underlying store is replaced (session
-	// switch, full resync, demo, or Open) so a stale id cannot resolve against a
-	// different store and pop the Inspector open on the wrong session.
+	// switch, full resync, demo, or Open, or slot focus change) so a stale id cannot
+	// resolve against a different store and pop the Inspector open on the wrong session.
 	let _prevStore: typeof session.store = null;
 	$effect(() => {
-		if (session.store !== _prevStore) {
-			_prevStore = session.store;
+		const curr = displayStore;
+		if (curr !== _prevStore) {
+			_prevStore = curr;
 			selectedId = null;
 		}
 	});
@@ -157,8 +188,66 @@
 	}
 
 	function onFocusRequest(sessionId: string): void {
+		if (brokerMode === "broker") {
+			if (slotRegistry.slots.some((s) => s.sessionId === sessionId)) {
+				focusSlot(sessionId);
+			}
+			return;
+		}
 		const s = discovery.sessions.find((x) => x.sessionId === sessionId);
 		if (s) selectAndConnect(s);
+	}
+
+	async function pollBrokerSessions(): Promise<void> {
+		if (!brokerMeta) return;
+		try {
+			const res = await fetch("/__accordion/sessions", { credentials: "same-origin" });
+			if (!res.ok) return;
+			const body = (await res.json()) as unknown[];
+			if (!Array.isArray(body)) return;
+
+			type WatchedItem = { sessionId: string; addedAt: number; lastSeenAt: number };
+			const watched: WatchedItem[] = body.filter(
+				(s): s is WatchedItem =>
+					!!s &&
+					typeof s === "object" &&
+					typeof (s as Record<string, unknown>)["sessionId"] === "string",
+			);
+
+			const watchedIds = new Set(watched.map((w) => w.sessionId));
+			for (const slot of [...slotRegistry.slots]) {
+				if (!watchedIds.has(slot.sessionId)) removeSlot(slot.sessionId);
+			}
+
+			const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+			for (const w of watched) {
+				const entry: SessionEntry = {
+					registryProtocol: REGISTRY_PROTOCOL,
+					protocolVersion: PROTOCOL_VERSION,
+					sessionId: w.sessionId,
+					port: 0,
+					pid: 0,
+					cwd: "",
+					title: w.sessionId,
+					model: "",
+					tokens: null,
+					contextWindow: null,
+					startedAt: w.addedAt,
+					heartbeatAt: w.lastSeenAt,
+				};
+				const slot = ensureSlot(entry);
+				if (slot.socket === null && slot.status !== "error") {
+					const wsUrl = proto + "//" + window.location.host + "/ws/session/" + encodeURIComponent(w.sessionId);
+					connectSlot(slot, wsUrl);
+				}
+			}
+
+			if (slotRegistry.activeId === null && slotRegistry.slots.length > 0) {
+				focusSlot(slotRegistry.slots[0].sessionId);
+			}
+		} catch {
+			// Transient network error — retry on next poll tick.
+		}
 	}
 
 	onMount(() => {
@@ -176,8 +265,12 @@
 				const detected = await detectBrokerMode(PROTOCOL_VERSION);
 				if (detected.kind === "broker") {
 					brokerMode = "broker";
+					brokerMeta = detected.meta;
+					void pollBrokerSessions();
+					brokerPollTimer = setInterval(() => void pollBrokerSessions(), 2_000);
 				} else if (detected.kind === "error") {
 					brokerModeError = detected.detail;
+					brokerMode = "direct";
 					console.warn("[accordion] broker-mode detection error:", detected.detail);
 				} else {
 					brokerMode = "direct";
@@ -211,44 +304,55 @@
 			stopClaudeDiscovery();
 			stopConductorDiscovery();
 			disconnectLive();
+			if (brokerPollTimer !== null) {
+				clearInterval(brokerPollTimer);
+				brokerPollTimer = null;
+			}
+			for (const slot of [...slotRegistry.slots]) {
+				removeSlot(slot.sessionId);
+			}
 		};
 	});
 
-	const isLive = $derived(live.status === "connected");
-	const isWatching = $derived(session.readOnly && !isLive);
+	const isLive = $derived(
+		brokerMode === "broker"
+			? activeSlot()?.status === "live"
+			: live.status === "connected",
+	);
+	const isWatching = $derived(brokerMode !== "broker" && session.readOnly && !isLive);
 
 	// View↔wire fold alarm (indicator-only): re-run the divergence check on every settled
 	// store change. `st.version` is the settled-change signal (manual fold, conductor pass,
 	// budget/protect change, append — all route through refold()→runConductor()→version++).
 	$effect(() => {
-		const st = session.store;
+		const st = displayStore;
 		if (!st) {
 			foldAlarm.active = false;
 			foldAlarm.detail = "";
 			return;
 		}
 		st.version; // track the settled-change signal
-		runFoldCheck(st, live.status === "connected");
+		runFoldCheck(st, isLive);
 	});
 </script>
 
 <svelte:head><title>Accordion</title></svelte:head>
 
-<div class="shell" class:railed={isTauriEnv || browserServed}>
-	{#if isTauriEnv || browserServed}
+<div class="shell" class:railed={isTauriEnv || browserServed || brokerMode === "broker"}>
+	{#if isTauriEnv || browserServed || brokerMode === "broker"}
 		<SessionsSidebar
 			{source}
 			onsource={(s) => (source = s)}
-			sessions={discovery.sessions}
-			selected={discovery.selected}
-			connected={live.status === "connected"}
+			sessions={brokerMode === "broker" ? brokerSessionEntries : discovery.sessions}
+			selected={brokerMode === "broker" ? slotRegistry.activeId : discovery.selected}
+			connected={isLive}
 			{demoSelected}
-			onselect={selectAndConnect}
+			onselect={brokerMode === "broker" ? (s) => focusSlot(s.sessionId) : selectAndConnect}
 			ondemo={selectDemo}
 			claudeSessions={claudeDiscovery.sessions}
 			claudeSelected={claudeDiscovery.selected}
 			onselectclaude={selectClaudeSession}
-			{browserServed}
+			browserServed={brokerMode !== "broker" && browserServed}
 			servedTitle={session.store?.meta.title ?? "pi session"}
 			servedModel={session.store?.meta.model ?? ""}
 			onreconnect={reconnectServed}
@@ -256,8 +360,8 @@
 	{/if}
 
 	<div class="content">
-		{#if session.store}
-			{@const s = session.store}
+		{#if displayStore}
+			{@const s = displayStore}
 			<div class="app">
 				<header class="topbar">
 					<!-- Brand lockup: logo + wordmark -->
@@ -324,7 +428,7 @@
 					</div>
 				</header>
 
-				<MapHeader store={s} readOnly={session.readOnly} />
+				<MapHeader store={s} readOnly={brokerMode === "broker" ? false : session.readOnly} />
 
 				<div class="main" class:open={!!selectedBlock || !!selectedGroup} class:activity={activityOpen}>
 					<div class="canvas">

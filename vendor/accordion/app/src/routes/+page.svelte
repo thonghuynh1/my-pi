@@ -10,7 +10,8 @@
 	import { attachConductor, conductorRetry } from "$lib/live/conductorClient.svelte";
 	import { folding } from "$lib/live/folding.svelte";
 	import { foldAlarm, runFoldCheck } from "$lib/live/foldAlarm.svelte";
-	import { DEFAULT_PORT } from "$lib/live/protocol";
+	import { DEFAULT_PORT, PROTOCOL_VERSION } from "$lib/live/protocol";
+	import { detectBrokerMode } from "$lib/live/brokerMode";
 	import type { SessionEntry } from "$lib/live/registry";
 	import type { ClaudeCodeSession } from "$lib/live/claude";
 	import SessionsSidebar from "$lib/ui/live/SessionsSidebar.svelte";
@@ -26,6 +27,8 @@
 	let activityOpen = $state(false);
 	let browserServed = $state(false);
 	let servedSessionId = $state<string | null>(null);
+	let brokerMode = $state<"broker" | "direct" | null>(null);
+	let brokerModeError = $state<string | null>(null);
 
 	// Which session source the sidebar lists: live pi vs read-only Claude Code.
 	const SRC_KEY = "accordion.sidebar.source";
@@ -162,11 +165,29 @@
 		startDiscovery(onFocusRequest);
 		startConductorDiscovery();
 
-		// Browser-served auto-connect: if this page was served by the pi extension on a
-		// loopback port, /__accordion/meta returns { served: true, sessionId, protocolVersion }.
-		// In any other context (Vite dev server, static host) the endpoint is absent — 404 or
-		// non-JSON — so we silently fall through and leave the manual UI visible.
+		// Browser startup detection — two separate endpoints:
+		//   /__accordion/meta      → single-session direct mode (existing)
+		//   /__accordion/broker-meta → broker dashboard mode (new)
+		// Both are absent (404) in dev / static hosting; either can be present at runtime.
 		if (!isTauriEnv && typeof window !== "undefined") {
+			// Broker-mode detection runs first: if the broker is serving this page, record it.
+			// 404 → keep brokerMode null (direct); error → record for debugging.
+			(async () => {
+				const detected = await detectBrokerMode(PROTOCOL_VERSION);
+				if (detected.kind === "broker") {
+					brokerMode = "broker";
+				} else if (detected.kind === "error") {
+					brokerModeError = detected.detail;
+					console.warn("[accordion] broker-mode detection error:", detected.detail);
+				} else {
+					brokerMode = "direct";
+				}
+			})();
+
+			// Single-session auto-connect: if served by the pi extension on a loopback port,
+			// /__accordion/meta returns { served: true, sessionId, protocolVersion }.
+			// In any other context (Vite dev server, static host) the endpoint is absent — 404 or
+			// non-JSON — so we silently fall through and leave the manual UI visible.
 			(async () => {
 				try {
 					const res = await fetch("/__accordion/meta", { credentials: "same-origin" });

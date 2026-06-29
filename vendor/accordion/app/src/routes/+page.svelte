@@ -10,11 +10,9 @@
 	import { attachConductor, conductorRetry } from "$lib/live/conductorClient.svelte";
 	import { folding } from "$lib/live/folding.svelte";
 	import { foldAlarm, runFoldCheck } from "$lib/live/foldAlarm.svelte";
-	import { DEFAULT_PORT, PROTOCOL_VERSION } from "$lib/live/protocol";
-	import { detectBrokerMode, type BrokerMeta } from "$lib/live/brokerMode";
-	import { REGISTRY_PROTOCOL, type SessionEntry } from "$lib/live/registry";
-	import { normalizeBrokerSession } from "$lib/live/brokerSessions";
-	import { slotRegistry, activeSlot, ensureSlot, focusSlot, removeSlot, connectSlot } from "$lib/live/sessionSlots.svelte";
+	import { DEFAULT_PORT } from "$lib/live/protocol";
+	import type { SessionEntry } from "$lib/live/registry";
+	import { broker, brokerSessionEntries, startBrokerDetection, stopBroker, handleBrokerFocus, slotRegistry, activeSlot, focusSlot } from "$lib/live/brokerIntegration.svelte";
 	import type { ClaudeCodeSession } from "$lib/live/claude";
 	import SessionsSidebar from "$lib/ui/live/SessionsSidebar.svelte";
 	import MapHeader from "$lib/ui/map/MapHeader.svelte";
@@ -29,9 +27,7 @@
 	let activityOpen = $state(false);
 	let browserServed = $state(false);
 	let servedSessionId = $state<string | null>(null);
-	let brokerMode = $state<"broker" | "direct" | null>(null);
-	let brokerMeta = $state<BrokerMeta | null>(null);
-	let brokerPollTimer: ReturnType<typeof setInterval> | null = null;
+	const isBrokerMode = $derived(broker.mode === "broker");
 
 	// Which session source the sidebar lists: live pi vs read-only Claude Code.
 	const SRC_KEY = "accordion.sidebar.source";
@@ -106,7 +102,7 @@
 	 * In direct mode: the singleton session.store (unchanged path).
 	 */
 	const displayStore = $derived(
-		brokerMode === "broker" ? (activeSlot()?.store ?? null) : session.store,
+		isBrokerMode ? (activeSlot()?.store ?? null) : session.store,
 	);
 
 	const selectedBlock = $derived(
@@ -117,22 +113,12 @@
 	);
 	const demoSelected = $derived(discovery.selected === DEMO_ID);
 
-	// In broker mode, project slot data into SessionEntry shape for the existing sidebar.
-	const brokerSessionEntries: SessionEntry[] = $derived(
-		slotRegistry.slots.map((slot) => ({
-			registryProtocol: REGISTRY_PROTOCOL,
-			protocolVersion: PROTOCOL_VERSION,
-			sessionId: slot.sessionId,
-			port: 0,
-			pid: 0,
-			cwd: slot.store.meta.cwd || slot.entry.cwd,
-			title: slot.store.meta.title || slot.entry.title || slot.sessionId,
-			model: slot.store.meta.model || slot.entry.model,
-			tokens: null,
-			contextWindow: slot.store.contextWindow,
-			startedAt: slot.entry.startedAt,
-			heartbeatAt: slot.entry.heartbeatAt,
-		}))
+	// Broker sidebar props — pre-resolved so template stays clean.
+	const sidebarSessions = $derived(isBrokerMode ? brokerSessionEntries() : discovery.sessions);
+	const sidebarSelected = $derived(isBrokerMode ? slotRegistry.activeId : discovery.selected);
+	const sidebarOnselect = $derived(isBrokerMode
+		? (s: { sessionId: string }) => focusSlot(s.sessionId)
+		: selectAndConnect,
 	);
 
 	// Drop any open Inspector selection when the underlying store is replaced (session
@@ -187,76 +173,17 @@
 	}
 
 	function onFocusRequest(sessionId: string): void {
-		if (brokerMode === "broker") {
-			if (slotRegistry.slots.some((s) => s.sessionId === sessionId)) {
-				focusSlot(sessionId);
-			}
-			return;
-		}
+		if (handleBrokerFocus(sessionId)) return;
 		const s = discovery.sessions.find((x) => x.sessionId === sessionId);
 		if (s) selectAndConnect(s);
-	}
-
-	async function pollBrokerSessions(): Promise<void> {
-		if (!brokerMeta) return;
-		try {
-			const res = await fetch("/__accordion/sessions", { credentials: "same-origin" });
-			if (!res.ok) return;
-			const body = (await res.json()) as unknown[];
-			if (!Array.isArray(body)) return;
-
-			const watched = body.flatMap((s) => {
-				const session = normalizeBrokerSession(s);
-				return session ? [session] : [];
-			});
-
-			const watchedIds = new Set(watched.map((w) => w.sessionId));
-			for (const slot of [...slotRegistry.slots]) {
-				if (!watchedIds.has(slot.sessionId)) removeSlot(slot.sessionId);
-			}
-
-			const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-			for (const entry of watched) {
-				const slot = ensureSlot(entry);
-				if (slot.socket === null) {
-					const wsUrl = proto + "//" + window.location.host + "/ws/session/" + encodeURIComponent(entry.sessionId);
-					connectSlot(slot, wsUrl);
-				}
-			}
-
-			if (slotRegistry.activeId === null && slotRegistry.slots.length > 0) {
-				focusSlot(slotRegistry.slots[0].sessionId);
-			}
-		} catch {
-			// Transient network error — retry on next poll tick.
-		}
 	}
 
 	onMount(() => {
 		startDiscovery(onFocusRequest);
 		startConductorDiscovery();
 
-		// Browser startup detection — two separate endpoints:
-		//   /__accordion/meta      → single-session direct mode (existing)
-		//   /__accordion/broker-meta → broker dashboard mode (new)
-		// Both are absent (404) in dev / static hosting; either can be present at runtime.
 		if (!isTauriEnv && typeof window !== "undefined") {
-			// Broker-mode detection runs first: if the broker is serving this page, record it.
-			// 404 → keep brokerMode null (direct); error → record for debugging.
-			(async () => {
-				const detected = await detectBrokerMode(PROTOCOL_VERSION);
-				if (detected.kind === "broker") {
-					brokerMode = "broker";
-					brokerMeta = detected.meta;
-					void pollBrokerSessions();
-					brokerPollTimer = setInterval(() => void pollBrokerSessions(), 2_000);
-				} else if (detected.kind === "error") {
-					brokerMode = "direct";
-					console.warn("[accordion] broker-mode detection error:", detected.detail);
-				} else {
-					brokerMode = "direct";
-				}
-			})();
+			void startBrokerDetection();
 
 			// Single-session auto-connect: if served by the pi extension on a loopback port,
 			// /__accordion/meta returns { served: true, sessionId, protocolVersion }.
@@ -285,22 +212,16 @@
 			stopClaudeDiscovery();
 			stopConductorDiscovery();
 			disconnectLive();
-			if (brokerPollTimer !== null) {
-				clearInterval(brokerPollTimer);
-				brokerPollTimer = null;
-			}
-			for (const slot of [...slotRegistry.slots]) {
-				removeSlot(slot.sessionId);
-			}
+			stopBroker();
 		};
 	});
 
 	const isLive = $derived(
-		brokerMode === "broker"
+		isBrokerMode
 			? activeSlot()?.status === "live"
 			: live.status === "connected",
 	);
-	const isWatching = $derived(brokerMode !== "broker" && session.readOnly && !isLive);
+	const isWatching = $derived(!isBrokerMode && session.readOnly && !isLive);
 
 	// View↔wire fold alarm (indicator-only): re-run the divergence check on every settled
 	// store change. `st.version` is the settled-change signal (manual fold, conductor pass,
@@ -319,21 +240,21 @@
 
 <svelte:head><title>Accordion</title></svelte:head>
 
-<div class="shell" class:railed={isTauriEnv || browserServed || brokerMode === "broker"}>
-	{#if isTauriEnv || browserServed || brokerMode === "broker"}
+<div class="shell" class:railed={isTauriEnv || browserServed || isBrokerMode}>
+	{#if isTauriEnv || browserServed || isBrokerMode}
 		<SessionsSidebar
 			{source}
 			onsource={(s) => (source = s)}
-			sessions={brokerMode === "broker" ? brokerSessionEntries : discovery.sessions}
-			selected={brokerMode === "broker" ? slotRegistry.activeId : discovery.selected}
+			sessions={sidebarSessions}
+			selected={sidebarSelected}
 			connected={isLive}
 			{demoSelected}
-			onselect={brokerMode === "broker" ? (s) => focusSlot(s.sessionId) : selectAndConnect}
+			onselect={sidebarOnselect}
 			ondemo={selectDemo}
 			claudeSessions={claudeDiscovery.sessions}
 			claudeSelected={claudeDiscovery.selected}
 			onselectclaude={selectClaudeSession}
-			browserServed={brokerMode !== "broker" && browserServed}
+			browserServed={!isBrokerMode && browserServed}
 			servedTitle={session.store?.meta.title ?? "pi session"}
 			servedModel={session.store?.meta.model ?? ""}
 			onreconnect={reconnectServed}
@@ -409,7 +330,7 @@
 					</div>
 				</header>
 
-				<MapHeader store={s} readOnly={brokerMode === "broker" ? false : session.readOnly} />
+				<MapHeader store={s} readOnly={isBrokerMode ? false : session.readOnly} />
 
 				<div class="main" class:open={!!selectedBlock || !!selectedGroup} class:activity={activityOpen}>
 					<div class="canvas">
@@ -467,7 +388,7 @@
 						</div>
 						<p class="hint">Or open the <strong>Demo session</strong> at the bottom of the sidebar.</p>
 					{:else}
-						{#if brokerMode === "broker"}
+						{#if isBrokerMode}
 							<p class="hint">
 								{#if slotRegistry.slots.length > 0}
 									Select a session on the left. Accordion will connect through the broker.
@@ -506,7 +427,7 @@
 							</button>
 						{/if}
 					{/if}
-					{#if brokerMode !== "broker" && live.status === "error"}<p class="err">{live.detail}</p>{/if}
+					{#if !isBrokerMode && live.status === "error"}<p class="err">{live.detail}</p>{/if}
 					{#if session.error}<p class="err">{session.error}</p>{/if}
 				</div>
 			</div>

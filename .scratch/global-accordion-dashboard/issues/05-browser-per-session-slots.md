@@ -1,3 +1,7 @@
+---
+status: closed
+---
+
 Status: ready-for-agent
 
 # Refactor browser app into per-session slots

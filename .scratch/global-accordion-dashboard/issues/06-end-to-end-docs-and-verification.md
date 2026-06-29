@@ -1,3 +1,7 @@
+---
+status: closed
+---
+
 Status: ready-for-agent
 
 # End-to-end docs and verification polish

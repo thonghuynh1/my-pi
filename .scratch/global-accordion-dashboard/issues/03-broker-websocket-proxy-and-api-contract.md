@@ -1,3 +1,7 @@
+---
+status: closed
+---
+
 Status: ready-for-agent
 
 # Add broker WebSocket proxy and browser API contract

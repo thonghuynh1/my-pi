@@ -10,13 +10,15 @@
  */
 import * as http from "node:http";
 import { createBrokerServer } from "./server.ts";
-import { createDiskStore } from "./registry.ts";
 import {
+	createDiskStore,
 	writeBrokerFile,
 	refreshBrokerHeartbeat,
 	removeBrokerFile,
+	consumeWatchRequests,
+	pruneWatchedSessions,
 } from "./registry.ts";
-import { BROKER_HEARTBEAT_INTERVAL_MS } from "./types.ts";
+import { BROKER_HEARTBEAT_INTERVAL_MS, WATCH_REQUEST_POLL_INTERVAL_MS } from "./types.ts";
 
 export { createBrokerServer } from "./server.ts";
 export { createDiskStore } from "./registry.ts";
@@ -50,12 +52,18 @@ export async function startBroker(): Promise<BrokerHandle> {
 
 	writeBrokerFile(port);
 
+	consumeWatchRequests();
 	const heartbeat = setInterval(() => {
 		refreshBrokerHeartbeat(port);
+		pruneWatchedSessions();
 	}, BROKER_HEARTBEAT_INTERVAL_MS);
+	const watchRequests = setInterval(() => {
+		consumeWatchRequests();
+	}, WATCH_REQUEST_POLL_INTERVAL_MS);
 
 	function stop(): Promise<void> {
 		clearInterval(heartbeat);
+		clearInterval(watchRequests);
 		removeBrokerFile();
 		return new Promise((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));

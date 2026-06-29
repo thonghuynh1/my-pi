@@ -6,6 +6,9 @@
  */
 import { describe, it, expect, afterEach } from "vitest";
 import * as http from "node:http";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { createBrokerServer } from "../src/server.ts";
 import { PROTOCOL_VERSION, REGISTRY_PROTOCOL } from "../src/types.ts";
@@ -28,14 +31,10 @@ function memoryStore(opts: {
 		isWatched(sessionId) {
 			return watched.has(sessionId);
 		},
-		getWatchedSessions(): WatchedSession[] {
+		getWatchedSessions(): SessionEntry[] {
 			return Array.from(watched)
-				.filter((id) => !stale.has(id) && ports[id] !== undefined)
-				.map((id) => ({
-					sessionId: id,
-					addedAt: Date.now() - 1000,
-					lastSeenAt: Date.now(),
-				}));
+				.map((id) => this.getSessionEntry(id))
+				.filter((entry): entry is SessionEntry => entry !== null);
 		},
 		getSessionEntry(sessionId): SessionEntry | null {
 			if (!watched.has(sessionId) || stale.has(sessionId)) return null;
@@ -79,9 +78,9 @@ function startFakeUpstream(): Promise<{ wss: WebSocketServer; port: number; clos
 }
 
 /** Starts a broker server with the given store. */
-function startBroker(store: BrokerStore): Promise<{ server: http.Server; port: number; close(): Promise<void> }> {
+function startBroker(store: BrokerStore, clientRoot?: string | null): Promise<{ server: http.Server; port: number; close(): Promise<void> }> {
 	return new Promise((resolve, reject) => {
-		const server = createBrokerServer(store);
+		const server = createBrokerServer(store, { clientRoot });
 		server.listen(0, "127.0.0.1", () => {
 			const addr = server.address() as { port: number };
 			resolve({
@@ -99,20 +98,27 @@ function startBroker(store: BrokerStore): Promise<{ server: http.Server; port: n
 }
 
 /** GET helper — returns parsed JSON or throws on non-2xx. */
-async function getJson(url: string): Promise<unknown> {
+async function getText(url: string): Promise<{ statusCode: number | undefined; body: string; contentType: string | undefined }> {
 	return new Promise((resolve, reject) => {
 		http.get(url, (res) => {
 			let body = "";
 			res.on("data", (chunk: Buffer) => { body += chunk.toString(); });
 			res.on("end", () => {
-				if (res.statusCode !== 200) {
-					reject(new Error(`HTTP ${res.statusCode} for ${url}: ${body}`));
-				} else {
-					resolve(JSON.parse(body));
-				}
+				const contentType = Array.isArray(res.headers["content-type"])
+					? res.headers["content-type"][0]
+					: res.headers["content-type"];
+				resolve({ statusCode: res.statusCode, body, contentType });
 			});
 		}).on("error", reject);
 	});
+}
+
+async function getJson(url: string): Promise<unknown> {
+	const res = await getText(url);
+	if (res.statusCode !== 200) {
+		throw new Error(`HTTP ${res.statusCode} for ${url}: ${res.body}`);
+	}
+	return JSON.parse(res.body);
 }
 
 /** Returns a promise that resolves once the WebSocket client fires the given event once. */
@@ -142,6 +148,14 @@ afterEach(async () => {
 		await task().catch(() => {});
 	}
 });
+
+function createClientBuild(): string {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "accordion-broker-client-"));
+	fs.writeFileSync(path.join(root, "index.html"), "<html><body>broker dashboard</body></html>");
+	fs.writeFileSync(path.join(root, "app.js"), "console.log('ok');");
+	cleanupTasks.push(async () => { fs.rmSync(root, { recursive: true, force: true }); });
+	return root;
+}
 
 // ── GET /__accordion/broker-meta ──────────────────────────────────────────────
 
@@ -184,6 +198,8 @@ describe("GET /__accordion/sessions", () => {
 		expect(Array.isArray(sessions)).toBe(true);
 		expect(sessions).toHaveLength(1);
 		expect((sessions[0] as Record<string, unknown>).sessionId).toBe("sess-a");
+		expect((sessions[0] as Record<string, unknown>).port).toBe(upstream.port);
+		expect((sessions[0] as Record<string, unknown>).cwd).toBe("/tmp");
 	});
 
 	it("excludes sessions not in the watched list", async () => {
@@ -220,6 +236,33 @@ describe("GET /__accordion/sessions", () => {
 		const sessions = await getJson(`http://127.0.0.1:${broker.port}/__accordion/sessions`) as unknown[];
 
 		expect(sessions).toHaveLength(0);
+	});
+});
+
+// ── Browser dashboard static serving ─────────────────────────────────────────
+
+describe("browser dashboard", () => {
+	it("serves the dashboard index from the broker root", async () => {
+		const clientRoot = createClientBuild();
+		const broker = await startBroker(memoryStore({}), clientRoot);
+		cleanupTasks.push(broker.close);
+
+		const res = await getText(`http://127.0.0.1:${broker.port}/`);
+
+		expect(res.statusCode).toBe(200);
+		expect(res.contentType).toBe("text/html; charset=utf-8");
+		expect(res.body).toContain("broker dashboard");
+	});
+
+	it("falls back to index.html for client routes", async () => {
+		const clientRoot = createClientBuild();
+		const broker = await startBroker(memoryStore({}), clientRoot);
+		cleanupTasks.push(broker.close);
+
+		const res = await getText(`http://127.0.0.1:${broker.port}/session/s1`);
+
+		expect(res.statusCode).toBe(200);
+		expect(res.body).toContain("broker dashboard");
 	});
 });
 

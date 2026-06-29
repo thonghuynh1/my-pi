@@ -74,6 +74,20 @@ describe("sessionSlots — slot creation", () => {
 
 		expect(slot.folding.enabled).toBe(true);
 	});
+
+	it("returns the registry slot so first-connect mutations update the visible slot", () => {
+		const slot = ensureSlot(makeEntry("reactive-slot"));
+
+		slot.status = "live";
+
+		expect(slotRegistry.slots[0].status).toBe("live");
+	});
+
+	it("initializes per-slot ghosts as an empty array", () => {
+		const slot = ensureSlot(makeEntry("ghost-slot"));
+
+		expect(slot.ghosts).toEqual([]);
+	});
 });
 
 // ── Focus / deduplication ─────────────────────────────────────────────────────
@@ -86,6 +100,25 @@ describe("sessionSlots — focus and deduplication", () => {
 
 		expect(second).toBe(first);
 		expect(slotRegistry.slots).toHaveLength(1);
+	});
+
+	it("repeated ensureSlot refreshes an existing slot with the latest session entry", () => {
+		const slot = ensureSlot(makeEntry("refresh-session", { cwd: "/old", title: "old", model: "old-model" }));
+
+		const refreshed = ensureSlot(makeEntry("refresh-session", {
+			cwd: "/new",
+			title: "new",
+			model: "new-model",
+			contextWindow: 64_000,
+			heartbeatAt: 12345,
+		}));
+
+		expect(refreshed).toBe(slot);
+		expect(slot.entry.cwd).toBe("/new");
+		expect(slot.entry.title).toBe("new");
+		expect(slot.entry.model).toBe("new-model");
+		expect(slot.entry.heartbeatAt).toBe(12345);
+		expect(slot.store.contextWindow).toBe(64_000);
 	});
 
 	it("repeated focus for the same sessionId selects the existing slot and does not duplicate it", () => {

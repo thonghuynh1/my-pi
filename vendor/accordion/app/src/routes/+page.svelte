@@ -12,8 +12,8 @@
 	import { foldAlarm, runFoldCheck } from "$lib/live/foldAlarm.svelte";
 	import { DEFAULT_PORT, PROTOCOL_VERSION } from "$lib/live/protocol";
 	import { detectBrokerMode, type BrokerMeta } from "$lib/live/brokerMode";
-	import { REGISTRY_PROTOCOL } from "$lib/live/registry";
-	import type { SessionEntry } from "$lib/live/registry";
+	import { REGISTRY_PROTOCOL, type SessionEntry } from "$lib/live/registry";
+	import { normalizeBrokerSession } from "$lib/live/brokerSessions";
 	import { slotRegistry, activeSlot, ensureSlot, focusSlot, removeSlot, connectSlot } from "$lib/live/sessionSlots.svelte";
 	import type { ClaudeCodeSession } from "$lib/live/claude";
 	import SessionsSidebar from "$lib/ui/live/SessionsSidebar.svelte";
@@ -205,13 +205,10 @@
 			const body = (await res.json()) as unknown[];
 			if (!Array.isArray(body)) return;
 
-			type WatchedItem = { sessionId: string; addedAt: number; lastSeenAt: number };
-			const watched: WatchedItem[] = body.filter(
-				(s): s is WatchedItem =>
-					!!s &&
-					typeof s === "object" &&
-					typeof (s as Record<string, unknown>)["sessionId"] === "string",
-			);
+			const watched = body.flatMap((s) => {
+				const session = normalizeBrokerSession(s);
+				return session ? [session] : [];
+			});
 
 			const watchedIds = new Set(watched.map((w) => w.sessionId));
 			for (const slot of [...slotRegistry.slots]) {
@@ -219,24 +216,10 @@
 			}
 
 			const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-			for (const w of watched) {
-				const entry: SessionEntry = {
-					registryProtocol: REGISTRY_PROTOCOL,
-					protocolVersion: PROTOCOL_VERSION,
-					sessionId: w.sessionId,
-					port: 0,
-					pid: 0,
-					cwd: "",
-					title: w.sessionId,
-					model: "",
-					tokens: null,
-					contextWindow: null,
-					startedAt: w.addedAt,
-					heartbeatAt: w.lastSeenAt,
-				};
+			for (const entry of watched) {
 				const slot = ensureSlot(entry);
-				if (slot.socket === null && slot.status !== "error") {
-					const wsUrl = proto + "//" + window.location.host + "/ws/session/" + encodeURIComponent(w.sessionId);
+				if (slot.socket === null) {
+					const wsUrl = proto + "//" + window.location.host + "/ws/session/" + encodeURIComponent(entry.sessionId);
 					connectSlot(slot, wsUrl);
 				}
 			}
@@ -484,7 +467,15 @@
 						</div>
 						<p class="hint">Or open the <strong>Demo session</strong> at the bottom of the sidebar.</p>
 					{:else}
-						{#if browserServed}
+						{#if brokerMode === "broker"}
+							<p class="hint">
+								{#if slotRegistry.slots.length > 0}
+									Select a session on the left. Accordion will connect through the broker.
+								{:else}
+									Waiting for a watched Pi session. Run <code>/accordion</code> in a Pi session to add it here.
+								{/if}
+							</p>
+						{:else if browserServed}
 							<p class="hint">
 								{#if live.status === "connected"}
 									Connected to your pi session.
@@ -496,7 +487,7 @@
 							</p>
 						{:else}
 							<p class="hint">
-								Live session discovery is a desktop feature — run <code>npm run tauri dev</code>. In the browser you can dial a known port or load the sample.
+								Live session discovery is a desktop feature. Run <code>npm run tauri dev</code>. In the browser you can dial a known port or load the sample.
 							</p>
 							<div class="port-row">
 								<input class="port" type="number" min="1" max="65535" bind:value={manualPort} aria-label="pi port" />
@@ -515,7 +506,7 @@
 							</button>
 						{/if}
 					{/if}
-					{#if live.status === "error"}<p class="err">{live.detail}</p>{/if}
+					{#if brokerMode !== "broker" && live.status === "error"}<p class="err">{live.detail}</p>{/if}
 					{#if session.error}<p class="err">{session.error}</p>{/if}
 				</div>
 			</div>

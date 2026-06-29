@@ -28,6 +28,7 @@ import {
 	type CompleteRequestMessage,
 } from "./protocol";
 import type { CompletionRequest, CompletionResult } from "$conductors/contract";
+import type { Ghost } from "./ghostState.svelte";
 
 /** Lifecycle status of one slot's proxied WebSocket connection. */
 export type SlotStatus = "connecting" | "live" | "stale" | "disconnected" | "error";
@@ -53,6 +54,8 @@ export interface SessionSlot {
 	status: SlotStatus;
 	/** Per-slot folding arm — whether the fold plan is applied to the live model call. */
 	folding: { enabled: boolean };
+	/** Per-slot ghost state — active streaming placeholders for this session only. */
+	ghosts: Ghost[];
 }
 
 /**
@@ -95,7 +98,20 @@ export function activeSlot(): SessionSlot | null {
  */
 export function ensureSlot(entry: SessionEntry): SessionSlot {
 	const existing = slotRegistry.slots.find((s) => s.sessionId === entry.sessionId);
-	if (existing) return existing;
+	if (existing) {
+		existing.entry = entry;
+		existing.store.meta = {
+			...existing.store.meta,
+			title: existing.store.meta.title || entry.title || "pi session",
+			cwd: existing.store.meta.cwd || entry.cwd || "",
+			model: existing.store.meta.model || entry.model || "",
+		};
+		if (typeof entry.contextWindow === "number" && entry.contextWindow > 0 && existing.store.contextWindow === null) {
+			existing.store.setContextWindow(entry.contextWindow);
+			existing.store.setBudget(Math.min(entry.contextWindow, 100_000));
+		}
+		return existing;
+	}
 
 	const store = new AccordionStore({
 		meta: {
@@ -116,9 +132,10 @@ export function ensureSlot(entry: SessionEntry): SessionSlot {
 		socket: null,
 		status: "disconnected",
 		folding: { enabled: true },
+		ghosts: [],
 	};
 	slotRegistry.slots.push(slot);
-	return slot;
+	return slotRegistry.slots[slotRegistry.slots.length - 1];
 }
 
 /**
@@ -293,12 +310,14 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 				return;
 			}
 			slot.status = "live";
+			slot.ghosts.length = 0;
 			// Update the slot's entry labels from the authoritative hello meta.
 			slot.entry = {
 				...slot.entry,
 				title: msg.meta.title || slot.entry.title,
 				cwd: msg.meta.cwd || slot.entry.cwd,
 				model: msg.meta.model || slot.entry.model,
+				contextWindow: msg.meta.contextWindow ?? slot.entry.contextWindow,
 			};
 			budgetLive = false;
 			slot.store.dispose();
@@ -321,8 +340,8 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 				budgetLive = true;
 			}
 		} else if (msg.type === "sync") {
-			if (!slot.store) return;
 			if (msg.full) {
+				slot.ghosts.length = 0;
 				const prevMeta = slot.store.meta;
 				const prevContextWindow = slot.store.contextWindow;
 				const prevBudget = slot.store.budget;
@@ -365,10 +384,9 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 			}
 		} else if (msg.type === "unfoldRequest") {
 			const codes = Array.isArray(msg.codes) ? msg.codes : [];
-			const { restored, missing } =
-				slot.folding.enabled && slot.store
-					? resolveUnfold(slot.store, codes)
-					: { restored: [], missing: codes };
+			const { restored, missing } = slot.folding.enabled
+				? resolveUnfold(slot.store, codes)
+				: { restored: [], missing: codes };
 			const reply: UnfoldResultMessage = {
 				type: "unfoldResult",
 				reqId: msg.reqId,
@@ -382,9 +400,7 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 			}
 		} else if (msg.type === "recallRequest") {
 			const codes = Array.isArray(msg.codes) ? msg.codes : [];
-			const { restored, missing } = slot.store
-				? resolveRecall(slot.store, codes)
-				: { restored: [], missing: codes };
+			const { restored, missing } = resolveRecall(slot.store, codes);
 			const reply: RecallResultMessage = {
 				type: "recallResult",
 				reqId: msg.reqId,
@@ -411,10 +427,24 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 					p.reject(new Error(msg.error ?? "completion failed"));
 				}
 			}
+		} else if (msg.type === "stream") {
+			if (msg.phase === "start") {
+				const idx = slot.ghosts.findIndex((g) => g.contentIndex === msg.contentIndex);
+				if (idx >= 0) {
+					slot.ghosts[idx] = { contentIndex: msg.contentIndex, kind: msg.kind };
+				} else {
+					slot.ghosts.push({ contentIndex: msg.contentIndex, kind: msg.kind });
+				}
+			} else if (msg.phase === "abort") {
+				if (msg.contentIndex < 0) {
+					slot.ghosts.length = 0;
+				} else {
+					const idx = slot.ghosts.findIndex((g) => g.contentIndex === msg.contentIndex);
+					if (idx >= 0) slot.ghosts.splice(idx, 1);
+				}
+			}
+			// phase === "end" is intentionally a no-op (ADR 0003 §3: committed blocks arrive at message_end).
 		}
-		// stream messages (ghost state): not handled per-slot in this implementation.
-		// Ghost state is a UI affordance for the live streaming edge; follow-up work
-		// will add per-slot ghost tracking for the active visible slot.
 	};
 
 	ws.onerror = () => {
@@ -423,10 +453,11 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 
 	ws.onclose = () => {
 		drainPending("disconnected");
+		slot.ghosts.length = 0;
 		if (slot.socket === ws) {
 			slot.socket = null;
-			if (slot.status !== "error") slot.status = "disconnected";
+			slot.status = "disconnected";
 		}
-		if (slot.store) slot.store.completer = null;
+		slot.store.completer = null;
 	};
 }

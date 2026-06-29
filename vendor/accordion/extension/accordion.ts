@@ -69,6 +69,18 @@ const HOME = process.env.ACCORDION_HOME || os.homedir();
 const REGISTRY_ROOT = path.join(HOME, REGISTRY_DIR);
 const SESSIONS_DIR = path.join(REGISTRY_ROOT, SESSIONS_SUBDIR);
 const FOCUS_PATH = path.join(REGISTRY_ROOT, FOCUS_FILE);
+const BROWSER_BROKER_FILE = "browser-broker.json";
+const WATCH_REQUESTS_SUBDIR = "watch-requests";
+const BROWSER_BROKER_PATH = path.join(REGISTRY_ROOT, BROWSER_BROKER_FILE);
+const WATCH_REQUESTS_DIR = path.join(REGISTRY_ROOT, WATCH_REQUESTS_SUBDIR);
+const BROKER_STALE_AFTER_MS = 15_000;
+
+type BrokerRegistryEntry = {
+	port: number;
+	pid: number;
+	startedAt: number;
+	heartbeatAt: number;
+};
 
 const ACCORDION_APP_FLAG = "accordion-app";
 const ACCORDION_APP_ENV = "ACCORDION_APP_PATH";
@@ -79,6 +91,10 @@ type LaunchResult =
 	| { ok: false; reason: "explicit-invalid"; path: string; source: Extract<LaunchSource, "cli" | "env"> }
 	| { ok: false; reason: "not-found" }
 	| { ok: false; reason: "spawn-failed"; path: string; source: LaunchSource; error: unknown };
+
+type BrokerEnsureResult =
+	| { ok: true; port: number; started: boolean }
+	| { ok: false; reason: "not-found" | "spawn-failed" | "not-ready" };
 
 function cleanExplicitPath(value: unknown): string | null {
 	if (typeof value !== "string") return null;
@@ -198,6 +214,81 @@ function launchResultLine(result: LaunchResult | null): { text: string; type: "i
 		text: `Accordion focus request written, but I couldn't find the desktop app. Open Accordion manually, or set ${ACCORDION_APP_ENV} / --${ACCORDION_APP_FLAG}.`,
 		type: "warning",
 	};
+}
+
+function readBrokerRegistry(): BrokerRegistryEntry | null {
+	try {
+		const raw = JSON.parse(fs.readFileSync(BROWSER_BROKER_PATH, "utf8")) as Record<string, unknown>;
+		if (
+			typeof raw["port"] !== "number" ||
+			typeof raw["pid"] !== "number" ||
+			typeof raw["startedAt"] !== "number" ||
+			typeof raw["heartbeatAt"] !== "number"
+		) return null;
+		if (Date.now() - raw["heartbeatAt"] > BROKER_STALE_AFTER_MS) return null;
+		return {
+			port: raw["port"],
+			pid: raw["pid"],
+			startedAt: raw["startedAt"],
+			heartbeatAt: raw["heartbeatAt"],
+		};
+	} catch {
+		return null;
+	}
+}
+
+function writeBrokerWatchRequest(sessionId: string): void {
+	fs.mkdirSync(WATCH_REQUESTS_DIR, { recursive: true });
+	const target = path.join(WATCH_REQUESTS_DIR, `${sessionId}.json`);
+	const tmp = `${target}.${process.pid}.tmp`;
+	fs.writeFileSync(tmp, JSON.stringify({ sessionId, ts: Date.now() }));
+	fs.renameSync(tmp, target);
+}
+
+function resolveBrokerCwd(): string | null {
+	try {
+		const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+		const brokerDir = path.join(root, "packages", "accordion-broker");
+		if (fs.statSync(path.join(brokerDir, "src", "index.ts")).isFile()) return brokerDir;
+	} catch {
+		return null;
+	}
+	return null;
+}
+
+async function ensureBroker(): Promise<BrokerEnsureResult> {
+	const existing = readBrokerRegistry();
+	if (existing) return { ok: true, port: existing.port, started: false };
+	const brokerCwd = resolveBrokerCwd();
+	if (!brokerCwd) return { ok: false, reason: "not-found" };
+	try {
+		const child = spawn(process.execPath, ["--import", "tsx/esm", "src/index.ts"], {
+			cwd: brokerCwd,
+			detached: true,
+			stdio: "ignore",
+			shell: false,
+		});
+		child.unref();
+	} catch {
+		return { ok: false, reason: "spawn-failed" };
+	}
+	const deadline = Date.now() + 2000;
+	while (Date.now() < deadline) {
+		const started = readBrokerRegistry();
+		if (started) return { ok: true, port: started.port, started: true };
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	return { ok: false, reason: "not-ready" };
+}
+
+function brokerResultLine(result: BrokerEnsureResult): { text: string; type: "info" | "warning" } {
+	if (result.ok) {
+		const prefix = result.started ? "Started broker dashboard" : "Broker dashboard";
+		return { text: `${prefix}: http://127.0.0.1:${result.port}/`, type: "info" };
+	}
+	if (result.reason === "not-found") return { text: "Broker dashboard unavailable: packages/accordion-broker was not found.", type: "warning" };
+	if (result.reason === "spawn-failed") return { text: "Broker dashboard unavailable: failed to start broker process.", type: "warning" };
+	return { text: "Broker dashboard unavailable: broker did not become ready in time.", type: "warning" };
 }
 
 export default function accordionLive(pi: ExtensionAPI): void {
@@ -1086,11 +1177,19 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		latestCtx = null;
 	});
 
-	// ── /accordion : focus the app on this session + show status ────────────────
+	// ── /accordion : focus this session and surface browser entry points ─────────
 	pi.registerCommand("accordion", {
 		description: "Open/focus Accordion on this pi session",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			writeFocusRequest();
+			const broker = await ensureBroker();
+			if (sessionId) {
+				try {
+					writeBrokerWatchRequest(sessionId);
+				} catch {
+					// Broker registration is best-effort. The direct live link below still works.
+				}
+			}
 			// If the app is already attached to THIS session, its discovery poll will consume
 			// focus.json and foreground the window. If it is not attached, launching the desktop
 			// app is the only cross-process nudge we have; the app's single-instance guard turns
@@ -1098,16 +1197,15 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			const wasAttached = attached();
 			const launch = wasAttached ? null : await launchAccordionApp(pi);
 			const action = launchResultLine(launch);
+			const brokerLine = brokerResultLine(broker);
 			const lines = [
 				action.text,
+				brokerLine.text,
 				`Live link: ${wasAttached ? "attached" : "detached"} · port ${port || "starting"} · streamed ${sentCount} blocks`,
 			];
-			// Browser entry point: the extension also serves the web build of Accordion on
-			// the same ephemeral port, gated by a per-session token. Surface the tokenized
-			// URL so the user can open the UI in a browser instead of the desktop app.
-			if (port && webToken) lines.push(`Browser: http://127.0.0.1:${port}/?token=${webToken}`);
-			else lines.push("Browser: starting…");
-			ctx.ui.notify(lines.join("\n"), action.type);
+			if (port && webToken) lines.push(`Direct session browser: http://127.0.0.1:${port}/?token=${webToken}`);
+			else lines.push("Direct session browser: starting…");
+			ctx.ui.notify(lines.join("\n"), brokerLine.type === "warning" ? brokerLine.type : action.type);
 		},
 	});
 

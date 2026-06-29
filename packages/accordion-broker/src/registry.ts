@@ -23,7 +23,8 @@ import {
 	BROWSER_BROKER_FILE,
 } from "./types.ts";
 
-const registryRoot = path.join(os.homedir(), REGISTRY_DIR);
+const HOME = process.env.ACCORDION_HOME || os.homedir();
+const registryRoot = path.join(HOME, REGISTRY_DIR);
 const sessionsDir = path.join(registryRoot, SESSIONS_SUBDIR);
 const watchedSessionsPath = path.join(registryRoot, WATCHED_SESSIONS_FILE);
 const watchRequestsDir = path.join(registryRoot, WATCH_REQUESTS_SUBDIR);
@@ -155,6 +156,55 @@ export function addWatchedSession(sessionId: string): void {
 	}
 }
 
+/** Consumes pending watch request files and returns the number accepted. */
+export function consumeWatchRequests(): number {
+	ensureRegistryDirs();
+	let consumed = 0;
+	let names: string[] = [];
+	try {
+		names = fs.readdirSync(watchRequestsDir);
+	} catch {
+		return 0;
+	}
+	for (const name of names) {
+		if (!name.endsWith(".json")) continue;
+		const filePath = path.join(watchRequestsDir, name);
+		const raw = readJsonFile<unknown>(filePath);
+		if (
+			raw !== null &&
+			typeof raw === "object" &&
+			typeof (raw as Record<string, unknown>)["sessionId"] === "string"
+		) {
+			addWatchedSession((raw as Record<string, string>)["sessionId"]);
+			consumed++;
+		}
+		try {
+			fs.unlinkSync(filePath);
+		} catch {
+			// best-effort
+		}
+	}
+	return consumed;
+}
+
+/**
+ * Removes dead session IDs from watched-sessions.json on disk.
+ * A session is dead if its session file is missing or its heartbeat is stale.
+ * Called periodically from the heartbeat loop.
+ */
+export function pruneWatchedSessions(): number {
+	ensureRegistryDirs();
+	const existing = readWatchedSessions();
+	if (existing.length === 0) return 0;
+	const now = Date.now();
+	const alive = existing.filter((s) => readSessionEntry(s.sessionId, now) !== null);
+	const pruned = existing.length - alive.length;
+	if (pruned > 0) {
+		atomicWrite(watchedSessionsPath, alive);
+	}
+	return pruned;
+}
+
 // ── Disk-backed BrokerStore ───────────────────────────────────────────────────
 
 /**
@@ -168,9 +218,9 @@ export function createDiskStore(): BrokerStore {
 		},
 		getWatchedSessions() {
 			const now = Date.now();
-			return readWatchedSessions().filter(
-				(s) => readSessionEntry(s.sessionId, now) !== null,
-			);
+			return readWatchedSessions()
+				.map((s) => readSessionEntry(s.sessionId, now))
+				.filter((s): s is SessionEntry => s !== null);
 		},
 		getSessionEntry(sessionId) {
 			return readSessionEntry(sessionId, Date.now());

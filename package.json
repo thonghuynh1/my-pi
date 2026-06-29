@@ -16,7 +16,7 @@
     "accordion:overlay": "node overlays/accordion/apply-overlay.mjs",
     "setup:accordion": "npm run accordion:install && npm run accordion:overlay && npm run accordion:build",
     "accordion:update": "npm run accordion:overlay && npm run accordion:build",
-    "accordion:broker": "node --import tsx/esm packages/accordion-broker/src/index.ts"
+    "accordion:broker": "npm run start --prefix packages/accordion-broker"
   },
   "dependencies": {
     "@ogulcancelik/pi-herdr": "^0.2.5",

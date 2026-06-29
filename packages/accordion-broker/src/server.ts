@@ -18,14 +18,90 @@
  *   - Upstream error:   WS close code 1011, browser WS closed
  */
 import * as http from "node:http";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import type { BrokerMeta, BrokerStore } from "./types.ts";
 import { PROTOCOL_VERSION } from "./types.ts";
 
-export type { BrokerStore };
+export interface BrokerServerOptions {
+	clientRoot?: string | null;
+}
+
+const MIME: Record<string, string> = {
+	".html": "text/html; charset=utf-8",
+	".js": "text/javascript",
+	".mjs": "text/javascript",
+	".css": "text/css",
+	".json": "application/json",
+	".png": "image/png",
+	".svg": "image/svg+xml",
+	".ico": "image/x-icon",
+	".woff2": "font/woff2",
+	".woff": "font/woff",
+	".txt": "text/plain",
+	".map": "application/json",
+};
+
+function resolveClientRoot(explicitRoot?: string | null): string | null {
+	const candidates = explicitRoot !== undefined
+		? [explicitRoot]
+		: [
+			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../vendor/accordion/app/build"),
+			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../vendor/accordion/extension/dist/client"),
+		];
+	for (const dir of candidates) {
+		if (!dir) continue;
+		try {
+			if (fs.statSync(dir).isDirectory()) return dir;
+		} catch {
+			// try next
+		}
+	}
+	return null;
+}
+
+function serveClient(req: http.IncomingMessage, res: http.ServerResponse, root: string): void {
+	const u = new URL(req.url ?? "/", "http://127.0.0.1");
+	let rel = decodeURIComponent(u.pathname);
+	if (rel === "/") rel = "/index.html";
+	let filePath = path.join(root, rel);
+	const rootResolved = path.resolve(root);
+	if (path.resolve(filePath) !== rootResolved && !path.resolve(filePath).startsWith(rootResolved + path.sep)) {
+		res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+		res.end("Forbidden");
+		return;
+	}
+	let exists = false;
+	try {
+		exists = fs.statSync(filePath).isFile();
+	} catch {
+		exists = false;
+	}
+	if (!exists) {
+		if (path.extname(rel) === "") {
+			filePath = path.join(root, "index.html");
+		} else {
+			res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+			res.end("Not found");
+			return;
+		}
+	}
+	let body: Buffer;
+	try {
+		body = fs.readFileSync(filePath);
+	} catch {
+		res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+		res.end("Not found");
+		return;
+	}
+	res.writeHead(200, { "Content-Type": MIME[path.extname(filePath).toLowerCase()] ?? "application/octet-stream" });
+	res.end(body);
+}
 
 /** Creates and returns the broker HTTP server. Caller is responsible for `.listen()`. */
-export function createBrokerServer(store: BrokerStore): http.Server {
+export function createBrokerServer(store: BrokerStore, options: BrokerServerOptions = {}): http.Server {
 	const wss = new WebSocketServer({ noServer: true });
 
 	const server = http.createServer((req, res) => {
@@ -47,6 +123,17 @@ export function createBrokerServer(store: BrokerStore): http.Server {
 			const sessions = store.getWatchedSessions();
 			res.writeHead(200, { "Content-Type": "application/json" });
 			res.end(JSON.stringify(sessions));
+			return;
+		}
+
+		if (req.method === "GET" || req.method === "HEAD") {
+			const root = resolveClientRoot(options.clientRoot);
+			if (!root) {
+				res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+				res.end("No browser build found. Run `npm run accordion:build` or `npm run setup:accordion`.");
+				return;
+			}
+			serveClient(req, res, root);
 			return;
 		}
 

@@ -23,6 +23,7 @@ export const WATCHED_SESSIONS_FILE = "watched-sessions.json";
 export const WATCH_REQUESTS_SUBDIR = "watch-requests";
 export const BROWSER_BROKER_FILE = "browser-broker.json";
 export const BROKER_HEARTBEAT_INTERVAL_MS = 5_000;
+export const WATCH_REQUEST_POLL_INTERVAL_MS = 500;
 
 // ── Wire shapes ───────────────────────────────────────────────────────────────
 
@@ -80,7 +81,7 @@ export interface BrokerStore {
 	 * Returns watched sessions that are currently live (non-stale heartbeat and
 	 * existing session file). Never includes sessions whose Pi process has exited.
 	 */
-	getWatchedSessions(): WatchedSession[];
+	getWatchedSessions(): SessionEntry[];
 	/**
 	 * Returns the current session entry if the session is alive (non-stale), or
 	 * null if the session file is missing, stale, or for a mismatched protocol.

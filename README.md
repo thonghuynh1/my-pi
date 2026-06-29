@@ -37,9 +37,27 @@ Then in Pi:
 /accordion
 ```
 
+### Global Accordion Dashboard
+
+The Global Accordion Dashboard lets you watch multiple Pi sessions in one browser tab, without the Tauri desktop app.
+
+Run `/accordion` in any Pi session to add it to the dashboard and focus its entry in the sidebar:
+
+```text
+/accordion = watch + focus current Pi session in the global browser dashboard
+```
+
+**Multiple sessions.** Every Pi session gets its own sidebar entry. Two sessions open in the same repo are still separate entries, not one. Session identity is the Pi session ID, not the working directory.
+
+**Browser refresh.** Refreshing the browser reconnects to all currently live watched sessions. Sessions that have already exited are not shown.
+
+**Quitting Pi.** When a Pi session exits, its sidebar entry is removed automatically.
+
+**MVP limitation.** Direct single-session Accordion links (opened outside the broker dashboard) remain independent. Opening a direct link for a session that is already watched in the broker dashboard can conflict with it, because Accordion supports only one active GUI client per session at a time.
+
 ### Accordion Browser Broker
 
-The **Accordion Browser Broker** (`packages/accordion-broker/`) is a singleton local HTTP/WebSocket service that exposes the session registry to a plain browser dashboard. Run it manually for debugging or development:
+The Accordion Browser Broker (`packages/accordion-broker/`) is a singleton local HTTP/WebSocket service that backs the Global Accordion Dashboard. Run it manually for debugging or development:
 
 ```bash
 npm run accordion:broker

@@ -155,7 +155,8 @@ describe("detectBrokerMode — malformed or mismatched → error (no app crash)"
 			json: async () => { throw new SyntaxError("Unexpected token"); },
 		} as unknown as Response);
 
-		// Must not throw; must still return a typed result.
-		await expect(detectBrokerMode(PROTOCOL_VERSION)).resolves.toBeDefined();
+		// Must not throw; json() failure falls through to the network-error catch.
+		const result = await detectBrokerMode(PROTOCOL_VERSION);
+		expect(result.kind).toBe("direct");
 	});
 });

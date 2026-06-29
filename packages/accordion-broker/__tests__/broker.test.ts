@@ -160,14 +160,14 @@ function createClientBuild(): string {
 // ── GET /__accordion/broker-meta ──────────────────────────────────────────────
 
 describe("GET /__accordion/broker-meta", () => {
-	it("returns mode 'broker' and protocolVersion 5", async () => {
+	it("returns mode 'broker' and the current protocolVersion", async () => {
 		const broker = await startBroker(memoryStore({}));
 		cleanupTasks.push(broker.close);
 
 		const meta = await getJson(`http://127.0.0.1:${broker.port}/__accordion/broker-meta`) as Record<string, unknown>;
 
 		expect(meta.mode).toBe("broker");
-		expect(meta.protocolVersion).toBe(5);
+		expect(meta.protocolVersion).toBe(PROTOCOL_VERSION);
 	});
 
 	it("includes empty apiBase and wsBase", async () => {
@@ -288,9 +288,6 @@ describe("WS /ws/session/<sessionId>", () => {
 		cleanupTasks.push(() => closeWs(browserWs));
 		await waitForEvent(browserWs, "open");
 
-		// Small pause to let broker finish its upstream upgrade handshake.
-		await new Promise((r) => setTimeout(r, 50));
-
 		browserWs.send("hello from browser");
 		const received = await upstreamReceived;
 
@@ -335,16 +332,22 @@ describe("WS /ws/session/<sessionId>", () => {
 		);
 		cleanupTasks.push(broker.close);
 
-		const upstreamReceived = new Promise<Buffer>((resolve) => {
+		let upstreamServerWs: WebSocket | undefined;
+		const upstreamConnected = new Promise<void>((resolve) => {
 			upstream.wss.on("connection", (ws) => {
-				ws.on("message", (data) => resolve(data as Buffer));
+				upstreamServerWs = ws;
+				resolve();
 			});
 		});
 
 		const browserWs = new WebSocket(`ws://127.0.0.1:${broker.port}/ws/session/s3`);
 		cleanupTasks.push(() => closeWs(browserWs));
 		await waitForEvent(browserWs, "open");
-		await new Promise((r) => setTimeout(r, 50));
+		await upstreamConnected;
+
+		const upstreamReceived = new Promise<Buffer>((resolve) => {
+			upstreamServerWs!.on("message", (data) => resolve(data as Buffer));
+		});
 
 		const payload = Buffer.from([0xde, 0xad, 0xbe, 0xef]);
 		browserWs.send(payload);

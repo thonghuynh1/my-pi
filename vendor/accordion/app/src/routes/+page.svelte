@@ -30,9 +30,8 @@
 	let browserServed = $state(false);
 	let servedSessionId = $state<string | null>(null);
 	let brokerMode = $state<"broker" | "direct" | null>(null);
-	let brokerModeError = $state<string | null>(null);
 	let brokerMeta = $state<BrokerMeta | null>(null);
-	let brokerPollTimer = $state<ReturnType<typeof setInterval> | null>(null);
+	let brokerPollTimer: ReturnType<typeof setInterval> | null = null;
 
 	// Which session source the sidebar lists: live pi vs read-only Claude Code.
 	const SRC_KEY = "accordion.sidebar.source";
@@ -269,7 +268,6 @@
 					void pollBrokerSessions();
 					brokerPollTimer = setInterval(() => void pollBrokerSessions(), 2_000);
 				} else if (detected.kind === "error") {
-					brokerModeError = detected.detail;
 					brokerMode = "direct";
 					console.warn("[accordion] broker-mode detection error:", detected.detail);
 				} else {

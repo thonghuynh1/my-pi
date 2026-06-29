@@ -49,7 +49,7 @@ export function brokerSessionEntries(): SessionEntry[] {
 		cwd: slot.store.meta.cwd || slot.entry.cwd,
 		title: slot.store.meta.title || slot.entry.title || slot.sessionId,
 		model: slot.store.meta.model || slot.entry.model,
-		tokens: null,
+		tokens: slot.entry.tokens,
 		contextWindow: slot.store.contextWindow,
 		startedAt: slot.entry.startedAt,
 		heartbeatAt: slot.entry.heartbeatAt,
@@ -97,7 +97,7 @@ async function pollBrokerSessions(): Promise<void> {
 
 /**
  * Detect broker mode and start polling if the broker is serving this page.
- * Returns a cleanup function for onMount's return.
+ * Call stopBroker() for cleanup.
  */
 export async function startBrokerDetection(): Promise<void> {
 	const detected = await detectBrokerMode(PROTOCOL_VERSION);
@@ -105,6 +105,7 @@ export async function startBrokerDetection(): Promise<void> {
 		broker.mode = "broker";
 		broker.meta = detected.meta;
 		void pollBrokerSessions();
+		if (pollTimer !== null) clearInterval(pollTimer);
 		pollTimer = setInterval(() => void pollBrokerSessions(), 2_000);
 	} else if (detected.kind === "error") {
 		broker.mode = "direct";
@@ -126,9 +127,9 @@ export function stopBroker(): void {
 }
 
 /**
- * Handle a focus request in broker mode. Returns true if handled (broker mode
- * and session exists), false otherwise so the caller can fall through to
- * direct-mode logic.
+ * Handle a focus request in broker mode. Returns true if broker mode is active
+ * (regardless of whether the session was found), false otherwise so the caller
+ * can fall through to direct-mode logic.
  */
 export function handleBrokerFocus(sessionId: string): boolean {
 	if (broker.mode !== "broker") return false;

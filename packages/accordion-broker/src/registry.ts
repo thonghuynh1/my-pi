@@ -205,10 +205,11 @@ export function consumeWatchRequests(): number {
 	// Single read + single write instead of O(N) per addWatchedSession.
 	const existing = readWatchedSessions();
 	const existingIds = new Set(existing.map((s) => s.sessionId));
+	const newIdSet = new Set(newIds);
 	const now = Date.now();
 	let updated = false;
 	const result = existing.map((s) => {
-		if (newIds.includes(s.sessionId)) {
+		if (newIdSet.has(s.sessionId)) {
 			updated = true;
 			return { ...s, lastSeenAt: now };
 		}

@@ -9,6 +9,7 @@
  * injected in-memory store.
  */
 import * as http from "node:http";
+import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBrokerServer } from "./server.ts";
 import {
@@ -78,7 +79,7 @@ export async function startBroker(): Promise<BrokerHandle> {
 
 // Run when invoked directly: node --import tsx/esm src/index.ts
 const __filename = fileURLToPath(import.meta.url);
-if (process.argv[1] === __filename || process.argv[1]?.replace(/\.[jt]s$/, "") === __filename.replace(/\.[jt]s$/, "")) {
+if (process.argv[1] && path.resolve(process.argv[1]).replace(/\.[cm]?[jt]s$/, "") === path.resolve(__filename).replace(/\.[cm]?[jt]s$/, "")) {
 	startBroker().then(({ port }) => {
 		console.log(`Accordion Browser Broker running at http://127.0.0.1:${port}`);
 		console.log(`Dashboard: http://127.0.0.1:${port}/`);

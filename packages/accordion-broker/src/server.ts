@@ -8,8 +8,10 @@
  *                                    Accordion extension server
  *
  * The server is stateless with respect to Accordion fold plans. It forwards
- * WebSocket frames bidirectionally without inspecting or buffering them, keeping
- * latency well inside the extension's 250 ms plan-reply deadline.
+ * WebSocket frames bidirectionally without inspecting them. Browser messages
+ * arriving before the upstream connection is ready are buffered and flushed
+ * on open, keeping latency well inside the extension's 250 ms plan-reply
+ * deadline.
  *
  * Rejection behavior (status/close) for bad sessions:
  *   - Unknown path:     HTTP 404 response, socket destroyed

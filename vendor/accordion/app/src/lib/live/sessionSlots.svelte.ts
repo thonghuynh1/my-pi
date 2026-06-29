@@ -30,6 +30,15 @@ import {
 import type { CompletionRequest, CompletionResult } from "$conductors/contract";
 import type { Ghost } from "./ghostState.svelte";
 
+/** Send a JSON message over a WebSocket, swallowing errors if the socket is gone. */
+function trySend(ws: WebSocket, msg: unknown): void {
+	try {
+		ws.send(JSON.stringify(msg));
+	} catch {
+		/* socket gone */
+	}
+}
+
 /** Lifecycle status of one slot's proxied WebSocket connection. */
 export type SlotStatus = "connecting" | "live" | "stale" | "disconnected" | "error";
 
@@ -377,11 +386,7 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 				ops: plan.ops,
 				groups: plan.groups,
 			};
-			try {
-				ws.send(JSON.stringify(reply));
-			} catch {
-				/* socket gone — extension will time out and pass through */
-			}
+			trySend(ws, reply);
 		} else if (msg.type === "unfoldRequest") {
 			const codes = Array.isArray(msg.codes) ? msg.codes : [];
 			const { restored, missing } = slot.folding.enabled
@@ -393,11 +398,7 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 				restored,
 				missing,
 			};
-			try {
-				ws.send(JSON.stringify(reply));
-			} catch {
-				/* socket gone — agent tool will time out and retry */
-			}
+			trySend(ws, reply);
 		} else if (msg.type === "recallRequest") {
 			const codes = Array.isArray(msg.codes) ? msg.codes : [];
 			const { restored, missing } = resolveRecall(slot.store, codes);
@@ -407,11 +408,7 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 				restored,
 				missing,
 			};
-			try {
-				ws.send(JSON.stringify(reply));
-			} catch {
-				/* socket gone */
-			}
+			trySend(ws, reply);
 		} else if (msg.type === "completeResult") {
 			if (typeof msg.reqId !== "number") return;
 			const p = pending.get(msg.reqId);

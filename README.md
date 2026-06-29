@@ -37,6 +37,18 @@ Then in Pi:
 /accordion
 ```
 
+### Accordion Browser Broker
+
+The **Accordion Browser Broker** (`packages/accordion-broker/`) is a singleton local HTTP/WebSocket service that exposes the session registry to a plain browser dashboard. Run it manually for debugging or development:
+
+```bash
+npm run accordion:broker
+```
+
+This starts the broker on a loopback port, prints the dashboard URL, and writes `~/.accordion/browser-broker.json`. The broker stays alive until you press `Ctrl+C`.
+
+In normal use, `/accordion` starts the broker automatically, adds the current Pi session to the watched list, and opens the dashboard in your browser.
+
 ### Custom conductor overlay
 
 This repo ships a custom conductor (`MCP-preserving GC`) that garbage-collects old context but never folds MCP tool results. It lives in `overlays/accordion/` and is injected into the vendor submodule at install time.

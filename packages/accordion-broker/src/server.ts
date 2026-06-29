@@ -181,26 +181,37 @@ export function createBrokerServer(store: BrokerStore, options: BrokerServerOpti
 function proxySession(browserWs: WebSocket, upstreamPort: number): void {
 	const upstream = new WebSocket(`ws://127.0.0.1:${upstreamPort}`);
 
+	// Buffer browser messages arriving before upstream is open.
+	const earlyMessages: { data: WebSocket.RawData; isBinary: boolean }[] = [];
+	let upstreamReady = false;
+
 	function closeBoth(): void {
 		if (upstream.readyState < WebSocket.CLOSING) upstream.close();
 		if (browserWs.readyState < WebSocket.CLOSING) browserWs.close();
 	}
 
-	upstream.on("open", () => {
-		browserWs.on("message", (data, isBinary) => {
-			if (upstream.readyState === WebSocket.OPEN) {
-				upstream.send(data, { binary: isBinary });
-			}
-		});
-
-		upstream.on("message", (data, isBinary) => {
-			if (browserWs.readyState === WebSocket.OPEN) {
-				browserWs.send(data, { binary: isBinary });
-			}
-		});
+	// Register browser→upstream relay immediately so no messages are lost.
+	browserWs.on("message", (data, isBinary) => {
+		if (upstreamReady && upstream.readyState === WebSocket.OPEN) {
+			upstream.send(data, { binary: isBinary });
+		} else {
+			earlyMessages.push({ data, isBinary });
+		}
 	});
 
-	// Either side closing or erroring closes both.
+	upstream.on("open", () => {
+		upstreamReady = true;
+		for (const { data, isBinary } of earlyMessages.splice(0)) {
+			upstream.send(data, { binary: isBinary });
+		}
+	});
+
+	upstream.on("message", (data, isBinary) => {
+		if (browserWs.readyState === WebSocket.OPEN) {
+			browserWs.send(data, { binary: isBinary });
+		}
+	});
+
 	upstream.on("close", closeBoth);
 	upstream.on("error", closeBoth);
 	browserWs.on("close", closeBoth);

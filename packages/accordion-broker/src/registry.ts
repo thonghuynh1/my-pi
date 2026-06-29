@@ -52,7 +52,21 @@ export function readSessionEntry(sessionId: string, now: number): SessionEntry |
 	if (typeof raw["heartbeatAt"] !== "number") return null;
 	if (now - (raw["heartbeatAt"] as number) > STALE_AFTER_MS) return null;
 	if (typeof raw["sessionId"] !== "string") return null;
-	return raw as unknown as SessionEntry;
+	// Fill all SessionEntry fields with safe defaults for any missing optional metadata.
+	return {
+		registryProtocol: raw["registryProtocol"] as number,
+		protocolVersion: typeof raw["protocolVersion"] === "number" ? raw["protocolVersion"] as number : 0,
+		sessionId: raw["sessionId"] as string,
+		port: raw["port"] as number,
+		pid: typeof raw["pid"] === "number" ? raw["pid"] as number : 0,
+		cwd: typeof raw["cwd"] === "string" ? raw["cwd"] as string : "",
+		title: typeof raw["title"] === "string" ? raw["title"] as string : "",
+		model: typeof raw["model"] === "string" ? raw["model"] as string : "",
+		tokens: typeof raw["tokens"] === "number" ? raw["tokens"] as number : null,
+		contextWindow: typeof raw["contextWindow"] === "number" ? raw["contextWindow"] as number : null,
+		startedAt: typeof raw["startedAt"] === "number" ? raw["startedAt"] as number : 0,
+		heartbeatAt: raw["heartbeatAt"] as number,
+	};
 }
 
 /** Returns the raw watched-session list (does not filter by liveness). */

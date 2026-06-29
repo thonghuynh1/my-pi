@@ -55,11 +55,11 @@ export async function startBroker(): Promise<BrokerHandle> {
 
 	consumeWatchRequests();
 	const heartbeat = setInterval(() => {
-		refreshBrokerHeartbeat(port);
-		pruneWatchedSessions();
+		try { refreshBrokerHeartbeat(port); } catch { /* disk error — retry next tick */ }
+		try { pruneWatchedSessions(); } catch { /* best-effort */ }
 	}, BROKER_HEARTBEAT_INTERVAL_MS);
 	const watchRequests = setInterval(() => {
-		consumeWatchRequests();
+		try { consumeWatchRequests(); } catch { /* best-effort */ }
 	}, WATCH_REQUEST_POLL_INTERVAL_MS);
 
 	function stop(): Promise<void> {

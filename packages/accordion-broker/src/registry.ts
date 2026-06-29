@@ -173,13 +173,15 @@ export function addWatchedSession(sessionId: string): void {
 /** Consumes pending watch request files and returns the number accepted. */
 export function consumeWatchRequests(): number {
 	ensureRegistryDirs();
-	let consumed = 0;
 	let names: string[] = [];
 	try {
 		names = fs.readdirSync(watchRequestsDir);
 	} catch {
 		return 0;
 	}
+
+	// Collect valid session IDs from request files, then batch the watched-sessions write.
+	const newIds: string[] = [];
 	for (const name of names) {
 		if (!name.endsWith(".json")) continue;
 		const filePath = path.join(watchRequestsDir, name);
@@ -189,8 +191,7 @@ export function consumeWatchRequests(): number {
 			typeof raw === "object" &&
 			typeof (raw as Record<string, unknown>)["sessionId"] === "string"
 		) {
-			addWatchedSession((raw as Record<string, string>)["sessionId"]);
-			consumed++;
+			newIds.push((raw as Record<string, string>)["sessionId"]);
 		}
 		try {
 			fs.unlinkSync(filePath);
@@ -198,7 +199,29 @@ export function consumeWatchRequests(): number {
 			// best-effort
 		}
 	}
-	return consumed;
+
+	if (newIds.length === 0) return 0;
+
+	// Single read + single write instead of O(N) per addWatchedSession.
+	const existing = readWatchedSessions();
+	const existingIds = new Set(existing.map((s) => s.sessionId));
+	const now = Date.now();
+	let updated = false;
+	const result = existing.map((s) => {
+		if (newIds.includes(s.sessionId)) {
+			updated = true;
+			return { ...s, lastSeenAt: now };
+		}
+		return s;
+	});
+	for (const id of newIds) {
+		if (!existingIds.has(id)) {
+			result.push({ sessionId: id, addedAt: now, lastSeenAt: now });
+			updated = true;
+		}
+	}
+	if (updated) atomicWrite(watchedSessionsPath, result);
+	return newIds.length;
 }
 
 /**

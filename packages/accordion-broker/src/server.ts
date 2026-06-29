@@ -103,6 +103,7 @@ function serveClient(req: http.IncomingMessage, res: http.ServerResponse, root: 
 /** Creates and returns the broker HTTP server. Caller is responsible for `.listen()`. */
 export function createBrokerServer(store: BrokerStore, options: BrokerServerOptions = {}): http.Server {
 	const wss = new WebSocketServer({ noServer: true });
+	const clientRoot = resolveClientRoot(options.clientRoot);
 
 	const server = http.createServer((req, res) => {
 		const url = req.url ?? "/";
@@ -127,13 +128,12 @@ export function createBrokerServer(store: BrokerStore, options: BrokerServerOpti
 		}
 
 		if (req.method === "GET" || req.method === "HEAD") {
-			const root = resolveClientRoot(options.clientRoot);
-			if (!root) {
+			if (!clientRoot) {
 				res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
 				res.end("No browser build found. Run `npm run accordion:build` or `npm run setup:accordion`.");
 				return;
 			}
-			serveClient(req, res, root);
+			serveClient(req, res, clientRoot);
 			return;
 		}
 

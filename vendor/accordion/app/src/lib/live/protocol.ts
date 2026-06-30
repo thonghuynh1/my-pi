@@ -133,6 +133,27 @@ export interface SyncMessage {
 	full: boolean;
 	blocks: WireBlock[];
 	contextWindow?: number | null;
+	/**
+	 * Slice 0 diagnostic: pi-side counters for attributing the harness overhead
+	 * (the gap between pi's full request size and Accordion's conversation slice).
+	 * `totalTokens` matches pi's reported usage — system prompt + tool schemas +
+	 * framing + the conversation Accordion holds. `systemPromptTokens` is a
+	 * chars/4 estimate of the active system prompt. Absent from old extensions
+	 * and from any frame predating the first context refresh.
+	 */
+	harness?: {
+		totalTokens: number | null;
+		systemPromptTokens: number | null;
+		// Slice 0c — actual provider-payload sizes (chars/4 of JSON.stringify per
+		// top-level field). Lets the GUI name buckets inside the harness without an
+		// arm step, and surfaces the wire-vs-reported gap so cache-accounting
+		// phantoms in `totalTokens` are distinguishable from real hidden bytes.
+		// All four optional — absent until the first provider request fires.
+		actualWireTokens?: number | null;
+		messagesTokens?: number | null;
+		toolsTokens?: number | null;
+		systemPayloadTokens?: number | null;
+	};
 }
 
 /**

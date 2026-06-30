@@ -86,6 +86,35 @@
 				<div class="big">{formatTokens(health?.assembledTokens)} / {formatTokens(health?.budgetTokens)}</div>
 				<div class="sub">{health?.pressure ?? "normal"} · {withinBudget ? "within budget" : "over budget"}</div>
 			</div>
+			<!-- Slice 0c diagnostic: same harness breakdown as the map header, surfaced
+			     on the dashboard so operators have it next to the rest of the diagnostics.
+			     Only renders once the live extension has reported a harness frame. -->
+			{#if store.harnessBreakdown}
+				{@const hb = store.harnessBreakdown}
+				{@const total = hb.totalTokens}
+				{#if total !== null}
+					{@const wire = hb.actualWireTokens ?? null}
+					{@const sysWire = hb.systemPayloadTokens ?? hb.systemPromptTokens ?? null}
+					{@const toolsWire = hb.toolsTokens ?? null}
+					{@const msgsWire = hb.messagesTokens ?? null}
+					{@const framing = msgsWire !== null ? Math.max(0, msgsWire - store.liveTokens) : null}
+					{@const wireHarness = wire !== null ? wire - store.liveTokens : (total - store.liveTokens)}
+					<div class="summary-card">
+						<div class="card-label">harness</div>
+						<div class="big">{formatTokens(wireHarness)}</div>
+						<div class="sub">
+							pi {formatTokens(total)}
+							{#if wire !== null}· wire {formatTokens(wire)}{/if}
+						</div>
+						{#if sysWire !== null && toolsWire !== null && msgsWire !== null && framing !== null}
+							<div class="sub">sys {formatTokens(sysWire)} · tools {formatTokens(toolsWire)} · messages {formatTokens(msgsWire)}</div>
+							<div class="sub">messages = {formatTokens(store.liveTokens)} live + {formatTokens(framing)} framing</div>
+						{:else if hb.systemPromptTokens !== null}
+							<div class="sub">sys {formatTokens(hb.systemPromptTokens)} (wire detail pending)</div>
+						{/if}
+					</div>
+				{/if}
+			{/if}
 			<div class="summary-card">
 				<div class="card-label">fold target</div>
 				<div class="big">

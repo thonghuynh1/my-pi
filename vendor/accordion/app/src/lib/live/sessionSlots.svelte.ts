@@ -377,6 +377,10 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 				}
 			}
 			slot.store.appendBlocks(msg.blocks.map(wireToBlock));
+			// Slice 0c: broker sync handler must also route the harness frame into
+			// the slot store, otherwise the map header / dashboard show the breakdown
+			// in direct mode but not in broker mode — the wire carries it either way.
+			if (msg.harness && typeof msg.harness === "object") slot.store.setHarnessBreakdown(msg.harness);
 			const plan: { ops: FoldOp[]; groups: GroupOp[] } = slot.folding.enabled
 				? { ops: computeFoldOps(slot.store), groups: computeGroupOps(slot.store) }
 				: { ops: [], groups: [] };

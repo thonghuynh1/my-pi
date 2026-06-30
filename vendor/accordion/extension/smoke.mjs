@@ -74,6 +74,9 @@ const ctx = {
 	// `getModel()` method; `getContextUsage()` is the method.
 	model: { id: "test/model", contextWindow: 1000 },
 	getContextUsage: () => ({ tokens: 42, contextWindow: 1000 }),
+	// Slice 0 diagnostic: the harness reports the active system prompt so the GUI
+	// can attribute the overhead between system prompt and tool schemas + framing.
+	getSystemPrompt: () => "system prompt: pretend this is the agent persona plus rules",
 };
 handlers.session_start({}, ctx);
 
@@ -216,6 +219,7 @@ await new Promise((resolve, reject) => {
 		} else if (m.type === "sync") {
 			seen.contextSync = true;
 			seen.contextBlocks = m.blocks.length;
+			seen.contextHarness = m.harness;
 			// Use durable id (a:<responseId>:p0) — exercises the Phase-1 id path
 			// Also send a GROUP op (ADR 0006) collapsing m0 (user, durable u:<T0>) into one
 			// summary entry — exercises range-collapse end to end.
@@ -968,6 +972,17 @@ if (!seen.hello) fails.push("never received hello");
 if (!seen.flushOnAttach) fails.push("GUI received no history flush on attach (would stay empty until first message — the bug)");
 if (seen.flushBlocks < 4) fails.push(`attach flush carried too few blocks: got ${seen.flushBlocks}, expected >=4`);
 if (!seen.contextSync) fails.push("never received the post-flush context sync");
+// Slice 0 diagnostic: every sync must carry the harness frame once ctx has been
+// observed (totalTokens from getContextUsage, systemPromptTokens estimated as
+// chars/4 of getSystemPrompt). Both numbers known here: 42 and ceil(57/4)=15.
+if (!seen.contextHarness || typeof seen.contextHarness !== "object") {
+	fails.push("context sync missing the slice-0 harness frame");
+} else {
+	if (seen.contextHarness.totalTokens !== 42) fails.push(`harness.totalTokens not piped (${seen.contextHarness.totalTokens})`);
+	if (typeof seen.contextHarness.systemPromptTokens !== "number" || seen.contextHarness.systemPromptTokens <= 0) {
+		fails.push(`harness.systemPromptTokens not estimated (${seen.contextHarness.systemPromptTokens})`);
+	}
+}
 // Note: the post-flush context sync legitimately carries 0 delta blocks — the attach
 // flush already delivered the whole history, so there is nothing fresh to re-send.
 if (!contextReturn || !contextReturn.messages) fails.push("context hook did not return replacement messages");

@@ -284,7 +284,24 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 				if (!budgetLive || (prev !== null && prev !== cw)) {
 					session.store.setBudget(cw);
 					budgetLive = true;
-				}
+				}			}
+			// overlay: slice 0 — the extension reports pi's total request size and the
+			// system-prompt size on every sync. Stored only; no budget/conductor effect.
+			// The GUI/dev tools subtract `liveTokens` to display harness overhead and
+			// attribute it to system prompt vs everything else (tool schemas + framing).
+			if (msg.harness && typeof msg.harness === "object") {
+				session.store.setHarnessBreakdown(msg.harness);
+				// Slice 0 debug: print the breakdown each turn so the user can read it
+				// in DevTools without knowing any Svelte state path. Remove once a real
+				// UI gauge exists.
+				const live = session.store.liveTokens;
+				const total = msg.harness.totalTokens;
+				const sys = msg.harness.systemPromptTokens;
+				const overhead = total !== null ? total - live : null;
+				const other = overhead !== null && sys !== null ? overhead - sys : null;
+				console.log("[accordion harness]", { total, live, overhead, systemPrompt: sys, other });
+				// Also expose the store globally for ad-hoc inspection.
+				(globalThis as { __accordion?: unknown }).__accordion = session.store;
 			}
 			// Committed blocks arrive HERE (the appendBlocks path), NEVER from ghost state.
 			// Invariant: a ghost is only removed, never converted to a block.

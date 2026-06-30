@@ -47,6 +47,103 @@ function stripAnsi(text: string): string {
 	return text.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, "");
 }
 
+interface DotnetFailure {
+	testName: string;
+	errorLines: string[];
+	stackLine?: string;
+}
+
+function isDotnetFailureHeader(line: string): boolean {
+	return /^\s*Failed\s+.+\s+\[[^\]]+\]\s*$/.test(line);
+}
+
+function extractDotnetFailures(lines: string[]): DotnetFailure[] {
+	const failures: DotnetFailure[] = [];
+	const seen = new Set<string>();
+
+	for (let i = 0; i < lines.length; i++) {
+		const match = lines[i]?.match(/^\s*Failed\s+(.+?)\s+\[[^\]]+\]\s*$/);
+		if (!match) continue;
+
+		const testName = match[1]!.trim();
+		if (/:\s*warning\s+[A-Z]+\d+/i.test(testName)) continue;
+		const errorLines: string[] = [];
+		let stackLine: string | undefined;
+		let inErrorMessage = false;
+		let j = i + 1;
+
+		for (; j < lines.length; j++) {
+			const line = lines[j] ?? "";
+			if (isDotnetFailureHeader(line)) break;
+			if (/^\s*Error Message:\s*$/.test(line)) {
+				inErrorMessage = true;
+				continue;
+			}
+			if (/^\s*Stack Trace:\s*$/.test(line)) {
+				for (let k = j + 1; k < lines.length; k++) {
+					const stackCandidate = lines[k] ?? "";
+					if (isDotnetFailureHeader(stackCandidate)) break;
+					if (stackCandidate.trim().length === 0) continue;
+					stackLine = stackCandidate.trim();
+					break;
+				}
+				break;
+			}
+			if (inErrorMessage) {
+				const trimmed = line.trim();
+				if (trimmed.length > 0) errorLines.push(trimmed);
+			}
+		}
+
+		const failure: DotnetFailure = {
+			testName,
+			errorLines: errorLines.slice(0, 4),
+			stackLine,
+		};
+		const dedupeKey = JSON.stringify(failure);
+		if (!seen.has(dedupeKey)) {
+			seen.add(dedupeKey);
+			failures.push(failure);
+		}
+		i = j - 1;
+	}
+
+	return failures;
+}
+
+function formatDotnetFailures(lines: string[], tailLines: number): string | null {
+	const failures = extractDotnetFailures(lines);
+	if (failures.length === 0) return null;
+
+	const maxFailures = tailLines <= 20 ? 1 : tailLines <= 60 ? 3 : 5;
+	const shownFailures = failures.slice(0, maxFailures);
+	const blocks = shownFailures.map((failure, index) => {
+		const blockLines = [`${index + 1}. ${failure.testName}`];
+		for (const errorLine of failure.errorLines) {
+			blockLines.push(`   ${errorLine}`);
+		}
+		if (failure.stackLine) {
+			blockLines.push(`   ${failure.stackLine}`);
+		}
+		return blockLines.join("\n");
+	});
+
+	const remaining = failures.length - shownFailures.length;
+	const suffix = remaining > 0 ? `\n\n... ${remaining} more failed test(s).` : "";
+	return `${failures.length} failed test(s):\n\n${blocks.join("\n\n")}${suffix}`;
+}
+
+function formatFailureOutput(command: string, fullOutput: string, tailLines: number): string {
+	const outputLines = fullOutput.trim().split("\n");
+	const looksLikeDotnet = /\bdotnet\s+test\b/i.test(command) || outputLines.some((line) => /Test run for .*\.dll/i.test(line));
+	if (looksLikeDotnet) {
+		const formatted = formatDotnetFailures(outputLines, tailLines);
+		if (formatted) return formatted;
+	}
+
+	return outputLines.slice(-tailLines).join("\n");
+}
+
 function detectTestCommand(cwd: string): string | null {
 	const pkgPath = join(cwd, "package.json");
 	if (existsSync(pkgPath)) {
@@ -168,13 +265,13 @@ export default function runTestsExtension(pi: ExtensionAPI) {
 					};
 				}
 
-				const tail = outputLines.slice(-tailLines).join("\n");
+				const failureOutput = formatFailureOutput(command, fullOutput, tailLines);
 				writeLog({ ts: new Date().toISOString(), project, command, result: "fail", durationMs: Date.now() - startTime, exitCode: result.code, summary: outputLines.slice(-3).join(" | ") });
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `❌ Tests failed (exit ${result.code}, ${elapsed}s):\n\n${tail}`,
+							text: `❌ Tests failed (exit ${result.code}, ${elapsed}s):\n\n${failureOutput}`,
 						},
 					],
 					details: undefined,

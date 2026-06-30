@@ -114,6 +114,23 @@ export class AccordionStore {
 	/** Model's total context window, as reported by pi (null until known). */
 	contextWindow = $state<number | null>(null);
 	/**
+	 * Slice 0 diagnostic: harness overhead reported by the live link. `totalTokens`
+	 * is pi's full request size (system prompt + tool schemas + framing + the
+	 * conversation Accordion holds). `systemPromptTokens` is a chars/4 estimate of
+	 * the active system prompt. Derived: `harnessOverhead = totalTokens - liveTokens`,
+	 * `otherOverhead = harnessOverhead - systemPromptTokens` (≈ tool schemas + framing).
+	 * Null in non-live mode and until the first sync carries it. Read-only for the
+	 * conductor (slice 0 changes no budget semantics).
+	 */
+	harnessBreakdown = $state<{
+		totalTokens: number | null;
+		systemPromptTokens: number | null;
+		actualWireTokens?: number | null;
+		messagesTokens?: number | null;
+		toolsTokens?: number | null;
+		systemPayloadTokens?: number | null;
+	} | null>(null);
+	/**
 	 * The protected working tail: the most recent blocks up to this token target are
 	 * NEVER auto-folded, with a strict 25% whole-block overflow cap so a huge boundary
 	 * block cannot silently double the protected region. When target > 0, the newest block
@@ -1098,6 +1115,17 @@ export class AccordionStore {
 
 	setContextWindow(n: number): void {
 		this.contextWindow = n;
+	}
+
+	setHarnessBreakdown(h: {
+		totalTokens: number | null;
+		systemPromptTokens: number | null;
+		actualWireTokens?: number | null;
+		messagesTokens?: number | null;
+		toolsTokens?: number | null;
+		systemPayloadTokens?: number | null;
+	} | null): void {
+		this.harnessBreakdown = h;
 	}
 
 	/**

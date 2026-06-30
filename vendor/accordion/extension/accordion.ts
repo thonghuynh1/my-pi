@@ -40,6 +40,11 @@ import { spawn } from "node:child_process";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+// overlay: slice 0 — the `/tools-audit` command lives in its own file so the
+// upstream-merge surface stays exactly one block in this file (the command
+// registration below).
+import { runToolsAudit } from "./tools-audit";
+import * as payloadAudit from "./payload-audit";
 
 import { linearize, applyPlan, type PiMessage } from "../app/src/lib/live/mapping";
 import { DEFAULT_PORT, PROTOCOL_VERSION, type FoldOp, type GroupOp, type ServerMessage, type StreamMessage, type UnfoldRequestMessage, type UnfoldResultMessage, type RecallRequestMessage, type RecallContent, type CompleteRequestMessage, type CompleteResultMessage } from "../app/src/lib/live/protocol";
@@ -353,6 +358,10 @@ export default function accordionLive(pi: ExtensionAPI): void {
 	let startedAt = 0;
 	let model = "";
 	let tokens: number | null = null;
+	// overlay: slice 0 diagnostic — system prompt size (token estimate) captured at
+	// every context refresh so the GUI can attribute the "harness" overhead (the gap
+	// between pi's reported total usage and Accordion's conversation slice).
+	let systemPromptTokens: number | null = null;
 	let contextWindow: number | null = null;
 	let heartbeat: ReturnType<typeof setInterval> | null = null;
 
@@ -511,9 +520,49 @@ export default function accordionLive(pi: ExtensionAPI): void {
 					meta.contextWindow = u.contextWindow;
 				}
 			}
+			// overlay: slice 0 — sample the active system prompt so the GUI can show
+			// what fraction of the harness overhead is system-prompt text vs tool
+			// schemas + framing. chars/4 is a cheap, model-agnostic estimate; honest
+			// enough for a diagnostic, no tokenizer required.
+			const sysPrompt = ctx.getSystemPrompt?.();
+			if (typeof sysPrompt === "string") {
+				systemPromptTokens = Math.ceil(sysPrompt.length / 4);
+			}
 		} catch {
 			/* optional APIs */
 		}
+	}
+
+	/**
+	 * Slice 0 diagnostic payload attached to every `sync` frame. The GUI subtracts
+	 * the sum of conversation block tokens it just received from `totalTokens` to
+	 * derive `harnessOverhead = system prompt + tool schemas + framing`. Reporting
+	 * `systemPromptTokens` separately lets the GUI further attribute the overhead.
+	 * Returns undefined when no measurements have been seen yet (first connect).
+	 *
+	 * The wire-side fields come from payload-audit's always-on hook: they reflect
+	 * what's actually serialized into the provider request body, which lets the
+	 * GUI distinguish real wire bytes from cache-accounting phantoms inside
+	 * `getContextUsage().tokens`.
+	 */
+	function harnessFrame(): {
+		totalTokens: number | null;
+		systemPromptTokens: number | null;
+		actualWireTokens: number | null;
+		messagesTokens: number | null;
+		toolsTokens: number | null;
+		systemPayloadTokens: number | null;
+	} | undefined {
+		const wire = payloadAudit.getLatestSizes();
+		if (tokens === null && systemPromptTokens === null && wire === null) return undefined;
+		return {
+			totalTokens: tokens,
+			systemPromptTokens,
+			actualWireTokens: wire?.actualWireTokens ?? null,
+			messagesTokens: wire?.messagesTokens ?? null,
+			toolsTokens: wire?.toolsTokens ?? null,
+			systemPayloadTokens: wire?.systemPayloadTokens ?? null,
+		};
 	}
 
 	// ── static file serving for the browser build ──────────────────────────────
@@ -726,7 +775,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			// agent_end/message_end paths) we do NOT await or apply a plan here.
 			const backlog = linearize(lastMessages);
 			if (backlog.length) {
-				send(ws, { type: "sync", reqId: ++reqSeq, full: true, blocks: backlog, contextWindow });
+				send(ws, { type: "sync", reqId: ++reqSeq, full: true, blocks: backlog, contextWindow, harness: harnessFrame() });
 				sentCount = backlog.length; // cursor now matches what the GUI holds
 			}
 			ws.on("message", (data: Buffer) => {
@@ -868,7 +917,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 				clearTimeout(timer);
 				resolve(plan);
 			});
-			send(ws, { type: "sync", reqId, full, blocks, contextWindow });
+			send(ws, { type: "sync", reqId, full, blocks, contextWindow, harness: harnessFrame() });
 		});
 	}
 
@@ -1025,7 +1074,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		applyModel(event?.model as { id?: string; contextWindow?: number } | undefined);
 		const ws = client;
 		if (ws && ws.readyState === 1) {
-			send(ws, { type: "sync", reqId: ++reqSeq, full: false, blocks: [], contextWindow });
+			send(ws, { type: "sync", reqId: ++reqSeq, full: false, blocks: [], contextWindow, harness: harnessFrame() });
 		}
 	});
 
@@ -1091,7 +1140,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		if (all.length <= sentCount) return; // nothing new since the last sync
 		const reqId = ++reqSeq;
 		const full = sentCount === 0;
-		send(ws, { type: "sync", reqId, full, blocks: all.slice(sentCount) });
+		send(ws, { type: "sync", reqId, full, blocks: all.slice(sentCount), harness: harnessFrame() });
 		sentCount = all.length; // advance cursor; agent_end and next context will dedup
 	});
 
@@ -1130,7 +1179,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		if (all.length <= sentCount) return; // nothing new since the last sync
 		const reqId = ++reqSeq;
 		const full = sentCount === 0;
-		send(ws, { type: "sync", reqId, full, blocks: all.slice(sentCount) });
+		send(ws, { type: "sync", reqId, full, blocks: all.slice(sentCount), harness: harnessFrame() });
 		sentCount = all.length; // advance so the next `context` doesn't resend these
 	});
 
@@ -1206,6 +1255,27 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			if (port && webToken) lines.push(`Direct session browser: http://127.0.0.1:${port}/?token=${webToken}`);
 			else lines.push("Direct session browser: starting…");
 			ctx.ui.notify(lines.join("\n"), brokerLine.type === "warning" ? brokerLine.type : action.type);
+		},
+	});
+
+	// overlay: slice 0 diagnostic. `/tools-audit` lists every active tool by
+	// JSON-schema token cost so the operator can see which tools dominate the
+	// "other" bucket in the harness breakdown (~80–90% of the harness on a busy
+	// session). All audit logic is in tools-audit.ts — this block is the only
+	// touch on accordion.ts.
+	// overlay: slice 0b diagnostic. `/payload-audit` arms a one-shot hook that
+	// dumps the actual provider payload's per-field token cost — finds the bytes
+	// that tools-audit can't see (MCP tools spliced at request time, cache_control
+	// system blocks, etc). All logic in payload-audit.ts.
+	payloadAudit.install(pi);
+	pi.registerCommand("tools-audit", {
+		description: "List active tools by JSON-schema size (token estimate), heaviest first",
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
+			const report = runToolsAudit(pi);
+			ctx.ui.notify(report, "info");
+			// Mirror to console so the report survives a notify truncation and is
+			// easy to copy from the pi log.
+			console.log(report);
 		},
 	});
 

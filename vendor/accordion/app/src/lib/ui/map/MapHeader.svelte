@@ -168,6 +168,34 @@
 					</span>
 				{/if}
 			</div>
+			<!-- Slice 0c diagnostic: harness overhead broken into named buckets so the
+			     operator can see where the wire actually goes. `pi` is what the provider
+			     reports via getContextUsage (may include cache-accounting phantoms);
+			     `wire` is the chars/4 size of the actual serialized request body. A gap
+			     between them = cache accounting (cheap). `sys`/`tools`/`other` split the
+			     wire harness into provider-payload buckets. -->
+			{#if store.harnessBreakdown}
+				{@const hb = store.harnessBreakdown}
+				{@const total = hb.totalTokens}
+				{#if total !== null}
+					{@const wire = hb.actualWireTokens ?? null}
+					{@const sysWire = hb.systemPayloadTokens ?? hb.systemPromptTokens ?? null}
+					{@const toolsWire = hb.toolsTokens ?? null}
+					{@const msgsWire = hb.messagesTokens ?? null}
+					{@const framing = msgsWire !== null ? Math.max(0, msgsWire - store.liveTokens) : null}
+					{@const wireHarness = wire !== null ? wire - store.liveTokens : null}
+					<div class="harness-line mono tnum" title="pi: provider-reported usage (includes cached input)  ·  wire: actual serialized request size  ·  messages = live (foldable conversation) + framing (per-message envelopes, irreducible)">
+						pi {fmt(total)}
+						{#if wire !== null}· wire {fmt(wire)}{/if}
+						{#if wireHarness !== null}· harness {fmt(wireHarness)}{:else}· harness {fmt(total - store.liveTokens)}{/if}
+						{#if sysWire !== null && toolsWire !== null && msgsWire !== null && framing !== null}
+							(sys {fmt(sysWire)} · tools {fmt(toolsWire)} · messages {fmt(msgsWire)}: {fmt(store.liveTokens)} live + {fmt(framing)} framing)
+						{:else if hb.systemPromptTokens !== null}
+							(sys {fmt(hb.systemPromptTokens)})
+						{/if}
+					</div>
+				{/if}
+			{/if}
 		</div>
 
 		<!-- ── Right: controls cluster ── -->
@@ -403,6 +431,14 @@
 		font-size: var(--fs-sm);
 		color: var(--faint);
 		align-self: baseline;
+	}
+
+	/* Slice 0 harness diagnostic: dim line under the hero number. */
+	.harness-line {
+		font-size: var(--fs-xs);
+		color: var(--faint);
+		margin-top: 2px;
+		letter-spacing: 0.01em;
 	}
 
 	/* Over-budget flag — danger, no pill chrome */

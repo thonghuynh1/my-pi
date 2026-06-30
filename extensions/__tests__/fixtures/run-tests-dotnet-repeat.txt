@@ -1,0 +1,149 @@
+C:\GitRepos\Tickets\Tests\Domain\Requests\Web\UpdatingTicketCustomers\When_updating_ticket_customers.cs(15,14): warning MYB004: Class 'When_updating_ticket_customers' should be declared as 'sealed', 'abstract', or 'static', unless it is inherited externally [C:\GitRepos\Tickets\Tests\Tests.csproj]
+  Tests -> C:\GitRepos\Tickets\Tests\bin\Debug\net10.0\MyBusiness.Tickets.Tests.dll
+Test run for C:\GitRepos\Tickets\Tests\bin\Debug\net10.0\MyBusiness.Tickets.Tests.dll (.NETCoreApp,Version=v10.0)
+A total of 1 test files matched the specified pattern.
+  Failed MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteActivityDocumentTests.When_handler_deletes_an_activity_document.Attachment_documents_for_the_activity_are_deleted_from_the_index [791 ms]
+  Error Message:
+   Shouldly.ShouldAssertException : _deletedKeys
+    should contain
+"8ff76006-6b33-4fef-95a3-d9709b25f7e8_Attachment_44444444-4444-4444-4444-444444444444"
+    but was actually
+["8ff76006-6b33-4fef-95a3-d9709b25f7e8_Activity_22222222-2222-2222-2222-222222222222"]
+  Stack Trace:
+     at MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteActivityDocumentTests.When_handler_deletes_an_activity_document.Attachment_documents_for_the_activity_are_deleted_from_the_index() in C:\GitRepos\Tickets\Tests\Domain\Requests\Endpoint\DeleteActivityDocumentTests\When_handler_deletes_an_activity_document.cs:line 88
+   at System.RuntimeMethodHandle.InvokeMethod(ObjectHandleOnStack target, Void** arguments, ObjectHandleOnStack sig, BOOL isConstructor, ObjectHandleOnStack result)
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.RuntimeMethodInfo.Invoke(Object obj, BindingFlags invokeAttr, Binder binder, Object[] parameters, CultureInfo culture)
+  Failed MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteMessageDocumentTests.When_handler_deletes_a_message_document.Attachment_documents_for_the_message_are_deleted_from_the_index [792 ms]
+  Error Message:
+   Shouldly.ShouldAssertException : _deletedKeys
+    should contain
+"f2e02f51-9e71-4e80-9982-1a84f6a0ca74_Attachment_dddddddd-dddd-dddd-dddd-dddddddddddd"
+    but was actually
+["f2e02f51-9e71-4e80-9982-1a84f6a0ca74_Message_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"]
+  Stack Trace:
+     at MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteMessageDocumentTests.When_handler_deletes_a_message_document.Attachment_documents_for_the_message_are_deleted_from_the_index() in C:\GitRepos\Tickets\Tests\Domain\Requests\Endpoint\DeleteMessageDocumentTests\When_handler_deletes_a_message_document.cs:line 88
+   at System.RuntimeMethodHandle.InvokeMethod(ObjectHandleOnStack target, Void** arguments, ObjectHandleOnStack sig, BOOL isConstructor, ObjectHandleOnStack result)
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.RuntimeMethodInfo.Invoke(Object obj, BindingFlags invokeAttr, Binder binder, Object[] parameters, CultureInfo culture)
+  Failed MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteActivityDocumentTests.When_handler_deletes_an_activity_document.Attachment_links_for_the_activity_are_removed [1 s]
+  Error Message:
+   Shouldly.ShouldAssertException : links.Select(link => link.DocumentId)
+    should be
+[66666666-6666-6666-6666-666666666666]
+    but was
+[44444444-4444-4444-4444-444444444444, 55555555-5555-5555-5555-555555555555, 66666666-6666-6666-6666-666666666666]
+    difference
+[*44444444-4444-4444-4444-444444444444*, *55555555-5555-5555-5555-555555555555*, *66666666-6666-6666-6666-666666666666*]
+  Stack Trace:
+     at MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteActivityDocumentTests.When_handler_deletes_an_activity_document.Attachment_links_for_the_activity_are_removed() in C:\GitRepos\Tickets\Tests\Domain\Requests\Endpoint\DeleteActivityDocumentTests\When_handler_deletes_an_activity_document.cs:line 101
+   at System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   at System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)
+   at System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task, ConfigureAwaitOptions options)
+--- End of stack trace from previous location ---
+   at System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   at System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)
+   at System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task, ConfigureAwaitOptions options)
+   at System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   at System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)
+   at System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task, ConfigureAwaitOptions options)
+  Failed 
+C:\GitRepos\Tickets\Tests\Domain\Requests\Web\UpdatingTicketCustomers\When_updating_ticket_customers.cs(15,14): warning MYB004: Class 'When_updating_ticket_customers' should be declared as 'sealed', 'abstract', or 'static', unless it is inherited externally [C:\GitRepos\Tickets\Tests\Tests.csproj]
+  Tests -> C:\GitRepos\Tickets\Tests\bin\Debug\net10.0\MyBusiness.Tickets.Tests.dll
+Test run for C:\GitRepos\Tickets\Tests\bin\Debug\net10.0\MyBusiness.Tickets.Tests.dll (.NETCoreApp,Version=v10.0)
+A total of 1 test files matched the specified pattern.
+  Failed MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteActivityDocumentTests.When_handler_deletes_an_activity_document.Attachment_documents_for_the_activity_are_deleted_from_the_index [791 ms]
+  Error Message:
+   Shouldly.ShouldAssertException : _deletedKeys
+    should contain
+"8ff76006-6b33-4fef-95a3-d9709b25f7e8_Attachment_44444444-4444-4444-4444-444444444444"
+    but was actually
+["8ff76006-6b33-4fef-95a3-d9709b25f7e8_Activity_22222222-2222-2222-2222-222222222222"]
+  Stack Trace:
+     at MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteActivityDocumentTests.When_handler_deletes_an_activity_document.Attachment_documents_for_the_activity_are_deleted_from_the_index() in C:\GitRepos\Tickets\Tests\Domain\Requests\Endpoint\DeleteActivityDocumentTests\When_handler_deletes_an_activity_document.cs:line 88
+   at System.RuntimeMethodHandle.InvokeMethod(ObjectHandleOnStack target, Void** arguments, ObjectHandleOnStack sig, BOOL isConstructor, ObjectHandleOnStack result)
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.RuntimeMethodInfo.Invoke(Object obj, BindingFlags invokeAttr, Binder binder, Object[] parameters, CultureInfo culture)
+  Failed MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteMessageDocumentTests.When_handler_deletes_a_message_document.Attachment_documents_for_the_message_are_deleted_from_the_index [792 ms]
+  Error Message:
+   Shouldly.ShouldAssertException : _deletedKeys
+    should contain
+"f2e02f51-9e71-4e80-9982-1a84f6a0ca74_Attachment_dddddddd-dddd-dddd-dddd-dddddddddddd"
+    but was actually
+["f2e02f51-9e71-4e80-9982-1a84f6a0ca74_Message_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"]
+  Stack Trace:
+     at MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteMessageDocumentTests.When_handler_deletes_a_message_document.Attachment_documents_for_the_message_are_deleted_from_the_index() in C:\GitRepos\Tickets\Tests\Domain\Requests\Endpoint\DeleteMessageDocumentTests\When_handler_deletes_a_message_document.cs:line 88
+   at System.RuntimeMethodHandle.InvokeMethod(ObjectHandleOnStack target, Void** arguments, ObjectHandleOnStack sig, BOOL isConstructor, ObjectHandleOnStack result)
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.RuntimeMethodInfo.Invoke(Object obj, BindingFlags invokeAttr, Binder binder, Object[] parameters, CultureInfo culture)
+  Failed MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteActivityDocumentTests.When_handler_deletes_an_activity_document.Attachment_links_for_the_activity_are_removed [1 s]
+  Error Message:
+   Shouldly.ShouldAssertException : links.Select(link => link.DocumentId)
+    should be
+[66666666-6666-6666-6666-666666666666]
+    but was
+[44444444-4444-4444-4444-444444444444, 55555555-5555-5555-5555-555555555555, 66666666-6666-6666-6666-666666666666]
+    difference
+[*44444444-4444-4444-4444-444444444444*, *55555555-5555-5555-5555-555555555555*, *66666666-6666-6666-6666-666666666666*]
+  Stack Trace:
+     at MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteActivityDocumentTests.When_handler_deletes_an_activity_document.Attachment_links_for_the_activity_are_removed() in C:\GitRepos\Tickets\Tests\Domain\Requests\Endpoint\DeleteActivityDocumentTests\When_handler_deletes_an_activity_document.cs:line 101
+   at System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   at System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)
+   at System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task, ConfigureAwaitOptions options)
+--- End of stack trace from previous location ---
+   at System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   at System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)
+   at System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task, ConfigureAwaitOptions options)
+   at System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   at System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)
+   at System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task, ConfigureAwaitOptions options)
+  Failed C:\GitRepos\Tickets\Tests\Domain\Requests\Web\UpdatingTicketCustomers\When_updating_ticket_customers.cs(15,14): warning MYB004: Class 'When_updating_ticket_customers' should be declared as 'sealed', 'abstract', or 'static', unless it is inherited externally [C:\GitRepos\Tickets\Tests\Tests.csproj]
+  Tests -> C:\GitRepos\Tickets\Tests\bin\Debug\net10.0\MyBusiness.Tickets.Tests.dll
+Test run for C:\GitRepos\Tickets\Tests\bin\Debug\net10.0\MyBusiness.Tickets.Tests.dll (.NETCoreApp,Version=v10.0)
+A total of 1 test files matched the specified pattern.
+  Failed MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteActivityDocumentTests.When_handler_deletes_an_activity_document.Attachment_documents_for_the_activity_are_deleted_from_the_index [791 ms]
+  Error Message:
+   Shouldly.ShouldAssertException : _deletedKeys
+    should contain
+"8ff76006-6b33-4fef-95a3-d9709b25f7e8_Attachment_44444444-4444-4444-4444-444444444444"
+    but was actually
+["8ff76006-6b33-4fef-95a3-d9709b25f7e8_Activity_22222222-2222-2222-2222-222222222222"]
+  Stack Trace:
+     at MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteActivityDocumentTests.When_handler_deletes_an_activity_document.Attachment_documents_for_the_activity_are_deleted_from_the_index() in C:\GitRepos\Tickets\Tests\Domain\Requests\Endpoint\DeleteActivityDocumentTests\When_handler_deletes_an_activity_document.cs:line 88
+   at System.RuntimeMethodHandle.InvokeMethod(ObjectHandleOnStack target, Void** arguments, ObjectHandleOnStack sig, BOOL isConstructor, ObjectHandleOnStack result)
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.RuntimeMethodInfo.Invoke(Object obj, BindingFlags invokeAttr, Binder binder, Object[] parameters, CultureInfo culture)
+  Failed MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteMessageDocumentTests.When_handler_deletes_a_message_document.Attachment_documents_for_the_message_are_deleted_from_the_index [792 ms]
+  Error Message:
+   Shouldly.ShouldAssertException : _deletedKeys
+    should contain
+"f2e02f51-9e71-4e80-9982-1a84f6a0ca74_Attachment_dddddddd-dddd-dddd-dddd-dddddddddddd"
+    but was actually
+["f2e02f51-9e71-4e80-9982-1a84f6a0ca74_Message_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"]
+  Stack Trace:
+     at MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteMessageDocumentTests.When_handler_deletes_a_message_document.Attachment_documents_for_the_message_are_deleted_from_the_index() in C:\GitRepos\Tickets\Tests\Domain\Requests\Endpoint\DeleteMessageDocumentTests\When_handler_deletes_a_message_document.cs:line 88
+   at System.RuntimeMethodHandle.InvokeMethod(ObjectHandleOnStack target, Void** arguments, ObjectHandleOnStack sig, BOOL isConstructor, ObjectHandleOnStack result)
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.RuntimeMethodInfo.Invoke(Object obj, BindingFlags invokeAttr, Binder binder, Object[] parameters, CultureInfo culture)
+  Failed MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteActivityDocumentTests.When_handler_deletes_an_activity_document.Attachment_links_for_the_activity_are_removed [1 s]
+  Error Message:
+   Shouldly.ShouldAssertException : links.Select(link => link.DocumentId)
+    should be
+[66666666-6666-6666-6666-666666666666]
+    but was
+[44444444-4444-4444-4444-444444444444, 55555555-5555-5555-5555-555555555555, 66666666-6666-6666-6666-666666666666]
+    difference
+[*44444444-4444-4444-4444-444444444444*, *55555555-5555-5555-5555-555555555555*, *66666666-6666-6666-6666-666666666666*]
+  Stack Trace:
+     at MyBusiness.Tickets.Tests.Domain.Requests.Endpoint.DeleteActivityDocumentTests.When_handler_deletes_an_activity_document.Attachment_links_for_the_activity_are_removed() in C:\GitRepos\Tickets\Tests\Domain\Requests\Endpoint\DeleteActivityDocumentTests\When_handler_deletes_an_activity_document.cs:line 101
+   at System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   at System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)
+   at System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task, ConfigureAwaitOptions options)
+--- End of stack trace from previous location ---
+   at System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   at System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)
+   at System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task, ConfigureAwaitOptions options)
+   at System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw()
+   at System.Runtime.CompilerServices.TaskAwaiter.ThrowForNonSuccess(Task task)
+   at System.Runtime.CompilerServices.TaskAwaiter.HandleNonSuccessAndDebuggerNotification(Task task, ConfigureAwaitOptions options)
+  Failed 

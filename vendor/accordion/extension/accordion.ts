@@ -45,6 +45,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 // registration below).
 import { runToolsAudit } from "./tools-audit";
 import * as payloadAudit from "./payload-audit";
+import * as cacheTracker from "./cache-tracker";
 
 import { linearize, applyPlan, type PiMessage } from "../app/src/lib/live/mapping";
 import { DEFAULT_PORT, PROTOCOL_VERSION, type FoldOp, type GroupOp, type ServerMessage, type StreamMessage, type UnfoldRequestMessage, type UnfoldResultMessage, type RecallRequestMessage, type RecallContent, type CompleteRequestMessage, type CompleteResultMessage } from "../app/src/lib/live/protocol";
@@ -1201,6 +1202,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			clearInterval(heartbeat);
 			heartbeat = null;
 		}
+		cacheTracker.reset();
 		deleteEntry(); // stop advertising — the app drops our row immediately
 		flushPending(); // resolve any awaiting context hook as passthrough
 		try {
@@ -1268,6 +1270,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 	// that tools-audit can't see (MCP tools spliced at request time, cache_control
 	// system blocks, etc). All logic in payload-audit.ts.
 	payloadAudit.install(pi);
+	cacheTracker.install(pi, () => latestModel?.provider);
 	pi.registerCommand("tools-audit", {
 		description: "List active tools by JSON-schema size (token estimate), heaviest first",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {

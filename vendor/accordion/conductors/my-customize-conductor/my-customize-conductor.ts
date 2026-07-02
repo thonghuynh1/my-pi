@@ -57,7 +57,7 @@ export class MyCustomizeConductor implements Conductor {
 			let projectedHeld = view.liveTokens;
 			for (const [id, saving] of this.lastSavings) {
 				const b = byId.get(id);
-				if (b && !b.held && !b.protected && !b.grouped) projectedHeld -= saving;
+				if (b && !b.held && !b.protected && !b.grouped && b.order >= view.frozenFromIndex) projectedHeld -= saving;
 			}
 			if (projectedHeld <= HOLD_BAND * cap) return this.lastPlan;
 			this.lastPlan = null;
@@ -83,6 +83,7 @@ export class MyCustomizeConductor implements Conductor {
 				!b.held &&
 				!b.protected &&
 				!b.grouped &&
+				b.order >= view.frozenFromIndex &&
 				b.foldedTokens < b.tokens &&
 				FOLDABLE_KINDS.has(b.kind),
 		);

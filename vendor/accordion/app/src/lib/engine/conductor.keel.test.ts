@@ -226,7 +226,7 @@ describe("Keel — never folds protected or held blocks", () => {
 function makeView(
 	blocks: ConductorView["blocks"],
 	budget: number,
-	opts: Partial<Pick<ConductorView, "contextWindow" | "liveTokens" | "protectedFromIndex" | "protectTokens">> = {},
+	opts: Partial<Pick<ConductorView, "contextWindow" | "liveTokens" | "protectedFromIndex" | "protectTokens" | "frozenFromIndex">> = {},
 ): ConductorView {
 	const liveTokens = opts.liveTokens ?? blocks.reduce((n, b) => n + b.tokens, 0);
 	return {
@@ -236,6 +236,7 @@ function makeView(
 		liveTokens,
 		protectedFromIndex: opts.protectedFromIndex ?? blocks.length,
 		protectTokens: opts.protectTokens ?? 0,
+		frozenFromIndex: opts.frozenFromIndex ?? 0,
 	};
 }
 
@@ -466,6 +467,7 @@ describe("Keel — pass determinism", () => {
 			liveTokens: 40_000,
 			protectedFromIndex: blocks.length,
 			protectTokens: 0,
+		frozenFromIndex: 0,
 		};
 		const a = JSON.stringify(new KeelConductor().conduct(view));
 		const b = JSON.stringify(new KeelConductor().conduct(view));

@@ -101,6 +101,7 @@ function makeView(
 		liveTokens: total,
 		protectedFromIndex: agedBlocks.length,
 		protectTokens: 20_000,
+		frozenFromIndex: 0,
 	};
 }
 

@@ -123,6 +123,7 @@ function makeView(n: number, budget: number): ConductorView {
 		liveTokens,
 		protectedFromIndex: blocks.length, // no protected tail in these tests (simplicity)
 		protectTokens: 0,
+		frozenFromIndex: 0,
 	};
 }
 

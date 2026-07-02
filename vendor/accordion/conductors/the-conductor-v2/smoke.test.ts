@@ -39,7 +39,8 @@ function makeView() {
 	const liveTokens = blocks.reduce((s, b) => s + b.tokens, 0);
 	return {
 		type: "context/update", rev: 1, budget: Math.floor(liveTokens * 0.5), contextWindow: 200_000,
-		liveTokens, protectedFromIndex: blocks.length - 4, protectTokens: 20_000, blocks,
+		liveTokens, protectedFromIndex: blocks.length - 4, protectTokens: 20_000,
+		frozenFromIndex: 0, blocks,
 	};
 }
 

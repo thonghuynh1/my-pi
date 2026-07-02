@@ -391,6 +391,7 @@ describe("Bear2HybridConductor — hard-failure freeze on persistent Bear-2 erro
 			contextWindow: null,
 			protectedFromIndex: s.blocks.length,
 			protectTokens: 20_000,
+			frozenFromIndex: 0,
 		};
 		expect(conductor.conduct(frozenView)).toBeNull();
 

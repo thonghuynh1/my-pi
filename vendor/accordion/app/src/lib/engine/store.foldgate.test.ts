@@ -170,6 +170,19 @@ describe("conductor path — substOne kind gate (fold & replace)", () => {
 		expect(b.subst).toBe("see above");
 		expect(s.digestOf(b)).toBe("see above");
 	});
+
+	it("a conductor `replace` of a frozen block is clamped 'frozen' and not folded", () => {
+		const s = makeStore(session());
+		s.setProtect(0);
+		s.frozenFromIndex = 5;
+		const reports = s.applyCommands([{ kind: "replace", id: "a:r1:p2", content: "see above" }], "auto");
+		expect(reports).toHaveLength(1);
+		expect(reports[0].reason).toBe("frozen");
+		expect(reports[0].ids).toEqual(["a:r1:p2"]);
+		const b = s.get("a:r1:p2")!;
+		expect(s.isFolded(b)).toBe(false);
+		expect(b.subst).toBeUndefined();
+	});
 });
 
 describe("canFold — truth table", () => {

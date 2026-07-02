@@ -144,6 +144,12 @@ export class AccordionStore {
 		systemPayloadTokens?: number | null;
 	} | null>(null);
 	/**
+	 * Index of the first block the conductor may fold. Blocks before this index are in the
+	 * provider's cached prefix and are host-clamped with reason `"frozen"` if a conductor
+	 * targets them. 0 means no frozen prefix.
+	 */
+	frozenFromIndex = $state(0);
+	/**
 	 * The protected working tail: the most recent blocks up to this token target are
 	 * NEVER auto-folded, with a strict 25% whole-block overflow cap so a huge boundary
 	 * block cannot silently double the protected region. When target > 0, the newest block
@@ -1031,6 +1037,7 @@ export class AccordionStore {
 			calibration: this.calibration,
 			liveTokens: this.liveTokens,
 			protectedFromIndex: protectedFrom,
+			frozenFromIndex: this.frozenFromIndex,
 			// Under tail-size the conductor sees ITS OWN tail target — the same value that
 			// drove `protectedFromIndex`. Absent the lock, the human's `protectTokens` is passed
 			// as before (collaborative/golden path unchanged).
@@ -1083,6 +1090,10 @@ export class AccordionStore {
 		// Protection is ABSOLUTE: a block in the working tail is never folded, by a conductor
 		// OR the user. Refuse and report rather than violate the safety pillar.
 		if (this.isProtected(b)) return void reports.push(clamp(kind, [id], "protected", `${label(b)} is in the protected working tail`));
+		if (b.order < this.frozenFromIndex)
+			return void reports.push(
+				clamp(kind, [id], "frozen", `block ${id} is in the provider's cached prefix (order ${b.order} < frozen ${this.frozenFromIndex})`),
+			);
 		// One foldability gate, shared with the wire (`wireFoldable`). A kind the wire would
 		// never fold — `user` (intent) or `tool_call` (folding it orphans its result) — is
 		// refused here and REPORTED, never silently applied. Without this a conductor's

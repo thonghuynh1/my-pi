@@ -53,6 +53,7 @@ function makeView(blocks: ViewBlock[], budget: number, liveTokens: number): Cond
 		contextWindow: null,
 		protectedFromIndex: pfi < 0 ? blocks.length : pfi,
 		protectTokens: 0,
+		frozenFromIndex: 0,
 	};
 }
 

@@ -398,6 +398,7 @@ describe("RemoteRunner — stale desired cleared on unexpected disconnect (Bug 3
 			liveTokens: 3000,
 			protectedFromIndex: 0,
 			protectTokens: 0,
+			frozenFromIndex: 0,
 			blocks: [],
 		};
 		const result = runner.conduct(view as any);

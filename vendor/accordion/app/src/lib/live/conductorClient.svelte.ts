@@ -418,6 +418,7 @@ export class RemoteRunner implements Conductor {
 			liveTokens: view.liveTokens,
 			protectedFromIndex: view.protectedFromIndex,
 			protectTokens: view.protectTokens,
+			frozenFromIndex: view.frozenFromIndex,
 			blocks,
 		};
 		this.send(update);

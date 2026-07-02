@@ -71,6 +71,8 @@ export interface ContextUpdateMessage {
 	protectedFromIndex: number;
 	/** The protected-tail token target driving `protectedFromIndex`. */
 	protectTokens: number;
+	/** First index the conductor may fold. Blocks before it are in the cached prefix. */
+	frozenFromIndex: number;
 	blocks: ViewBlock[];
 }
 

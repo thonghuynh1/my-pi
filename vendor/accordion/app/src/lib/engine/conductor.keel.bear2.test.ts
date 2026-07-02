@@ -201,7 +201,7 @@ function makeProseView(n: number, budget: number): ConductorView {
 		});
 	}
 	const liveTokens = blocks.reduce((s, b) => s + b.tokens, 0);
-	return { blocks, budget, contextWindow: null, liveTokens, protectedFromIndex: blocks.length, protectTokens: 0 };
+	return { blocks, budget, contextWindow: null, liveTokens, protectedFromIndex: blocks.length, protectTokens: 0, frozenFromIndex: 0 };
 }
 
 afterEach(() => {

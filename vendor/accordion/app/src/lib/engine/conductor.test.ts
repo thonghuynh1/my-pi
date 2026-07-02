@@ -137,6 +137,22 @@ describe("conductor seam — attach / detach", () => {
 	});
 });
 
+describe("conductor seam — harness ingest", () => {
+	it("threads harness.frozenFromIndex into store state and the next ConductorView", () => {
+		const s = makeStore(Array.from({ length: 3 }, (_, i) => blk(i)));
+		s.setProtect(0);
+		const stub = new StubConductor();
+		s.attach(stub);
+		expect(stub.lastSnapshot?.frozenFromIndex).toBe(0);
+
+		s.setHarnessBreakdown({ totalTokens: 3000, systemPromptTokens: 100, frozenFromIndex: 5 });
+		expect(s.frozenFromIndex).toBe(5);
+		s.refold();
+
+		expect(stub.lastSnapshot?.frozenFromIndex).toBe(5);
+	});
+});
+
 describe("conductor seam — human overrides always win", () => {
 	it("a human pin survives a conductor fold of the same block", () => {
 		const s = makeStore(Array.from({ length: 4 }, (_, i) => blk(i)));
@@ -271,7 +287,7 @@ describe("conductor seam — clamp reports (provider-validity floor)", () => {
 	it("clamps a fold of a frozen block with reason 'frozen' and leaves it live", () => {
 		const s = makeStore(Array.from({ length: 6 }, (_, i) => blk(i)));
 		s.setProtect(0);
-		s.frozenFromIndex = 5;
+		s.setHarnessBreakdown({ totalTokens: 6000, systemPromptTokens: 100, frozenFromIndex: 5 });
 
 		const reports = s.applyCommands([{ kind: "fold", ids: ["m3:p0"] }], "auto");
 		expect(reports).toHaveLength(1);

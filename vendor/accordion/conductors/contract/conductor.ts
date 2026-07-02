@@ -94,6 +94,11 @@ export interface ConductorView {
 	protectedFromIndex: number;
 	/** The protected-tail token target driving `protectedFromIndex`. */
 	protectTokens: number;
+	/** Index of the first block the conductor may fold. Blocks before this
+	 *  index are in the provider's prompt cache prefix. 0 = no frozen prefix
+	 *  (cold start, unknown provider, or cache expired). Host-enforced: fold/replace
+	 *  commands targeting blocks below this index are clamped with reason "frozen". */
+	frozenFromIndex: number;
 	/**
 	 * Estimated NON-conversation overhead already consuming the model window: system prompt +
 	 * tool schemas (incl. MCP) + per-request framing. `liveTokens` counts only the conversation,
@@ -278,6 +283,8 @@ export type ClampReason =
 	| "invalid-group"
 	/** The block is inside the protected working tail; protection is absolute, the host won't fold it. */
 	| "protected"
+	/** The block is in the provider's cached prefix. */
+	| "frozen"
 	/**
 	 * The block's KIND is not foldable on the wire — only `text` / `thinking` / `tool_result`
 	 * fold; `user` (intent) and `tool_call` (folding it would orphan its result) never do. A

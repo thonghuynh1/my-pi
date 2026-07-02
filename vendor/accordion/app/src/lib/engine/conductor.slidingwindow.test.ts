@@ -59,6 +59,7 @@ function makeView(
 		contextWindow: null,
 		protectedFromIndex: protectedFromIndex ?? blocks.length,
 		protectTokens: 20_000,
+		frozenFromIndex: 0,
 	};
 }
 

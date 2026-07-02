@@ -495,6 +495,7 @@ describe("ColdScoreConductor — two-pass hysteresis: re-folded blocks must not 
 			contextWindow: null,
 			protectedFromIndex: blocks.findIndex((b) => b.protected),
 			protectTokens: 0,
+		frozenFromIndex: 0,
 		};
 	}
 

@@ -29,7 +29,7 @@ function vb(
 	};
 }
 
-function makeView(blocks: ViewBlock[], budget: number, liveTokens: number): ConductorView {
+function makeView(blocks: ViewBlock[], budget: number, liveTokens: number, opts: { frozenFromIndex?: number } = {}): ConductorView {
 	const protectedFromIndex = blocks.findIndex((b) => b.protected);
 	return {
 		blocks,
@@ -38,6 +38,7 @@ function makeView(blocks: ViewBlock[], budget: number, liveTokens: number): Cond
 		contextWindow: null,
 		protectedFromIndex: protectedFromIndex < 0 ? blocks.length : protectedFromIndex,
 		protectTokens: 0,
+		frozenFromIndex: opts.frozenFromIndex ?? 0,
 	};
 }
 
@@ -123,6 +124,46 @@ describe("MyCustomizeConductor", () => {
 		const second = conductor.conduct(viewGrown);
 		expect(second, "a new plan is computed when the band is crossed").not.toBe(first);
 		expect(projected(viewGrown, second)).toBeLessThanOrEqual(cap);
+	});
+
+	it("skips blocks in the frozen prefix when choosing fold candidates", () => {
+		const blocks = Array.from({ length: 10 }, (_, i) => vb(`m${i}`, "text", i, 1_000, 50, { text: `block ${i}` }));
+		const view = makeView(blocks, 5_250, 10_000, { frozenFromIndex: 5 });
+		const folded = foldIdsOf(new MyCustomizeConductor().conduct(view));
+
+		for (let i = 0; i < 5; i++) expect(folded.has(`m${i}`)).toBe(false);
+		for (let i = 5; i < 10; i++) expect(folded.has(`m${i}`)).toBe(true);
+	});
+
+	it("recomputes the plan when a previously folded block is now frozen", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("r:3", "tool_result", 3, 1_500, 40, { toolName: "bash", text: "older output" }),
+			vb("r:5", "tool_result", 5, 1_500, 40, { toolName: "bash", text: "newer output" }),
+			vb("r:6", "tool_result", 6, 1_500, 40, { toolName: "bash", text: "newest output" }),
+		];
+		const conductor = new MyCustomizeConductor();
+		const firstView = makeView(blocks, 2_000, 4_700);
+		const first = conductor.conduct(firstView);
+		expect(foldIdsOf(first).has("r:3")).toBe(true);
+
+		const frozenView = makeView(blocks, 2_000, 4_700, { frozenFromIndex: 5 });
+		const second = conductor.conduct(frozenView);
+		const secondFolded = foldIdsOf(second);
+		expect(second).not.toBe(first);
+		expect(secondFolded.has("r:3")).toBe(false);
+		expect(secondFolded.has("r:5")).toBe(true);
+		expect(secondFolded.has("r:6")).toBe(true);
+	});
+
+	it("returns [] when every foldable block is frozen", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("r:1", "tool_result", 1, 1_500, 40, { toolName: "bash", text: "output 1" }),
+			vb("r:2", "tool_result", 2, 1_500, 40, { toolName: "bash", text: "output 2" }),
+		];
+		const view = makeView(blocks, 500, 3_200, { frozenFromIndex: 3 });
+		expect(new MyCustomizeConductor().conduct(view)).toEqual([]);
 	});
 
 	it("is registered as a collaborative in-process conductor", () => {

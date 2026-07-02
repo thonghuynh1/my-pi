@@ -91,7 +91,7 @@ function vb(
 
 function makeView(blocks: ViewBlock[], budget: number, liveTokens: number): ConductorView {
 	const pfi = blocks.findIndex((b) => b.protected);
-	return { blocks, budget, liveTokens, contextWindow: null, protectedFromIndex: pfi < 0 ? blocks.length : pfi, protectTokens: 0 };
+	return { blocks, budget, liveTokens, contextWindow: null, protectedFromIndex: pfi < 0 ? blocks.length : pfi, protectTokens: 0, frozenFromIndex: 0 };
 }
 
 function replaceOf(cmds: Command[], id: string): (Command & { kind: "replace" }) | undefined {

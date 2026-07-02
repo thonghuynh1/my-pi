@@ -268,6 +268,18 @@ describe("conductor seam — clamp reports (provider-validity floor)", () => {
 		expect(s.get(newest)!.subst).toBeUndefined();
 	});
 
+	it("clamps a fold of a frozen block with reason 'frozen' and leaves it live", () => {
+		const s = makeStore(Array.from({ length: 6 }, (_, i) => blk(i)));
+		s.setProtect(0);
+		s.frozenFromIndex = 5;
+
+		const reports = s.applyCommands([{ kind: "fold", ids: ["m3:p0"] }], "auto");
+		expect(reports).toHaveLength(1);
+		expect(reports[0].reason).toBe("frozen");
+		expect(reports[0].ids).toEqual(["m3:p0"]);
+		expect(s.isFolded(s.get("m3:p0")!)).toBe(false);
+	});
+
 	// (3) MINOR regression: restoring/pinning an already-live block must REPORT a noop, not
 	// silently swallow it — the contract documents the reason as reachable.
 	it("reports 'noop' when restoring an already-live block", () => {

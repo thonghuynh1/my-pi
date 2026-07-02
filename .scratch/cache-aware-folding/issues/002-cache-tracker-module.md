@@ -3,6 +3,7 @@ id: "002"
 title: "Cache Tracker Module — Provider Normalization + Frozen Index Computation"
 labels: [ready-for-agent]
 depends_on: []
+status: closed
 ---
 
 ## What to build

@@ -127,5 +127,5 @@ After this slice, the full cache-aware folding feature is live end-to-end.
 
 ## Blocked by
 
-- Slice 001 — Contract + Host Enforcement + Conductor Adaptation (provides `frozenFromIndex` on `ConductorView`, clamp logic, and store state)
-- Slice 002 — Cache Tracker Module (provides `extractCacheMetrics`, `computeFrozenFromIndex`, `getFrozenFromIndex`, `install`, `reset`)
+- `001-contract-host-enforcement-conductor-adaptation.md`
+- `002-cache-tracker-module.md`

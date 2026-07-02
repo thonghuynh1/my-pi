@@ -3,6 +3,7 @@ id: "001"
 title: "Contract + Host Enforcement + Conductor Adaptation for frozenFromIndex"
 labels: [ready-for-agent]
 depends_on: []
+status: closed
 ---
 
 ## What to build

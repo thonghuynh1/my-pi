@@ -10,15 +10,15 @@ import {
 } from "./cache-tracker";
 
 class FakePi {
-	private readonly handlers = new Map<string, Array<(event: { response?: unknown }) => unknown>>();
+	private readonly handlers = new Map<string, Array<(event: { usage?: unknown }) => unknown>>();
 
-	on(event: string, handler: (event: { response?: unknown }) => unknown): void {
+	on(event: string, handler: (event: { usage?: unknown }) => unknown): void {
 		const existing = this.handlers.get(event) ?? [];
 		existing.push(handler);
 		this.handlers.set(event, existing);
 	}
 
-	emit(event: string, payload: { response?: unknown }): void {
+	emit(event: string, payload: { usage?: unknown }): void {
 		for (const handler of this.handlers.get(event) ?? []) handler(payload);
 	}
 }
@@ -149,12 +149,10 @@ describe("cache tracker lifecycle", () => {
 
 	it("reset — clears state", () => {
 		pi.emit("after_provider_response", {
-			response: {
-				usage: {
-					cache_read_input_tokens: 500,
-					cache_creation_input_tokens: 100,
-					input_tokens: 800,
-				},
+			usage: {
+				cache_read_input_tokens: 500,
+				cache_creation_input_tokens: 100,
+				input_tokens: 800,
 			},
 		});
 

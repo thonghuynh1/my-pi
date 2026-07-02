@@ -70,13 +70,13 @@ export function install(
 	installed = true;
 
 	const api = pi as unknown as {
-		on?: (event: string, handler: (event: { response?: unknown }) => unknown) => void;
+		on?: (event: string, handler: (event: { usage?: unknown }) => unknown) => void;
 	};
 
 	api.on?.("after_provider_response", (event) => {
 		try {
 			const provider = getProvider() ?? "";
-			const metrics = extractCacheMetrics(provider, pickUsage(provider, event?.response));
+			const metrics = extractCacheMetrics(provider, pickUsage(provider, event?.usage));
 			latestMetrics = metrics;
 			latestFrozenFromIndex = computeFrozenFromIndex(
 				getBlocks(),

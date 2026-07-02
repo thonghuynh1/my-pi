@@ -553,6 +553,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		messagesTokens: number | null;
 		toolsTokens: number | null;
 		systemPayloadTokens: number | null;
+		frozenFromIndex: number | null;
 	} | undefined {
 		const wire = payloadAudit.getLatestSizes();
 		if (tokens === null && systemPromptTokens === null && wire === null) return undefined;
@@ -563,6 +564,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			messagesTokens: wire?.messagesTokens ?? null,
 			toolsTokens: wire?.toolsTokens ?? null,
 			systemPayloadTokens: wire?.systemPayloadTokens ?? null,
+			frozenFromIndex: cacheTracker.getFrozenFromIndex(),
 		};
 	}
 

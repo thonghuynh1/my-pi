@@ -153,6 +153,7 @@ export interface SyncMessage {
 		messagesTokens?: number | null;
 		toolsTokens?: number | null;
 		systemPayloadTokens?: number | null;
+		frozenFromIndex?: number | null;
 	};
 }
 

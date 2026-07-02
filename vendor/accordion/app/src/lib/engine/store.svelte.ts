@@ -142,6 +142,7 @@ export class AccordionStore {
 		messagesTokens?: number | null;
 		toolsTokens?: number | null;
 		systemPayloadTokens?: number | null;
+		frozenFromIndex?: number | null;
 	} | null>(null);
 	/**
 	 * Index of the first block the conductor may fold. Blocks before this index are in the
@@ -1191,8 +1192,10 @@ export class AccordionStore {
 		messagesTokens?: number | null;
 		toolsTokens?: number | null;
 		systemPayloadTokens?: number | null;
+		frozenFromIndex?: number | null;
 	} | null): void {
 		this.harnessBreakdown = h;
+		this.frozenFromIndex = h?.frozenFromIndex ?? 0;
 		this.updateCalibration();
 	}
 

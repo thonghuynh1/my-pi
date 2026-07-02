@@ -3,7 +3,7 @@ id: "003"
 title: "Rewrite cache-tracker to request-side heuristic"
 labels: [ready-for-agent]
 depends_on: []
-status: open
+status: closed
 ---
 
 ## What to build

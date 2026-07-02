@@ -3,7 +3,7 @@ id: "004"
 title: "Wire frozenFromIndex through harness frame to store"
 labels: [ready-for-agent]
 depends_on: ["003"]
-status: open
+status: closed
 ---
 
 ## What to build

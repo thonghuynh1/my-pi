@@ -4,11 +4,17 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "allowImportingTsExtensions": true,
-    "strict": false,
-    "noImplicitAny": false,
+    "strict": true,
     "noEmit": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "types": [
+      "node"
+    ]
   },
-  "include": ["extensions/**/*.ts", "types/**/*.d.ts"],
-  "exclude": ["extensions/__tests__"]
+  "include": [
+    "extensions/**/*.ts"
+  ],
+  "exclude": [
+    "extensions/__tests__"
+  ]
 }

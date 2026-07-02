@@ -15,6 +15,7 @@ import { ColdScoreConductor } from "./cold-score/cold-score";
 import { ColdEpochConductor } from "./cold-epoch/cold-epoch";
 import { SlidingWindowConductor } from "./sliding-window/sliding-window";
 import { GarbageCollectorConductor } from "./garbage-collector/garbage-collector";
+import { McpPreservingGcConductor } from "./mcp-preserving-gc/mcp-preserving-gc";
 import { MyCustomizeConductor } from "./my-customize-conductor/my-customize-conductor";
 import { NaiveCompactionConductor } from "./compaction-naive/compaction-naive";
 import { Bear2HybridConductor } from "./bear2-hybrid/bear2-hybrid";
@@ -27,6 +28,7 @@ export { ColdScoreConductor } from "./cold-score/cold-score";
 export { ColdEpochConductor } from "./cold-epoch/cold-epoch";
 export { SlidingWindowConductor } from "./sliding-window/sliding-window";
 export { GarbageCollectorConductor } from "./garbage-collector/garbage-collector";
+export { McpPreservingGcConductor } from "./mcp-preserving-gc/mcp-preserving-gc";
 export { MyCustomizeConductor } from "./my-customize-conductor/my-customize-conductor";
 export { NaiveCompactionConductor } from "./compaction-naive/compaction-naive";
 export { Bear2HybridConductor } from "./bear2-hybrid/bear2-hybrid";
@@ -54,6 +56,7 @@ export const IN_PROCESS_CONDUCTORS: InProcessConductor[] = [
   { id: "cold-epoch", label: "Cold epoch", create: () => new ColdEpochConductor() },
   { id: "sliding-window", label: "Sliding window", locks: ["human-steering", "agent-unfold"], create: () => new SlidingWindowConductor() },
   { id: "garbage-collector", label: "Garbage collector", create: () => new GarbageCollectorConductor() },
+  { id: "mcp-preserving-gc", label: "MCP-preserving GC", create: () => new McpPreservingGcConductor() },
   { id: "my-customize-conductor", label: "My Customize", create: () => new MyCustomizeConductor() },
   {
     id: "compaction-naive",

@@ -43,8 +43,10 @@ function replaceOnce({ file, needle, replacement, label }) {
 		console.log(`overlay kept ${label}`);
 		return;
 	}
-	if (!text.includes(needle)) throw new Error(`Cannot apply overlay. Missing anchor for ${label}: ${needle}`);
-	text = text.replace(needle, replacement);
+	const needles = Array.isArray(needle) ? needle : [needle];
+	const hit = needles.find((candidate) => text.includes(candidate));
+	if (!hit) throw new Error(`Cannot apply overlay. Missing anchor for ${label}: ${needles[0]}`);
+	text = text.replace(hit, replacement);
 	writeFileSync(path, text);
 	console.log(`overlay patched ${label}`);
 }
@@ -94,6 +96,9 @@ replaceOnce({
 replaceOnce({
 	file: "app/src/lib/live/conductor.svelte.ts",
 	label: "default conductor mcp-preserving-gc",
-	needle: 'return localStorage.getItem(KEY) || BUILTIN_ID;',
+	needle: [
+		'return localStorage.getItem(KEY) || BUILTIN_ID;',
+		'return localStorage.getItem(KEY) || "my-customize-conductor"; // overlay: default to My Customize',
+	],
 	replacement: 'return localStorage.getItem(KEY) || "mcp-preserving-gc"; // overlay: default to MCP-preserving GC',
 });

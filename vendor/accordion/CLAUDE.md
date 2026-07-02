@@ -153,3 +153,17 @@ After a PR lands on `main`: close any open Accordion window (the running binary 
 ## Working style
 
 The owner reviews UI work by screenshot and makes the design calls. Surface tradeoffs plainly and let them decide.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as local markdown files under `.scratch/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout. See `docs/agents/domain.md`.

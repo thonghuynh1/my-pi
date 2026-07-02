@@ -97,14 +97,51 @@ export function isDurableId(id: string): boolean {
 	return id.startsWith("u:") || id.startsWith("a:") || id.startsWith("r:") || id.startsWith("s:");
 }
 
-function textOf(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (Array.isArray(content))
-		return content
-			.filter((b): b is { type: string; text: string } => !!b && (b as any).type === "text" && typeof (b as any).text === "string")
-			.map((b) => b.text)
-			.join("\n");
-	return "";
+/** Fixed per-image token estimate (matches Headroom's Anthropic auto-resize cap).
+ *  We never count an image's base64 length — that would wildly OVER-count. */
+const IMAGE_TOKENS = 1600;
+
+function safeJson(v: unknown): string {
+	try {
+		return JSON.stringify(v) ?? "";
+	} catch {
+		return "";
+	}
+}
+
+/**
+ * Flatten a message `content` value into countable text plus a side count of
+ * image tokens. Mirrors Headroom's structural counter and fixes the old
+ * text-only `textOf` bug that silently DROPPED tool_result payloads, nested
+ * structured parts and tool_use inputs (the ~30k undercount on tool-heavy
+ * Anthropic sessions):
+ *   • text / thinking parts  → their text
+ *   • image parts           → a `[image]` placeholder + a FIXED token cost
+ *   • any other structured  → JSON-serialized so its bytes are COUNTED, not lost
+ */
+function flattenContent(content: unknown): { text: string; imageTokens: number } {
+	if (typeof content === "string") return { text: content, imageTokens: 0 };
+	if (!Array.isArray(content)) {
+		return content && typeof content === "object" ? { text: safeJson(content), imageTokens: 0 } : { text: "", imageTokens: 0 };
+	}
+	let imageTokens = 0;
+	const parts: string[] = [];
+	for (const b of content) {
+		if (b == null) continue;
+		if (typeof b === "string") {
+			parts.push(b);
+			continue;
+		}
+		if (typeof b !== "object") continue;
+		const t = (b as { type?: string }).type;
+		if (t === "text" && typeof (b as { text?: unknown }).text === "string") parts.push((b as { text: string }).text);
+		else if (t === "thinking" && typeof (b as { thinking?: unknown }).thinking === "string") parts.push((b as { thinking: string }).thinking);
+		else if (t === "image" || t === "image_url" || t === "input_image") {
+			imageTokens += IMAGE_TOKENS;
+			parts.push("[image]");
+		} else parts.push(safeJson(b)); // nested tool_result / tool_use / unknown → count its JSON
+	}
+	return { text: parts.join("\n"), imageTokens };
 }
 
 const tokensFor = (text: string): number => estTokens(text) + BLOCK_OVERHEAD;
@@ -124,16 +161,19 @@ export function linearize(messages: PiMessage[]): WireBlock[] {
 		kind: WireBlock["kind"],
 		text: string,
 		extra: Partial<Pick<WireBlock, "toolName" | "callId" | "model" | "isError">> = {},
+		imageTokens = 0,
 	) => {
-		if (!text && kind !== "tool_result") return; // drop empty non-results (parity with parse.ts)
-		out.push({ id, kind, turn, order: order++, text, tokens: tokensFor(text), ...extra });
+		// Keep the block if it has text, is a tool_result, OR carries image tokens.
+		if (!text && kind !== "tool_result" && imageTokens === 0) return; // drop empty non-results (parity with parse.ts)
+		out.push({ id, kind, turn, order: order++, text, tokens: tokensFor(text) + imageTokens, ...extra });
 	};
 
 	messages.forEach((m, i) => {
 		switch (m.role) {
 			case "user": {
 				turn += 1;
-				push(blockId(m, i), "user", textOf(m.content));
+				const uc = flattenContent(m.content);
+				push(blockId(m, i), "user", uc.text, {}, uc.imageTokens);
 				break;
 			}
 			case "assistant": {
@@ -153,11 +193,18 @@ export function linearize(messages: PiMessage[]): WireBlock[] {
 				break;
 			}
 			case "toolResult": {
-				push(blockId(m, i), "tool_result", textOf(m.content), {
-					toolName: m.toolName || "tool",
-					callId: m.toolCallId,
-					isError: !!m.isError,
-				});
+				const rc = flattenContent(m.content);
+				push(
+					blockId(m, i),
+					"tool_result",
+					rc.text,
+					{
+						toolName: m.toolName || "tool",
+						callId: m.toolCallId,
+						isError: !!m.isError,
+					},
+					rc.imageTokens,
+				);
 				break;
 			}
 			default: {

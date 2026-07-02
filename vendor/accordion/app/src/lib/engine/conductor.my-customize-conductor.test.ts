@@ -68,6 +68,63 @@ function projected(view: ConductorView, result: Command[] | null): number {
 }
 
 describe("MyCustomizeConductor", () => {
+	it("folds risk-sparse blocks before risk-dense blocks of the same age", () => {
+		// Block A: generic prose, no facts
+		// Block B: contains key=value and decision language → higher risk count → folds later
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("r:sparse", "tool_result", 1, 1000, 40, { toolName: "bash", text: "some generic output with no facts" }),
+			vb("r:dense", "tool_result", 2, 1000, 40, { toolName: "bash", text: "model=gpt-4o\ndecided to use pnpm\n$ npm install" }),
+		];
+		const view = makeView(blocks, 1_500, 2_100);
+		const result = new MyCustomizeConductor().conduct(view);
+
+		const folded = foldIdsOf(result);
+		// Risk-sparse block folds first; risk-dense block should be untouched if sparse alone suffices.
+		expect(folded.has("r:sparse"), "risk-sparse block is folded").toBe(true);
+		expect(folded.has("r:dense"), "risk-dense block is spared").toBe(false);
+		expect(projected(view, result)).toBeLessThanOrEqual(view.budget);
+	});
+
+	it("returns the same plan on a second pass when projected live tokens stay within 0.9 × cap", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("r:a", "tool_result", 1, 1500, 40, { toolName: "bash", text: "output a" }),
+			vb("r:b", "tool_result", 2, 1500, 40, { toolName: "bash", text: "output b" }),
+		];
+		const view = makeView(blocks, 2_000, 3_200);
+		const conductor = new MyCustomizeConductor();
+
+		const first = conductor.conduct(view);
+		expect(first.length, "first pass folds something").toBeGreaterThan(0);
+
+		// Second pass: same view (projected still well within 0.9 × cap after applying first plan).
+		const second = conductor.conduct(view);
+		expect(second, "second pass returns the exact same plan object").toBe(first);
+	});
+
+	it("recomputes the plan when live tokens grow past the hold band", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("r:a", "tool_result", 1, 1500, 40, { toolName: "bash", text: "output a" }),
+			vb("r:b", "tool_result", 2, 1500, 40, { toolName: "bash", text: "output b" }),
+		];
+		const cap = 2_000;
+		const viewFirst = makeView(blocks, cap, 3_200);
+		const conductor = new MyCustomizeConductor();
+
+		const first = conductor.conduct(viewFirst);
+		expect(first.length).toBeGreaterThan(0);
+
+		// Simulate new content arriving that pushes past 0.9 × cap after applying the old plan.
+		// Old plan saves ~1460 tokens (1500-40). projectedHeld = 4900 - 1460 = 3440 >> 0.9×2000=1800.
+		// Both blocks together save 2920, so projected = 4900 - 2920 = 1980 ≤ cap.
+		const viewGrown = makeView(blocks, cap, 4_900);
+		const second = conductor.conduct(viewGrown);
+		expect(second, "a new plan is computed when the band is crossed").not.toBe(first);
+		expect(projected(viewGrown, second)).toBeLessThanOrEqual(cap);
+	});
+
 	it("is registered as a collaborative in-process conductor", () => {
 		const entry = IN_PROCESS_CONDUCTORS.find((c) => c.id === "my-customize-conductor");
 		expect(entry).toBeDefined();

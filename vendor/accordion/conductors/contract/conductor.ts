@@ -94,6 +94,62 @@ export interface ConductorView {
 	protectedFromIndex: number;
 	/** The protected-tail token target driving `protectedFromIndex`. */
 	protectTokens: number;
+	/**
+	 * Estimated NON-conversation overhead already consuming the model window: system prompt +
+	 * tool schemas (incl. MCP) + per-request framing. `liveTokens` counts only the conversation,
+	 * so a conductor that folds down to `contextWindow` alone would ignore this and let the REAL
+	 * request overflow. Reserve it. In the same token unit as `liveTokens`. 0/absent when unknown
+	 * (e.g. non-live mode) ⇒ callers fall back to the old budget-only behaviour.
+	 */
+	harnessOverhead?: number;
+	/**
+	 * Tokens to keep FREE for the model's reply (output). Also reserved from the window so the
+	 * conversation + harness + reply all fit. 0/absent when unknown.
+	 */
+	outputReserve?: number;
+	/**
+	 * Calibration factor: REAL provider tokens per unit of our (chars/4-ish) estimate, measured
+	 * live from `getContextUsage().tokens ÷ (liveTokens + harnessOverhead)` and smoothed. `liveTokens`
+	 * and `harnessOverhead` systematically UNDER-count the real tokenizer on code/JSON/tool output,
+	 * so `k > 1` typically; dividing the window by `k` shrinks the estimate-unit cap so the REAL
+	 * request stays under the true window. 1/absent ⇒ no calibration (tests / non-live).
+	 */
+	calibration?: number;
+}
+
+/**
+ * The cap (in ESTIMATE units, i.e. comparable to `liveTokens`) the conversation should fold
+ * down toward. `budget`, `contextWindow` and `outputReserve` are REAL provider tokens; the
+ * result is real space converted back to estimate units via the calibration factor `k`:
+ *
+ *   realCap      = min(budget, contextWindow − harnessOverhead·k − outputReserve)
+ *   availableCap = realCap / k
+ *
+ * So a user "budget" of 100k caps the REAL conversation at 100k tokens. When `contextWindow`
+ * is unknown we cannot bound the total request, so only `budget` applies. With `k = 1` (tests /
+ * non-live) this reduces to `min(budget, contextWindow − harness − reserve)`. Never negative.
+ * The SINGLE source of truth for the cap so every conductor reserves the harness identically.
+ */
+export function availableCap(view: {
+	budget: number;
+	contextWindow: number | null;
+	harnessOverhead?: number;
+	outputReserve?: number;
+	calibration?: number;
+}): number {
+	// k maps our estimate → real tokens. The window & output reserve are in REAL tokens, so we
+	// convert them back to estimate units (÷ k) to compare against `liveTokens` (estimate units);
+	// harnessOverhead is already in estimate units so it is NOT divided. Full derivation:
+	//   want:  k·(liveTokens + harnessOverhead) + outputReserve ≤ contextWindow
+	//   ⇒     liveTokens ≤ contextWindow/k − harnessOverhead − outputReserve/k
+	const k = view.calibration && view.calibration > 0 ? view.calibration : 1;
+	// `budget`, `contextWindow` and `outputReserve` are REAL provider tokens; `harnessOverhead`
+	// is in estimate units (×k → real). Compute the real space available to messages, then
+	// convert back to estimate units (÷ k) so it compares against `liveTokens` (estimate units).
+	const harnessReal = (view.harnessOverhead ?? 0) * k;
+	const windowSpace = view.contextWindow != null ? view.contextWindow - harnessReal - (view.outputReserve ?? 0) : Number.POSITIVE_INFINITY;
+	const realCap = Math.min(view.budget, windowSpace);
+	return Math.max(0, realCap / k);
 }
 
 /**

@@ -114,6 +114,19 @@ export class AccordionStore {
 	/** Model's total context window, as reported by pi (null until known). */
 	contextWindow = $state<number | null>(null);
 	/**
+	 * Tokens kept FREE for the model's reply, reserved from the window alongside the harness so
+	 * conversation + harness + reply all fit. 0 by default (non-live / tests keep old behaviour);
+	 * the live client sets a sensible default once a model/window is known.
+	 */
+	outputReserve = $state(0);
+	/**
+	 * Live calibration factor: REAL provider tokens per unit of our (chars/4-ish) estimate,
+	 * smoothed via EMA and clamped to [0.5, 3]. Updated each time the harness breakdown arrives
+	 * (`updateCalibration`). 1 in non-live mode / tests ⇒ no calibration. Passed to the conductor
+	 * so `availableCap` can convert the real window into estimate units.
+	 */
+	calibration = $state(1);
+	/**
 	 * Slice 0 diagnostic: harness overhead reported by the live link. `totalTokens`
 	 * is pi's full request size (system prompt + tool schemas + framing + the
 	 * conversation Accordion holds). `systemPromptTokens` is a chars/4 estimate of
@@ -667,12 +680,32 @@ export class AccordionStore {
 		return n;
 	});
 	savedTokens = $derived.by(() => this.fullTokens - this.liveTokens);
+	/**
+	 * Non-conversation overhead already consuming the window (system prompt + tool schemas incl.
+	 * MCP + framing), derived from the live harness breakdown. Preferred = the self-consistent
+	 * wire measurement `actualWireTokens − messagesTokens` (both chars/4 of the SAME payload);
+	 * falls back to `tools + system` payload sizes, then the system-prompt estimate, then 0.
+	 * Passed to the conductor so it folds against the space the conversation can really occupy.
+	 */
+	harnessOverhead = $derived.by(() => {
+		const h = this.harnessBreakdown;
+		if (!h) return 0;
+		if (h.actualWireTokens != null && h.messagesTokens != null) {
+			return Math.max(0, h.actualWireTokens - h.messagesTokens);
+		}
+		let sum = 0;
+		if (h.toolsTokens != null) sum += h.toolsTokens;
+		if (h.systemPayloadTokens != null) sum += h.systemPayloadTokens;
+		else if (h.systemPromptTokens != null) sum += h.systemPromptTokens;
+		return sum;
+	});
 	foldedCount = $derived.by(() => {
 		let n = 0;
 		for (const b of this.blocks) if (this.isFolded(b)) n++;
 		return n;
 	});
-	overBudget = $derived.by(() => this.liveTokens > this.budget);
+	// Budget is REAL provider tokens; liveTokens is our estimate → compare on the real scale.
+	overBudget = $derived.by(() => this.liveTokens * this.calibration > this.budget);
 
 	// ---- groups (multiblock folds, ADR 0006) -------------------------------
 	/** blockId → the group it belongs to (if any). Reactive on `groups`. */
@@ -993,6 +1026,9 @@ export class AccordionStore {
 			blocks,
 			budget: this.budget,
 			contextWindow: this.contextWindow,
+			harnessOverhead: this.harnessOverhead,
+			outputReserve: this.outputReserve,
+			calibration: this.calibration,
 			liveTokens: this.liveTokens,
 			protectedFromIndex: protectedFrom,
 			// Under tail-size the conductor sees ITS OWN tail target — the same value that
@@ -1117,6 +1153,26 @@ export class AccordionStore {
 		this.contextWindow = n;
 	}
 
+	/** EMA smoothing weight for the calibration factor (higher = tracks faster, noisier). */
+	private static readonly CALIBRATION_ALPHA = 0.3;
+
+	/**
+	 * Recompute the calibration factor from the latest harness breakdown: real provider tokens
+	 * (`totalTokens`) ÷ our estimate of the same request (`liveTokens + harnessOverhead`). Both
+	 * `totalTokens` and the estimate are LAGGED to the same (previous) request, so they pair up;
+	 * and because `k` is really a CONTENT-DENSITY ratio (stable regardless of which blocks are
+	 * folded) the pairing is robust. Clamped to [0.5, 3] against garbage, then EMA-smoothed.
+	 */
+	private updateCalibration(): void {
+		const total = this.harnessBreakdown?.totalTokens ?? null;
+		if (total == null || total <= 0) return;
+		const est = this.liveTokens + this.harnessOverhead;
+		if (est <= 0) return;
+		const clamped = Math.min(3, Math.max(0.5, total / est));
+		const a = AccordionStore.CALIBRATION_ALPHA;
+		this.calibration = this.calibration * (1 - a) + clamped * a;
+	}
+
 	setHarnessBreakdown(h: {
 		totalTokens: number | null;
 		systemPromptTokens: number | null;
@@ -1126,6 +1182,7 @@ export class AccordionStore {
 		systemPayloadTokens?: number | null;
 	} | null): void {
 		this.harnessBreakdown = h;
+		this.updateCalibration();
 	}
 
 	/**

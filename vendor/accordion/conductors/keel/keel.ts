@@ -71,6 +71,7 @@
  * Types only from `../contract` + sibling conductor helpers; no Svelte, no `$state`, no Node/Tauri APIs.
  */
 import type { Command, Conductor, ConductorHost, ConductorView, ViewBlock } from "../contract";
+import { availableCap } from "../contract";
 import { FOLDABLE_KINDS, type ScoreCtx } from "../cold-score/score";
 import { extractIdentifiers, matchBlocks } from "../cold-score/lexical";
 import { buildTailText, currentTurn } from "../cold-score/cold-score";
@@ -83,7 +84,7 @@ import {
 	type LevelResult, type CountTokens,
 } from "./ladder";
 import { harvestFacts } from "./ledger";
-import { EPOCH_BAND, effectiveCap, hardCapFloor } from "./budget";
+import { EPOCH_BAND, hardCapFloor } from "./budget";
 import { blockLabel } from "../compaction-naive/compaction-naive";
 
 /**
@@ -294,8 +295,13 @@ export class KeelConductor implements Conductor {
 		// Update ACT-R warmth from the protected tail every turn (continuous accumulation).
 		this.updateWarmth(blocks, T);
 
-		// Under budget → raw, nothing to do. Clear the held plan so a later epoch re-plans fresh.
-		if (view.liveTokens <= view.budget) {
+		// The cap the CONVERSATION may occupy: min(budget, window − harness − output reserve).
+		// Reserving the harness (system + tools + framing) here is what stops the REAL request
+		// overflowing while `liveTokens` (conversation only) still looks comfortably under budget.
+		const cap = availableCap(view);
+
+		// Under cap → raw, nothing to do. Clear the held plan so a later epoch re-plans fresh.
+		if (view.liveTokens <= cap) {
 			this.lastPlan = [];
 			this.host?.setStatus(null);
 			return [];
@@ -314,7 +320,6 @@ export class KeelConductor implements Conductor {
 		const ranked = rankCandidates(blocks, roots, ctx);
 
 		// ── 3. EPOCH gate ────────────────────────────────────────────────────────
-		const cap = effectiveCap(view.budget, view.contextWindow);
 		const highTok = EPOCH_BAND.high * cap;
 		const lowTok = EPOCH_BAND.low * cap;
 
@@ -334,14 +339,14 @@ export class KeelConductor implements Conductor {
 
 		// HOLD while the held plan keeps us in band (≤ 0.9·cap) AND under hard budget. Re-emit the
 		// last plan byte-for-byte so the prefix stays cache-warm — only re-plan at a real epoch.
-		if (heldCount > 0 && projectedHeld <= highTok && projectedHeld <= view.budget && this.lastPlan.length > 0) {
+		if (heldCount > 0 && projectedHeld <= highTok && projectedHeld <= cap && this.lastPlan.length > 0) {
 			this.publishStatus(blocks, heldCount, 0, [], projectedHeld, view, /*held*/ true);
 			return this.lastPlan;
 		}
 
 		// ── 4 + 5. EPOCH: route + deepen coldest-first to the low-water target, then floor ──
-		// Target: fold down to 0.7·cap, but never leave us over hard budget.
-		const target = Math.min(lowTok, view.budget);
+		// Target: fold down to 0.7·cap, but never leave us over the available cap.
+		const target = Math.min(lowTok, cap);
 
 		const callById = new Map<string, ViewBlock>();
 		for (const b of blocks) if (b.kind === "tool_call" && b.callId) callById.set(b.callId, b);
@@ -761,7 +766,7 @@ export class KeelConductor implements Conductor {
 	): void {
 		if (!this.host) return;
 		const saved = view.liveTokens - projected;
-		const cap = effectiveCap(view.budget, view.contextWindow);
+		const cap = availableCap(view);
 		// HONEST INVARIANT (ADR 0017 §10/§16): Keel guarantees projected ≤ cap UNLESS the
 		// irreducible floor — roots (every user/spec + held) plus the protected working tail —
 		// alone exceeds cap. Those blocks are host-absolute and cannot be folded, so Keel folds

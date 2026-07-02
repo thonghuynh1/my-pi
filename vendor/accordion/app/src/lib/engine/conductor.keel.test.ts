@@ -81,7 +81,7 @@ describe("Keel — golden determinism on the sample session", () => {
 		}).toMatchInlineSnapshot(`
 			{
 			  "blocks": 982,
-			  "foldedCount": 397,
+			  "foldedCount": 409,
 			}
 		`);
 

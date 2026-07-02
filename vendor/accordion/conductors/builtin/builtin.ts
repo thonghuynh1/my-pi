@@ -17,6 +17,7 @@
  * whole point of M1, pinned by `conductor.builtin.test.ts`.
  */
 import type { Conductor, ConductorView, ConductorBlockKind, Command } from "../contract";
+import { availableCap } from "../contract";
 
 /**
  * Lower value → folded sooner. The whole asymmetry the tool is built around. (Was a
@@ -51,7 +52,10 @@ export class BuiltinConductor implements Conductor {
 	 */
 	conduct(view: ConductorView): Command[] {
 		let live = view.liveTokens;
-		if (live <= view.budget) return [];
+		// Fold toward the space the conversation can actually occupy (budget minus the reserved
+		// harness + output), not the raw budget — otherwise the real request overflows the window.
+		const cap = availableCap(view);
+		if (live <= cap) return [];
 
 		const cand = view.blocks
 			.filter((b) => !b.held && !b.protected && !b.grouped && b.foldedTokens < b.tokens)
@@ -59,7 +63,7 @@ export class BuiltinConductor implements Conductor {
 
 		const ids: string[] = [];
 		for (const b of cand) {
-			if (live <= view.budget) break;
+			if (live <= cap) break;
 			ids.push(b.id);
 			live += b.foldedTokens - b.tokens;
 		}

@@ -59,10 +59,10 @@ describe("built-in conductor — golden fold of the sample session", () => {
 		}).toMatchInlineSnapshot(`
 			{
 			  "blocks": 982,
-			  "foldedCount": 300,
-			  "fullTokens": 133571,
-			  "liveTokens": 69879,
-			  "savedTokens": 63692,
+			  "foldedCount": 333,
+			  "fullTokens": 147110,
+			  "liveTokens": 69421,
+			  "savedTokens": 77689,
 			}
 		`);
 

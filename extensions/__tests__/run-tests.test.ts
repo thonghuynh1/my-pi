@@ -90,6 +90,30 @@ test("run_tests condenses repeated dotnet failures into unique failure summaries
 	assert.match(text, /DeleteActivityDocumentTests\\When_handler_deletes_an_activity_document\.cs:line 88/);
 });
 
+test("run_tests extracts build errors and suppresses warnings on dotnet build failure", async () => {
+	const buildFailureOutput = [
+		"C:/Repo/Foo.csproj : warning NU1902: Package 'MessagePack' 2.5.192 has a known moderate severity vulnerability",
+		"C:/Repo/Foo.csproj : warning NU1903: Package 'MessagePack' 2.5.192 has a known high severity vulnerability",
+		"C:/Repo/Foo.cs(3,86): warning CS8625: Cannot convert null literal to non-nullable reference type. [Foo.csproj]",
+		"C:/Repo/Foo.cs(18,36): error CS0246: The type or namespace name 'MissingType' could not be found [Foo.csproj]",
+		"C:/Repo/Bar.cs(20,9): error CS0246: The type or namespace name 'AnotherMissingType' could not be found [Foo.csproj]",
+	].join("\n");
+
+	const pi = createFakePi({ code: 1, stdout: buildFailureOutput, stderr: "" });
+	runTestsExtension(pi as any);
+	const tool = getRunTestsTool(pi);
+
+	const result = await tool.execute("call-3", { command: "dotnet test C:/Repo/Tests.csproj", lines: 40 }, undefined, () => {});
+	const text = result.content[0]?.text ?? "";
+
+	assert.match(text, /Build failed \(2 error\(s\)\)/);
+	assert.match(text, /CS0246.*MissingType/);
+	assert.match(text, /CS0246.*AnotherMissingType/);
+	assert.equal(text.includes("NU1902"), false, "NU1902 warning should be suppressed");
+	assert.equal(text.includes("NU1903"), false, "NU1903 warning should be suppressed");
+	assert.equal(text.includes("CS8625"), false, "CS8625 warning should be suppressed");
+});
+
 test("run_tests keeps tail output for non-dotnet failures", async () => {
 	const pi = createFakePi({
 		code: 1,

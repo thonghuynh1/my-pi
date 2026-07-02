@@ -22,6 +22,14 @@ import type { CompletionRequest, CompletionResult } from "$conductors/contract";
 
 let socket: WebSocket | null = null;
 let manualClose = false;
+
+/**
+ * Default tokens to reserve for the model's reply, sized to the window: ~15% capped at 8k.
+ * Reserved (with the harness) from the window so conversation + harness + reply all fit.
+ */
+function defaultOutputReserve(contextWindow: number): number {
+	return Math.min(8192, Math.floor(contextWindow * 0.15));
+}
 // True once budget has been set from pi's contextWindow for the current connection.
 // Prevents subsequent syncs from overriding a user's manual budget adjustment.
 let budgetLive = false;
@@ -248,6 +256,7 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 			if (typeof msg.meta.contextWindow === "number" && msg.meta.contextWindow > 0) {
 				session.store.setContextWindow(msg.meta.contextWindow);
 				session.store.setBudget(Math.min(msg.meta.contextWindow, 100_000)); // overlay: cap budget at 100k
+				if (session.store.outputReserve === 0) session.store.outputReserve = defaultOutputReserve(msg.meta.contextWindow);
 				budgetLive = true;
 			}
 		} else if (msg.type === "sync") {
@@ -258,6 +267,8 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 				const prevContextWindow = session.store.contextWindow;
 				const prevBudget = session.store.budget;
 				const prevProtect = session.store.protectTokens;
+				const prevOutputReserve = session.store.outputReserve;
+				const prevCalibration = session.store.calibration;
 				session.store.dispose(); // abort the outgoing store's conductor (in-flight host.complete) before discarding it
 				session.store = new AccordionStore({
 					meta: session.store.meta,
@@ -269,6 +280,8 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 				if (prevContextWindow !== null) session.store.setContextWindow(prevContextWindow);
 				session.store.setBudget(prevBudget);
 				session.store.setProtect(prevProtect);
+				session.store.outputReserve = prevOutputReserve;
+				session.store.calibration = prevCalibration;
 				// Re-attach the completer: a structural reset builds a brand-new store object,
 				// so the reference from the hello path is gone. The socket is still live.
 				session.store.completer = sendCompletion;
@@ -281,6 +294,7 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 			if (typeof cw === "number" && cw > 0) {
 				const prev = session.store.contextWindow;
 				session.store.setContextWindow(cw);
+				if (session.store.outputReserve === 0) session.store.outputReserve = defaultOutputReserve(cw);
 				if (!budgetLive || (prev !== null && prev !== cw)) {
 					session.store.setBudget(cw);
 					budgetLive = true;
@@ -299,7 +313,57 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 				const sys = msg.harness.systemPromptTokens;
 				const overhead = total !== null ? total - live : null;
 				const other = overhead !== null && sys !== null ? overhead - sys : null;
+				// Self-consistent (all chars/4 of the SAME payload) decomposition — lets us
+				// prove that the big "other" bucket is tokenizer DRIFT, not real harness.
+				const wire = msg.harness.actualWireTokens ?? null; // chars/4 of whole body
+				const msgs = msg.harness.messagesTokens ?? null; // chars/4 of payload.messages
+				const tools = msg.harness.toolsTokens ?? null; // chars/4 of payload.tools (incl MCP)
+				const sysWire = msg.harness.systemPayloadTokens ?? null; // chars/4 of payload.system
+				// framing = per-message JSON envelope overhead (role tags, tool_use wrappers,
+				// cache_control). Grows with message COUNT, not content size.
+				const framing = msgs !== null ? Math.max(0, msgs - live) : null;
+				// trueHarness = everything on the wire that is NOT the messages array.
+				// Self-consistent: both operands are chars/4. This is the ONLY number worth
+				// reserving as "overhead" — it should be small (~tools + sys + framing).
+				const trueHarness = wire !== null && msgs !== null ? wire - msgs : null;
+				// realOverhead = the ACTIONABLE number: real provider total minus Accordion's
+				// conversation estimate. This is what we reserve in effectiveCap. `wire` is
+				// chars/4 of the JSON body — inflated by scaffolding — so DON'T use it as the base.
+				const realOverhead = total !== null ? total - live : null;
+				// jsonScaffold = how much `wire` overcounts vs the real tokenizer (JSON syntax
+				// the provider never bills). Expect this to be large & meaningless for budgeting.
+				const jsonScaffold = total !== null && wire !== null ? wire - total : null;
 				console.log("[accordion harness]", { total, live, overhead, systemPrompt: sys, other });
+				console.log("[accordion harness/verified]", {
+					liveEst: live, // chars/4 of folded conversation (Accordion's number)
+					wire, // chars/4 of the whole provider payload
+					msgs, // chars/4 of payload.messages
+					tools, // chars/4 of payload.tools (incl MCP)  ← expect ~your 5k
+					sysWire, // chars/4 of payload.system
+					framing, // msgs - live: JSON envelope overhead (grows w/ msg count)
+					trueHarness, // wire - msgs: chars/4 harness (tools+sys+framing), self-consistent
+					realOverhead, // total - live: THE number to reserve in effectiveCap (~tools+sys)
+					jsonScaffold, // wire - total: JSON syntax overcount (ignore for budgeting)
+					piTotal: total, // real provider tokenizer count (system+tools+messages+output+cache)
+				});
+				// Calibration + the resulting fold cap (all in Accordion's estimate units). Watch
+				// `k` converge (~1.2–1.4 on Anthropic tool sessions) and `availableCapEst` become the
+				// real target the conductor folds toward — smaller than `budget` once tools/window bite.
+				const k = session.store.calibration;
+				const cw = session.store.contextWindow;
+				const harness = session.store.harnessOverhead;
+				const reserve = session.store.outputReserve;
+				const availableCapEst =
+					cw != null ? Math.max(0, Math.min(session.store.budget, cw / k - harness - reserve / k)) : session.store.budget;
+				console.log("[accordion harness/cap]", {
+					k: Number(k.toFixed(3)), // calibration: real tokens per estimate unit
+					harnessOverhead: harness, // reserved system+tools+framing (estimate units)
+					outputReserve: reserve, // reserved for the reply (real tokens)
+					budget: session.store.budget, // user budget (estimate units)
+					contextWindow: cw, // real model window
+					availableCapEst, // what the conductor actually folds toward
+					projectedRealTotal: Math.round(k * (live + harness) + reserve), // predicted real request
+				});
 				// Also expose the store globally for ad-hoc inspection.
 				(globalThis as { __accordion?: unknown }).__accordion = session.store;
 			}

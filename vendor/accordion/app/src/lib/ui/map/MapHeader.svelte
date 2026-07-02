@@ -27,7 +27,14 @@
 		return m;
 	});
 
-	const denom = $derived(Math.max(store.fullTokens, store.budget, 1));
+	// Everything the operator SEES is in real provider tokens (estimate × calibration `k`), since
+	// that is what fills the window and costs money. The budget is likewise real, and the conductor
+	// converts it back to estimate units internally (see `availableCap`).
+	const kCal = $derived(store.calibration);
+	const liveReal = $derived(store.liveTokens * kCal);
+	const fullReal = $derived(store.fullTokens * kCal);
+	const savedReal = $derived(store.savedTokens * kCal);
+	const denom = $derived(Math.max(fullReal, store.budget, 1));
 	const conductorStatusText = $derived(store.conductorStatus.text || conductorStatus.text);
 	const conductorStatusDetails = $derived(store.conductorStatus.text ? store.conductorStatus.details : conductorStatus.details);
 	// fmt/k formatters must round their input because AnimatedNumber passes a float mid-tween
@@ -84,13 +91,14 @@
 	// Everything on the bar is scaled to `denom` so the protected handle/tint share
 	// the composition bar's token axis. Clamp the readout to the bar so a tiny session
 	// (protect target > whole context) never paints past the right edge.
-	const protPct = $derived(Math.min(100, (store.protectTokens / denom) * 100));
+	// protectTokens is in ESTIMATE units; the bar's denom is real, so scale by k to place it.
+	const protPct = $derived(Math.min(100, ((store.protectTokens * kCal) / denom) * 100));
 	// While dragging, the handle follows the cursor continuously (smooth) and the
 	// expensive fold commit is throttled to one per frame. `dragTokens` is non-null
 	// only mid-drag; otherwise the handle tracks the committed target.
 	let dragTokens = $state<number | null>(null);
 	const handlePct = $derived(
-		dragTokens != null ? Math.min(100, (dragTokens / denom) * 100) : protPct,
+		dragTokens != null ? Math.min(100, ((dragTokens * kCal) / denom) * 100) : protPct,
 	);
 	// The TARGET protected size the user is dialing in. The underline + its label echo
 	// this (smooth, matches the grip), NOT the actual protected tail — `protectedTokens`
@@ -98,9 +106,24 @@
 	const targetTokens = $derived(dragTokens ?? store.protectTokens);
 	// Headroom: the slack between what's used and the budget ceiling. Only present when
 	// the budget exceeds the full (unfolded) size — i.e. denom === budget.
-	const headroomPct = $derived(Math.max(0, ((denom - store.fullTokens) / denom) * 100));
+	const headroomPct = $derived(Math.max(0, ((denom - fullReal) / denom) * 100));
 	// What "Revert to auto" will clear: every block carrying a manual/agent override.
 	const editCount = $derived(store.blocks.filter((b) => b.override !== null).length);
+
+	// ── Real context-window bar (live only): the CALIBRATED view of the actual provider
+	// request. `liveTokens`/`harnessOverhead` are our estimate units; × calibration `k`
+	// projects them onto real provider tokens, which is what actually fills the window. ──
+	const realMessages = $derived(liveReal);
+	const realHarness = $derived(store.harnessOverhead * kCal);
+	const realReserve = $derived(store.outputReserve);
+	const realTotal = $derived(realMessages + realHarness + realReserve);
+	const showWindow = $derived(store.contextWindow != null && store.harnessBreakdown != null);
+	const realOver = $derived(store.contextWindow != null && realTotal > store.contextWindow);
+	// Width as a % of the real window, clamped so an over-budget request can't paint past the edge.
+	const winPct = (n: number) => {
+		const w = store.contextWindow ?? 0;
+		return w > 0 ? Math.max(0, Math.min(100, (n / w) * 100)) : 0;
+	};
 
 	// ── Involvement locks (ADR 0011) — the honest mirror of the engine's gating. A locked
 	// control LOOKS locked in every mode (preview/demo/read-only included), driven purely off
@@ -115,7 +138,8 @@
 		if (!barEl) return store.protectTokens;
 		const r = barEl.getBoundingClientRect();
 		const frac = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
-		return Math.max(0, Math.min(PROT_MAX, frac * denom));
+		// denom is real tokens; PROT_MAX / protectTokens are estimate units → convert back (÷ k).
+		return Math.max(0, Math.min(PROT_MAX, (frac * denom) / (kCal || 1)));
 	}
 	// Snap to the step and commit the real fold. Only ever called on release (or via
 	// keyboard) — NEVER mid-drag, so blocks are re-folded once when you let go, not
@@ -159,12 +183,12 @@
 		<div class="nums">
 			<div class="hero-line">
 				<span class="hero-stat mono tnum" class:over={store.overBudget}>
-					<AnimatedNumber value={store.liveTokens} format={fmt} />
+					<AnimatedNumber value={liveReal} format={fmt} />
 				</span>
 				<span class="budget-denom mono tnum">/ <AnimatedNumber value={store.budget} format={fmt} /></span>
 				{#if store.overBudget}
 					<span class="over-flag mono tnum">
-						over by <AnimatedNumber value={store.liveTokens - store.budget} format={fmtOverBy} />
+						over by <AnimatedNumber value={liveReal - store.budget} format={fmtOverBy} />
 					</span>
 				{/if}
 			</div>
@@ -240,7 +264,7 @@
 				aria-disabled={tailLocked}
 				title={tailLocked
 					? lockTip + " (the conductor now owns the tail)"
-					: `Actual protected tail: ${fmt(store.protectedTokens)} tokens; target: ${fmt(store.protectTokens)} tokens — click the value or drag the handle to change it`}
+					: `Actual protected tail: ${fmt(store.protectedTokens * kCal)} tokens; target: ${fmt(store.protectTokens * kCal)} tokens — click the value or drag the handle to change it`}
 			>
 				<span class="ctl-eyebrow mono">
 					<Icon name="lock" size={10} />
@@ -249,17 +273,17 @@
 				<span class="ctl-value mono tnum">
 					{#if tailLocked}
 						<!-- tail-size locked: a static readout, not an editable dial. -->
-						<span class="kl-val">{k(store.protectTokens)}</span>
+						<span class="kl-val">{k(store.protectTokens * kCal)}</span>
 					{:else}
 						<EditableNumber
-							value={store.protectTokens}
+							value={store.protectTokens * kCal}
 							format={k}
-							label="Protected tail target in thousands of tokens"
-							oncommit={(n) => store.setProtect(Math.max(0, Math.min(PROT_MAX, n)))}
+							label="Protected tail target in thousands of tokens (real)"
+							oncommit={(n) => store.setProtect(Math.max(0, Math.min(PROT_MAX, n / (kCal || 1))))}
 						/>
 					{/if}
 					{#if Math.abs(store.protectedTokens - store.protectTokens) > 500}
-						<span class="kl-target tnum">({k(store.protectedTokens)})</span>
+						<span class="kl-target tnum">({k(store.protectedTokens * kCal)})</span>
 					{/if}
 				</span>
 			</div>
@@ -328,16 +352,16 @@
 	<div class="bar-area">
 		<div class="bar" bind:this={barEl} role="img" aria-label="Context composition">
 			{#each LADDER as seg (seg.kind)}
-				{@const v = liveByKind[seg.kind]}
+				{@const v = liveByKind[seg.kind] * kCal}
 				{#if v > 0}
 					<span class="seg k-{seg.kind}" style:width="{(v / denom) * 100}%" title="{seg.label}: {fmt(v)} live"></span>
 				{/if}
 			{/each}
-			{#if store.savedTokens > 0}
-				<span class="seg saved-seg" style:width="{(store.savedTokens / denom) * 100}%" title="folded away: {fmt(store.savedTokens)}"></span>
+			{#if savedReal > 0}
+				<span class="seg saved-seg" style:width="{(savedReal / denom) * 100}%" title="folded away: {fmt(savedReal)}"></span>
 			{/if}
 			{#if headroomPct > 0.5}
-				<span class="headroom" style:left="{100 - headroomPct}%" style:width="{headroomPct}%" title="headroom: {fmt(store.budget - store.fullTokens)} under budget"></span>
+				<span class="headroom" style:left="{100 - headroomPct}%" style:width="{headroomPct}%" title="headroom: {fmt(store.budget - fullReal)} under budget"></span>
 			{/if}
 			<!-- protected extent, clipped to the bar -->
 			<span class="prot-tint" style:width="{handlePct}%" aria-hidden="true"></span>
@@ -374,9 +398,35 @@
 		<!-- the slight underline echoing the protected extent -->
 		<div class="prot-underline-track" aria-hidden="true">
 			<span class="prot-underline" style:width="{handlePct}%"></span>
-			<span class="prot-underline-lab" style:left="{handlePct}%">{k(targetTokens)} protected</span>
+			<span class="prot-underline-lab" style:left="{handlePct}%">{k(targetTokens * kCal)} protected</span>
 		</div>
 	</div>
+
+	<!-- ── Real context-window bar (live): messages · harness · reply · free, against the
+	     model's true window, using the live calibration `k` so this reflects the ACTUAL
+	     provider request — not just the folded conversation the composition bar shows. ── -->
+	{#if showWindow}
+		{@const window = store.contextWindow ?? 0}
+		<div class="window-area">
+			<div class="window-caption mono tnum" class:over={realOver}>
+				<span class="win-label">real window</span>
+				{fmt(realTotal)} / {fmt(window)}
+				<span class="win-k">×{kCal.toFixed(2)}</span>
+				<span class="win-split">messages {fmt(realMessages)} · harness {fmt(realHarness)} · reply {fmt(realReserve)}</span>
+				{#if realOver}<span class="win-over">over window by {fmt(realTotal - window)}</span>{/if}
+			</div>
+			<div
+				class="window-bar"
+				class:over={realOver}
+				role="img"
+				aria-label="Real context window usage: {fmt(realTotal)} of {fmt(window)} tokens"
+			>
+				<span class="wseg w-msg" style:width="{winPct(realMessages)}%" title="messages (calibrated): {fmt(realMessages)}"></span>
+				<span class="wseg w-harness" style:width="{winPct(realHarness)}%" title="harness — system + tools + framing (calibrated): {fmt(realHarness)}"></span>
+				<span class="wseg w-reserve" style:width="{winPct(realReserve)}%" title="reserved for the reply: {fmt(realReserve)}"></span>
+			</div>
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -885,5 +935,82 @@
 		background: var(--text);
 		border-radius: 50%;
 		box-shadow: 0 0 0 1px var(--panel-2);
+	}
+
+	/* ── Real context-window bar: calibrated messages · harness · reply · free ── */
+	.window-area {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		margin-top: var(--sp-2);
+	}
+	.window-caption {
+		display: flex;
+		align-items: baseline;
+		flex-wrap: wrap;
+		gap: 6px;
+		font-size: var(--fs-2xs);
+		color: var(--muted);
+		letter-spacing: 0.01em;
+	}
+	.window-caption.over {
+		color: var(--danger);
+	}
+	.win-label {
+		text-transform: uppercase;
+		letter-spacing: 0.12em;
+		color: var(--faint);
+	}
+	.win-k {
+		color: var(--faint);
+	}
+	.win-split {
+		color: var(--faint);
+	}
+	.win-over {
+		font-weight: 600;
+		color: var(--danger);
+	}
+	.window-bar {
+		position: relative;
+		display: flex;
+		height: 10px;
+		width: 100%;
+		background: var(--panel-2);
+		border: 1px solid var(--line-soft);
+		box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
+		border-radius: var(--radius-pill);
+		overflow: hidden;
+	}
+	.window-bar.over {
+		border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+	}
+	.wseg {
+		height: 100%;
+		outline: 1px solid var(--panel);
+		outline-offset: -1px;
+		transition: width 180ms var(--ease-out);
+		flex: 0 0 auto;
+	}
+	.wseg:first-child {
+		border-radius: var(--radius-pill) 0 0 var(--radius-pill);
+	}
+	/* messages = the foldable conversation; harness = system + tools + framing;
+	   reply = the reserved output space. Free space is the bar's own track. */
+	.wseg.w-msg {
+		background: var(--accent);
+	}
+	.wseg.w-harness {
+		background: var(--k-tool_call);
+	}
+	.wseg.w-reserve {
+		background-color: var(--panel-3);
+		background-image: repeating-linear-gradient(
+			45deg,
+			transparent,
+			transparent 3px,
+			rgba(255, 255, 255, 0.06) 3px,
+			rgba(255, 255, 255, 0.06) 6px
+		);
 	}
 </style>

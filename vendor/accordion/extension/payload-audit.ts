@@ -91,10 +91,19 @@ function recordSizes(payload: unknown): PayloadSizes {
 	const zero: PayloadSizes = { actualWireTokens: 0, messagesTokens: 0, toolsTokens: 0, systemPayloadTokens: 0 };
 	if (!payload || typeof payload !== "object") return zero;
 	const p = payload as Record<string, unknown>;
+	// Field names differ per provider (verified against pi's provider adapters):
+	//   Anthropic / OpenAI Chat / Bedrock : payload.messages
+	//   OpenAI Responses API              : payload.input   (⚠ no `messages`)
+	//   tools: payload.tools everywhere except Bedrock (payload.toolConfig)
+	//   system: payload.system on Anthropic (array) + Bedrock; OpenAI embeds it in
+	//           the first message/input item, so systemPayloadTokens stays 0 there
+	//           and its cost is (correctly) folded into messagesTokens instead.
+	const messagesField = p.messages ?? p.input;
+	const toolsField = p.tools ?? p.toolConfig;
 	return {
 		actualWireTokens: tokenSize(p),
-		messagesTokens: tokenSize(p.messages),
-		toolsTokens: tokenSize(p.tools),
+		messagesTokens: tokenSize(messagesField),
+		toolsTokens: tokenSize(toolsField),
 		systemPayloadTokens: tokenSize(p.system),
 	};
 }
@@ -122,8 +131,8 @@ function buildReport(payload: unknown): string {
 		lines.push(`${r.key.padEnd(keyW)}   ${String(r.tokens).padStart(6)}   ${pct}%`);
 	}
 
-	// tools breakdown — usually the biggest mystery bucket
-	const tools = p.tools;
+	// tools breakdown — usually the biggest mystery bucket. Bedrock names it toolConfig.
+	const tools = (p.tools ?? p.toolConfig) as unknown;
 	if (Array.isArray(tools) && tools.length > 0) {
 		lines.push("");
 		lines.push(`tools[]: ${tools.length} entries`);
@@ -165,8 +174,8 @@ function buildReport(payload: unknown): string {
 		lines.push(`system: string, ${tokenSize(system).toLocaleString()} tok`);
 	}
 
-	// messages summary — heaviest first, no full body dump
-	const messages = p.messages;
+	// messages summary — heaviest first, no full body dump. OpenAI Responses uses `input`.
+	const messages = (p.messages ?? p.input) as unknown;
 	if (Array.isArray(messages) && messages.length > 0) {
 		lines.push("");
 		lines.push(`messages[]: ${messages.length} entries`);

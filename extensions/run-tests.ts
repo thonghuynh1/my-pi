@@ -139,6 +139,21 @@ function formatFailureOutput(command: string, fullOutput: string, tailLines: num
 	if (looksLikeDotnet) {
 		const formatted = formatDotnetFailures(outputLines, tailLines);
 		if (formatted) return formatted;
+
+		// Build failure path — no test-failure blocks found.
+		// Surface only error lines; discard warning noise.
+		const errorLines = outputLines.filter((line) => /:\s*error\s+[A-Z]+\d+/i.test(line));
+		if (errorLines.length > 0) {
+			const maxErrors = 10;
+			const shown = errorLines.slice(0, maxErrors);
+			const extra = errorLines.length - shown.length;
+			const suffix = extra > 0 ? `\n... ${extra} more error(s) suppressed.` : "";
+			return `Build failed (${errorLines.length} error(s)):\n\n${shown.join("\n")}${suffix}`;
+		}
+
+		// No recognizable build errors — filter warnings and tail.
+		const withoutWarnings = outputLines.filter((line) => !/:\s*warning\s+[A-Z]+\d+/i.test(line));
+		return withoutWarnings.slice(-tailLines).join("\n");
 	}
 
 	return outputLines.slice(-tailLines).join("\n");

@@ -373,13 +373,14 @@ function buildPairProgramToolDef(pi: ExtensionAPI) {
           getPstackDescription: () => discoverPstackDescriptionFromEngineeringSkillsConfig(),
         });
         if (!registryResult.available) {
+          const reason = "reason" in registryResult ? registryResult.reason : "Unknown registry error.";
           const blockedResult: PairProgramDetails = {
             status: "blocked",
             summary:
               "pstack-driven pair programming requires the engineering-skills MCP server with skill-pstack. " +
-              `Registry unavailable: ${registryResult.reason}`,
+              `Registry unavailable: ${reason}`,
             changedFiles: [],
-            error: registryResult.reason,
+            error: reason,
           };
           return {
             content: [{ type: "text" as const, text: blockedResult.summary }],

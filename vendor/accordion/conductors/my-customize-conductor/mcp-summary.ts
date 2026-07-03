@@ -20,6 +20,8 @@ const SUMMARY_OVERHEAD_TOKENS = 8;
 const REDACTED = "[redacted]";
 const RECALL_HINT = 'recall({"codes":["<code>"]})';
 const SENSITIVE_KEY_RE = /(token|key|password|secret|auth)/i;
+const PSTACK_NAME_RE = /skill-pstack\(name="([^"]+)"\)/i;
+const FOLD_TAG_RE = /\{#([0-9a-z]{6}) FOLDED\}/i;
 
 /** An MCP tool result: a `tool_result` whose tool is the `mcp` gateway (case-insensitive). */
 export function isMcpResult(b: ViewBlock): boolean {
@@ -72,10 +74,62 @@ export function pstackLabel(name: string): string {
 
 type McpCall = Record<string, unknown>;
 
-type PstackIdentity = {
+export type PstackIdentity = {
 	name: string;
 	label: string;
 };
+
+export function foldCode(id: string): string {
+	let h = 0x811c9dc5;
+	for (let i = 0; i < id.length; i++) {
+		h ^= id.charCodeAt(i);
+		h = Math.imul(h, 0x01000193);
+	}
+	return (h >>> 0).toString(36).padStart(6, "0").slice(-6);
+}
+
+export function pstackIdentityFromMcpCall(callText: string | undefined): PstackIdentity | undefined {
+	return pstackIdentity(parseOuterCall(callText));
+}
+
+export function pstackIdentityFromDigest(text: string | undefined): { code: string; identity: PstackIdentity } | undefined {
+	if (typeof text !== "string") return undefined;
+	const code = text.match(FOLD_TAG_RE)?.[1];
+	const name = text.match(PSTACK_NAME_RE)?.[1];
+	if (!code || !name) return undefined;
+	const normalized = normalizePstackName(name);
+	return { code, identity: { name: normalized, label: pstackLabel(normalized) } };
+}
+
+export function recallCodes(callText: string | undefined): string[] | undefined {
+	const call = parseOuterCall(callText);
+	const keys = Object.keys(call);
+	if (keys.length !== 1 || keys[0] !== "codes") return undefined;
+	const codes = call.codes;
+	if (!Array.isArray(codes) || codes.length === 0) return undefined;
+	if (!codes.every((code) => typeof code === "string" && code.length > 0)) return undefined;
+	return [...codes] as string[];
+}
+
+export function pstackRecallSummary(identity: PstackIdentity): string {
+	return [
+		"tool_result:recall",
+		`Contains: skill-pstack(name="${identity.name}")`,
+		`Label: ${identity.label}`,
+		`Full result preserved. Use ${RECALL_HINT}, not unfold, to re-read this exact pstack leaf.`,
+	].join("\n");
+}
+
+export function genericRecallSummary(codes: string[] | undefined): string {
+	if (codes?.length === 1) {
+		const [code] = codes;
+		return [
+			`tool_result:recall code="${code}"`,
+			`Full result preserved. Use recall({"codes":["${code}"]}) if you need this exact prior result.`,
+		].join("\n");
+	}
+	return ["tool_result:recall", `Full result preserved. Use ${RECALL_HINT} if you need this exact prior result.`].join("\n");
+}
 
 function pstackIdentity(call: McpCall): PstackIdentity | undefined {
 	const tool = str(call.tool);

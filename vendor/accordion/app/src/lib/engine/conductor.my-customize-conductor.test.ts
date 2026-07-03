@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { IN_PROCESS_CONDUCTORS, MyCustomizeConductor } from "$conductors";
 import type { Command, ConductorView, ViewBlock } from "$conductors/contract";
+import { foldTag } from "./digest";
 import { estSummaryTokens, mcpSummary, normalizePstackName, pstackLabel } from "$conductors/my-customize-conductor/mcp-summary";
 
 function vb(
@@ -9,7 +10,7 @@ function vb(
 	order: number,
 	tokens: number,
 	foldedTokens: number,
-	opts: { held?: boolean; protected?: boolean; grouped?: boolean; callId?: string; toolName?: string; text?: string; isError?: boolean } = {},
+	opts: { held?: boolean; folded?: boolean; protected?: boolean; grouped?: boolean; callId?: string; toolName?: string; text?: string; isError?: boolean } = {},
 ): ViewBlock {
 	return {
 		id,
@@ -19,7 +20,7 @@ function vb(
 		tokens,
 		foldedTokens,
 		held: opts.held ?? false,
-		folded: false,
+		folded: opts.folded ?? false,
 		protected: opts.protected ?? false,
 		grouped: opts.grouped ?? false,
 		callId: opts.callId,
@@ -282,5 +283,110 @@ describe("MyCustomizeConductor", () => {
 		expect(rep).toBeDefined();
 		expect(rep!.content.startsWith("tool_result:mcp mcp\n")).toBe(true);
 		expect(projected(view, result)).toBeLessThanOrEqual(view.budget);
+	});
+
+	it("enriches single-code recall results from folded pstack provenance", () => {
+		const sourceId = "r:pstack";
+		const sourceDigest = [
+			`${foldTag(sourceId)} tool_result:mcp skill-pstack(name="principle-prove-it-works")`,
+			"Label: Prove It Works principle",
+			"Full result preserved. Use recall({\"codes\":[\"<code>\"]}), not unfold, before re-calling this exact MCP tool.",
+		].join("\n");
+		const digestCode = foldTag(sourceId).slice(2, 8);
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb(sourceId, "tool_result", 1, 1500, 40, {
+				toolName: "mcp",
+				text: sourceDigest,
+				folded: true,
+				held: true,
+			}),
+			vb("c:recall", "tool_call", 2, 50, 50, { toolName: "recall", callId: "c:recall", text: `recall ${JSON.stringify({ codes: [digestCode] })}` }),
+			vb("r:recall", "tool_result", 3, 1500, 40, { toolName: "recall", callId: "c:recall", text: "# Prove It Works\nfull recalled skill leaf" }),
+		];
+		const view = makeView(blocks, 1_900, 3_250);
+		const result = new MyCustomizeConductor().conduct(view);
+
+		const rep = replaceOf(result, "r:recall");
+		expect(rep).toBeDefined();
+		expect(rep!.recoverable).toBe(true);
+		expect(rep!.content).toContain("tool_result:recall");
+		expect(rep!.content).toContain('Contains: skill-pstack(name="principle-prove-it-works")');
+		expect(rep!.content).toContain("Label: Prove It Works principle");
+		expect(projected(view, result)).toBeLessThanOrEqual(view.budget);
+	});
+
+	it("omits source code in pstack recall digest", () => {
+		const sourceId = "r:pstack";
+		const digestCode = foldTag(sourceId).slice(2, 8);
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb(sourceId, "tool_result", 1, 1500, 40, {
+				toolName: "mcp",
+				text: `${foldTag(sourceId)} tool_result:mcp skill-pstack(name="principle-prove-it-works")\nLabel: Prove It Works principle`,
+				folded: true,
+				held: true,
+			}),
+			vb("c:recall", "tool_call", 2, 50, 50, { toolName: "recall", callId: "c:recall", text: `recall ${JSON.stringify({ codes: [digestCode] })}` }),
+			vb("r:recall", "tool_result", 3, 1500, 40, { toolName: "recall", callId: "c:recall", text: "full recalled skill leaf" }),
+		];
+		const rep = replaceOf(new MyCustomizeConductor().conduct(makeView(blocks, 1_900, 3_250)), "r:recall");
+		expect(rep).toBeDefined();
+		expect(rep!.content).not.toContain(`code="${digestCode}"`);
+	});
+
+	it("uses pstack leaf wording for pstack recall digests", () => {
+		const sourceId = "r:pstack";
+		const digestCode = foldTag(sourceId).slice(2, 8);
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb(sourceId, "tool_result", 1, 1500, 40, {
+				toolName: "mcp",
+				text: `${foldTag(sourceId)} tool_result:mcp skill-pstack(name="principle-prove-it-works")\nLabel: Prove It Works principle`,
+				folded: true,
+				held: true,
+			}),
+			vb("c:recall", "tool_call", 2, 50, 50, { toolName: "recall", callId: "c:recall", text: `recall ${JSON.stringify({ codes: [digestCode] })}` }),
+			vb("r:recall", "tool_result", 3, 1500, 40, { toolName: "recall", callId: "c:recall", text: "full recalled skill leaf" }),
+		];
+		const rep = replaceOf(new MyCustomizeConductor().conduct(makeView(blocks, 1_900, 3_250)), "r:recall");
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain("to re-read this exact pstack leaf");
+		expect(rep!.content).not.toContain("before re-calling this exact MCP tool");
+	});
+
+	it("keeps multi-code recall generic", () => {
+		const sourceId = "r:pstack";
+		const code = foldTag(sourceId).slice(2, 8);
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb(sourceId, "tool_result", 1, 1500, 40, {
+				toolName: "mcp",
+				text: `${foldTag(sourceId)} tool_result:mcp skill-pstack(name="principle-prove-it-works")\nLabel: Prove It Works principle`,
+				folded: true,
+				held: true,
+			}),
+			vb("c:recall", "tool_call", 2, 50, 50, {
+				toolName: "recall",
+				callId: "c:recall",
+				text: `recall ${JSON.stringify({ codes: [code, "other99"] })}`,
+			}),
+			vb("r:recall", "tool_result", 3, 1500, 40, { toolName: "recall", callId: "c:recall", text: "full recalled skill leaf" }),
+		];
+		const rep = replaceOf(new MyCustomizeConductor().conduct(makeView(blocks, 1_900, 3_250)), "r:recall");
+		expect(rep).toBeDefined();
+		expect(rep!.content).not.toContain("Contains: skill-pstack");
+	});
+
+	it("formats unknown single-code recall generically", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:recall", "tool_call", 1, 50, 50, { toolName: "recall", callId: "c:recall", text: `recall ${JSON.stringify({ codes: ["missing123"] })}` }),
+			vb("r:recall", "tool_result", 2, 1500, 40, { toolName: "recall", callId: "c:recall", text: "full recalled unknown leaf" }),
+		];
+		const rep = replaceOf(new MyCustomizeConductor().conduct(makeView(blocks, 300, 1_750)), "r:recall");
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain('tool_result:recall code="missing123"');
+		expect(rep!.content).not.toContain("Contains: skill-pstack");
 	});
 });

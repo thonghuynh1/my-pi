@@ -39,6 +39,8 @@ import { riskFlags } from "../keel/ledger";
 
 /** Fraction of cap below which the current fold plan is held stable (epoch hold band). */
 const HOLD_BAND = 0.9;
+const POTETO_MODE_NAME = "poteto-mode";
+const POTETO_OFF_PHRASES = ["exit poteto mode", "stop using poteto", "disable pstack mode"];
 
 export class MyCustomizeConductor implements Conductor {
 	readonly id = "my-customize-conductor";
@@ -48,6 +50,7 @@ export class MyCustomizeConductor implements Conductor {
 	// Cleared when the view fits within cap (no folding needed) or when the hold band is crossed.
 	private lastPlan: Command[] | null = null;
 	private lastSavings = new Map<string, number>(); // block id → tokens saved
+	private lastSemanticKey: string | null = null;
 
 	conduct(view: ConductorView): Command[] {
 		// Fold toward the REAL available space (budget capped by window − harness − reply reserve,
@@ -56,48 +59,39 @@ export class MyCustomizeConductor implements Conductor {
 		if (view.liveTokens <= cap) {
 			this.lastPlan = null;
 			this.lastSavings.clear();
+			this.lastSemanticKey = null;
 			return [];
 		}
 
-		// Build a lookup used for both the epoch hold check and the savings record below.
+		// Build lookups used for semantic state, the epoch hold check, and savings recording.
 		const byId = new Map(view.blocks.map((b) => [b.id, b]));
-
-		// Epoch hold: if re-applying the previous plan to the current view still lands within
-		// HOLD_BAND × cap, return it unchanged — keeps the KV prefix stable.
-		if (this.lastPlan !== null) {
-			let projectedHeld = view.liveTokens;
-			for (const [id, saving] of this.lastSavings) {
-				const b = byId.get(id);
-				if (b && !b.held && !b.protected && !b.grouped && b.order >= view.frozenFromIndex) projectedHeld -= saving;
-			}
-			if (projectedHeld <= HOLD_BAND * cap) return this.lastPlan;
-			this.lastPlan = null;
-			this.lastSavings.clear();
-		}
-
-		const roots: string[] = [];
-		let firstUserSeen = false;
-		for (const b of view.blocks) {
-			const isFirstUser = !firstUserSeen && b.kind === "user";
-			if (isFirstUser) firstUserSeen = true;
-			if (b.protected || b.held || isFirstUser) roots.push(b.id);
-		}
-		const marked = markReachable(buildGraph(view.blocks), roots);
-
 		const callById = new Map<string, ViewBlock>();
 		for (const b of view.blocks) {
 			if (b.kind === "tool_call" && b.callId) callById.set(b.callId, b);
 		}
 		const pstackByFoldCode = new Map<string, PstackIdentity>();
+		const originalPstackByBlockId = new Map<string, PstackIdentity>();
+		const pstackByBlockId = new Map<string, PstackIdentity>();
 		for (const b of view.blocks) {
 			if (isMcpResult(b)) {
 				const identity = pstackIdentityFromMcpCall(b.callId ? callById.get(b.callId)?.text : undefined);
-				if (identity) pstackByFoldCode.set(foldCode(b.id), identity);
+				if (identity) {
+					originalPstackByBlockId.set(b.id, identity);
+					pstackByBlockId.set(b.id, identity);
+					pstackByFoldCode.set(foldCode(b.id), identity);
+				}
 			}
 			const digestIdentity = pstackIdentityFromDigest(b.text);
-			if (digestIdentity && !pstackByFoldCode.has(digestIdentity.code)) {
-				pstackByFoldCode.set(digestIdentity.code, digestIdentity.identity);
+			if (digestIdentity) {
+				pstackByBlockId.set(b.id, digestIdentity.identity);
+				if (!pstackByFoldCode.has(digestIdentity.code)) pstackByFoldCode.set(digestIdentity.code, digestIdentity.identity);
 			}
+		}
+		for (const b of view.blocks) {
+			if (!isRecallResult(b)) continue;
+			const codes = b.callId ? recallCodes(callById.get(b.callId)?.text) : undefined;
+			const identity = codes?.length === 1 ? pstackByFoldCode.get(codes[0]) : undefined;
+			if (identity) pstackByBlockId.set(b.id, identity);
 		}
 
 		const candidates = view.blocks.filter(
@@ -109,6 +103,41 @@ export class MyCustomizeConductor implements Conductor {
 				b.foldedTokens < b.tokens &&
 				FOLDABLE_KINDS.has(b.kind),
 		);
+		const candidateIds = new Set(candidates.map((b) => b.id));
+		let potetoModeActive = false;
+		let newestPotetoBlock: ViewBlock | undefined;
+		for (const b of [...view.blocks].sort((a, b) => a.order - b.order)) {
+			const identity = pstackByBlockId.get(b.id);
+			if (identity?.name === POTETO_MODE_NAME) newestPotetoBlock = b;
+			if (isPotetoModeOffUserBlock(b)) potetoModeActive = false;
+			if (originalPstackByBlockId.get(b.id)?.name === POTETO_MODE_NAME) potetoModeActive = true;
+		}
+		const beaconCarrierId = potetoModeActive && newestPotetoBlock && candidateIds.has(newestPotetoBlock.id) ? newestPotetoBlock.id : undefined;
+		const semanticKey = `${potetoModeActive ? "active" : "inactive"}|${newestPotetoBlock?.id ?? "-"}|${beaconCarrierId ?? "-"}`;
+
+		// Epoch hold: if re-applying the previous plan to the current view still lands within
+		// HOLD_BAND × cap, return it unchanged — keeps the KV prefix stable. Semantic state changes
+		// invalidate the hold so stale beacon text does not survive mode changes or newer poteto blocks.
+		if (this.lastPlan !== null && this.lastSemanticKey === semanticKey) {
+			let projectedHeld = view.liveTokens;
+			for (const [id, saving] of this.lastSavings) {
+				const b = byId.get(id);
+				if (b && !b.held && !b.protected && !b.grouped && b.order >= view.frozenFromIndex) projectedHeld -= saving;
+			}
+			if (projectedHeld <= HOLD_BAND * cap) return this.lastPlan;
+		}
+		this.lastPlan = null;
+		this.lastSavings.clear();
+		this.lastSemanticKey = null;
+
+		const roots: string[] = [];
+		let firstUserSeen = false;
+		for (const b of view.blocks) {
+			const isFirstUser = !firstUserSeen && b.kind === "user";
+			if (isFirstUser) firstUserSeen = true;
+			if (b.protected || b.held || isFirstUser) roots.push(b.id);
+		}
+		const marked = markReachable(buildGraph(view.blocks), roots);
 
 		// Scan each candidate's text once so the sort comparator doesn't redo it per comparison.
 		const riskCount = new Map(candidates.map((b) => [b.id, riskFlags(b.text ?? "").length]));
@@ -129,11 +158,11 @@ export class MyCustomizeConductor implements Conductor {
 			if (live <= cap) break;
 			let summary: string | undefined;
 			if (isMcpResult(b)) {
-				summary = mcpSummary(b, b.callId ? callById.get(b.callId) : undefined);
+				summary = mcpSummary(b, b.callId ? callById.get(b.callId) : undefined, { potetoBeacon: b.id === beaconCarrierId });
 			} else if (isRecallResult(b)) {
 				const codes = b.callId ? recallCodes(callById.get(b.callId)?.text) : undefined;
-				const identity = codes?.length === 1 ? pstackByFoldCode.get(codes[0]) : undefined;
-				summary = identity ? pstackRecallSummary(identity) : genericRecallSummary(codes);
+				const identity = pstackByBlockId.get(b.id) ?? (codes?.length === 1 ? pstackByFoldCode.get(codes[0]) : undefined);
+				summary = identity ? pstackRecallSummary(identity, { potetoBeacon: b.id === beaconCarrierId }) : genericRecallSummary(codes);
 			}
 			if (summary) {
 				const substTokens = estSummaryTokens(summary);
@@ -165,6 +194,8 @@ export class MyCustomizeConductor implements Conductor {
 		}
 		this.lastPlan = cmds;
 		this.lastSavings = savings;
+		this.lastSemanticKey = semanticKey;
+
 
 		return cmds;
 	}
@@ -172,4 +203,10 @@ export class MyCustomizeConductor implements Conductor {
 
 function isRecallResult(b: ViewBlock): boolean {
 	return b.kind === "tool_result" && (b.toolName ?? "").trim().toLowerCase() === "recall";
+}
+
+function isPotetoModeOffUserBlock(b: ViewBlock): boolean {
+	if (b.kind !== "user" || typeof b.text !== "string") return false;
+	const text = b.text.toLowerCase();
+	return POTETO_OFF_PHRASES.some((phrase) => text.includes(phrase));
 }

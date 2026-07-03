@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { IN_PROCESS_CONDUCTORS, MyCustomizeConductor } from "$conductors";
 import type { Command, ConductorView, ViewBlock } from "$conductors/contract";
-import { estSummaryTokens } from "$conductors/my-customize-conductor/mcp-summary";
+import { estSummaryTokens, mcpSummary, normalizePstackName, pstackLabel } from "$conductors/my-customize-conductor/mcp-summary";
 
 function vb(
 	id: string,
@@ -191,27 +191,83 @@ describe("MyCustomizeConductor", () => {
 		expect(projected(view, result)).toBeLessThanOrEqual(view.budget);
 	});
 
-	it("folds an MCP result into a recoverable, identity-bearing summary under heavy pressure", () => {
+	it("formats pstack MCP results with canonical skill-pstack identity", () => {
 		const blocks = [
 			vb("u:0", "user", 0, 200, 200, { text: "task" }),
 			vb("c1", "tool_call", 1, 50, 50, {
 				toolName: "mcp",
 				callId: "c1",
-				text: 'mcp {"server":"engineering-skills","tool":"skill-pstack","args":"{\\"name\\":\\"poteto-mode\\"}"}',
+				text: 'mcp {"server":"engineering-skills","tool":"skill-pstack","args":"{\\"name\\":\\"principle-prove-it-works\\"}"}',
 			}),
-			vb("r:mcp", "tool_result", 2, 1500, 40, { toolName: "mcp", callId: "c1", text: "# Poteto mode\nline two\nline three" }),
+			vb("r:mcp", "tool_result", 2, 1500, 40, { toolName: "mcp", callId: "c1", text: "# Prove It Works\nline two\nline three" }),
 		];
-		const view = makeView(blocks, 300, 1_750);
+		const view = makeView(blocks, 320, 1_750);
 		const result = new MyCustomizeConductor().conduct(view);
 
 		const rep = replaceOf(result, "r:mcp");
 		expect(rep, "MCP result is folded via a replace, not a plain fold").toBeDefined();
 		expect(rep!.recoverable, "the summary is unfoldable").toBe(true);
-		expect(rep!.content).toContain("engineering-skills/skill-pstack");
-		expect(rep!.content).toContain('args {"name":"poteto-mode"}');
-		expect(rep!.content).toContain("unfold to reuse");
+		expect(rep!.content).toContain('tool_result:mcp skill-pstack(name="principle-prove-it-works")');
+		expect(rep!.content).toContain("Label: Prove It Works principle");
+		expect(rep!.content).toContain("not unfold, before re-calling this exact MCP tool");
 		expect(foldIdsOf(result).has("r:mcp")).toBe(false);
 		expect(projected(view, result)).toBeLessThanOrEqual(view.budget);
+	});
+
+	it("normalizes pstack names with trim and lowercase", () => {
+		expect(normalizePstackName(" Poteto-Mode ")).toBe("poteto-mode");
+		const summary = mcpSummary(
+			vb("r:mcp", "tool_result", 1, 1500, 40, { toolName: "mcp", callId: "c1", text: "result" }),
+			vb("c1", "tool_call", 0, 50, 50, {
+				toolName: "mcp",
+				callId: "c1",
+				text: 'mcp {"tool":"skill-pstack","args":{"name":" Poteto-Mode "}}',
+			}),
+		);
+		expect(summary).toContain('skill-pstack(name="poteto-mode")');
+	});
+
+	it("derives pstack labels from slug patterns", () => {
+		expect(pstackLabel("principle-prove-it-works")).toBe("Prove It Works principle");
+		expect(pstackLabel("poteto-mode/playbooks/bug-fix")).toBe("Bug Fix playbook");
+		expect(pstackLabel("architect")).toBe("Architect skill");
+	});
+
+	it("formats generic MCP fallback with capped redacted primitive args", () => {
+		const summary = mcpSummary(
+			vb("r:mcp", "tool_result", 1, 1500, 40, { toolName: "mcp", callId: "c1", text: "result" }),
+			vb("c1", "tool_call", 0, 50, 50, {
+				toolName: "mcp",
+				callId: "c1",
+				text: `mcp ${JSON.stringify({
+					tool: "some_lookup",
+					args: {
+						project: "x".repeat(60),
+						secretToken: "super-secret",
+						id: "ADR-0016",
+						mode: "summary",
+						nested: { skip: true },
+						ok: true,
+					},
+				})}`,
+			}),
+		);
+		expect(summary).toContain('tool_result:mcp some_lookup(project="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…", secretToken="[redacted]", id="ADR-0016")');
+		expect(summary).not.toContain('mode="summary"');
+		expect(summary).not.toContain("ok=true");
+	});
+
+	it("uses weak exact-result wording for generic MCP", () => {
+		const summary = mcpSummary(
+			vb("r:mcp", "tool_result", 1, 1500, 40, { toolName: "mcp", callId: "c1", text: "result" }),
+			vb("c1", "tool_call", 0, 50, 50, {
+				toolName: "mcp",
+				callId: "c1",
+				text: 'mcp {"tool":"some_lookup","args":{"project":"my-pi"}}',
+			}),
+		);
+		expect(summary).toContain("if you need this exact prior result");
+		expect(summary).not.toContain("before re-calling this exact MCP tool");
 	});
 
 	it("summarizes an MCP result with no recoverable call identity as plain `mcp`", () => {
@@ -224,7 +280,7 @@ describe("MyCustomizeConductor", () => {
 
 		const rep = replaceOf(result, "r:mcp");
 		expect(rep).toBeDefined();
-		expect(rep!.content.startsWith("mcp · mcp ·")).toBe(true);
+		expect(rep!.content.startsWith("tool_result:mcp mcp\n")).toBe(true);
 		expect(projected(view, result)).toBeLessThanOrEqual(view.budget);
 	});
 });

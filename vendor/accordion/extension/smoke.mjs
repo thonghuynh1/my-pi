@@ -25,8 +25,10 @@ process.env.ACCORDION_HOME = HOME;
 // build via the repo-local default candidates. An explicit-but-missing path must
 // stop fallback, which is also one of the launcher contract's safety rules.
 process.env.ACCORDION_APP_PATH = path.join(HOME, "missing-accordion-app.exe");
-const SESSIONS_DIR = path.join(HOME, ".accordion", "sessions");
-const FOCUS_PATH = path.join(HOME, ".accordion", "focus.json");
+const REGISTRY_ROOT = path.join(HOME, ".accordion");
+const SESSIONS_DIR = path.join(REGISTRY_ROOT, "sessions");
+const FOCUS_PATH = path.join(REGISTRY_ROOT, "focus.json");
+const BROWSER_BROKER_PATH = path.join(REGISTRY_ROOT, "browser-broker.json");
 
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import("./accordion.ts");
@@ -98,7 +100,10 @@ const PORT = entry.port;
 	if (ret !== undefined) fails.push("context hook altered messages with no GUI attached");
 }
 
-// /accordion writes a one-shot focus request
+// /accordion writes a one-shot focus request. Seed a fresh broker registry so the
+// smoke test exercises the notification path without spawning a detached broker process.
+fs.mkdirSync(REGISTRY_ROOT, { recursive: true });
+fs.writeFileSync(BROWSER_BROKER_PATH, JSON.stringify({ port: 9, pid: process.pid, startedAt: Date.now(), heartbeatAt: Date.now() }));
 if (accordionCmd) {
 	await Promise.resolve(accordionCmd("", ctx));
 	if (!fs.existsSync(FOCUS_PATH)) fails.push("/accordion did not write a focus request");
@@ -124,7 +129,7 @@ if (accordionCmd) {
 //   • GET /?token=<token> → 200 (index.html), IF app/build/index.html exists; else skip
 //     the index assertion with a printed note (meta + 403 still prove the surface + gate)
 {
-	const browserLine = notifications.map((n) => n.message).reverse().find((m) => m.includes("Browser: http"));
+	const browserLine = notifications.map((n) => n.message).reverse().find((m) => m.includes("Direct session browser: http"));
 	const tokenMatch = browserLine && browserLine.match(/token=([0-9a-f]+)/);
 	const TOKEN = tokenMatch ? tokenMatch[1] : null;
 	if (!TOKEN) fails.push("/accordion did not surface a Browser URL carrying a token");

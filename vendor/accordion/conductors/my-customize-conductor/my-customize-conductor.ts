@@ -23,7 +23,18 @@ import { availableCap } from "../contract";
 import { FOLD_RANK } from "../builtin/builtin";
 import { FOLDABLE_KINDS } from "../cold-score/score";
 import { buildGraph, markReachable } from "../garbage-collector/edges";
-import { isMcpResult, mcpSummary, estSummaryTokens } from "./mcp-summary";
+import {
+	estSummaryTokens,
+	foldCode,
+	genericRecallSummary,
+	isMcpResult,
+	mcpSummary,
+	pstackIdentityFromDigest,
+	pstackIdentityFromMcpCall,
+	pstackRecallSummary,
+	recallCodes,
+	type PstackIdentity,
+} from "./mcp-summary";
 import { riskFlags } from "../keel/ledger";
 
 /** Fraction of cap below which the current fold plan is held stable (epoch hold band). */
@@ -77,6 +88,17 @@ export class MyCustomizeConductor implements Conductor {
 		for (const b of view.blocks) {
 			if (b.kind === "tool_call" && b.callId) callById.set(b.callId, b);
 		}
+		const pstackByFoldCode = new Map<string, PstackIdentity>();
+		for (const b of view.blocks) {
+			if (isMcpResult(b)) {
+				const identity = pstackIdentityFromMcpCall(b.callId ? callById.get(b.callId)?.text : undefined);
+				if (identity) pstackByFoldCode.set(foldCode(b.id), identity);
+			}
+			const digestIdentity = pstackIdentityFromDigest(b.text);
+			if (digestIdentity && !pstackByFoldCode.has(digestIdentity.code)) {
+				pstackByFoldCode.set(digestIdentity.code, digestIdentity.identity);
+			}
+		}
 
 		const candidates = view.blocks.filter(
 			(b) =>
@@ -105,8 +127,15 @@ export class MyCustomizeConductor implements Conductor {
 		const replaces: Command[] = [];
 		for (const b of sorted) {
 			if (live <= cap) break;
+			let summary: string | undefined;
 			if (isMcpResult(b)) {
-				const summary = mcpSummary(b, b.callId ? callById.get(b.callId) : undefined);
+				summary = mcpSummary(b, b.callId ? callById.get(b.callId) : undefined);
+			} else if (isRecallResult(b)) {
+				const codes = b.callId ? recallCodes(callById.get(b.callId)?.text) : undefined;
+				const identity = codes?.length === 1 ? pstackByFoldCode.get(codes[0]) : undefined;
+				summary = identity ? pstackRecallSummary(identity) : genericRecallSummary(codes);
+			}
+			if (summary) {
 				const substTokens = estSummaryTokens(summary);
 				if (substTokens < b.tokens) {
 					replaces.push({ kind: "replace", id: b.id, content: summary, recoverable: true });
@@ -139,4 +168,8 @@ export class MyCustomizeConductor implements Conductor {
 
 		return cmds;
 	}
+}
+
+function isRecallResult(b: ViewBlock): boolean {
+	return b.kind === "tool_result" && (b.toolName ?? "").trim().toLowerCase() === "recall";
 }

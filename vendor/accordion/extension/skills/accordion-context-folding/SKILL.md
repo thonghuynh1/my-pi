@@ -51,3 +51,7 @@ Prefer `recall` when you just need to glance at a value or quote; use `unfold` w
 Only unfold what you genuinely need. Agent unfolds are sticky — the human can see and re-fold them in the GUI, but they will not be auto-refolded while you work. Unfolding costs tokens; if the budget is tight, Accordion may fold other blocks to compensate.
 
 If a block looks irrelevant to your current task, leave it folded. If you need the exact content (code, a specific value, a previous decision), unfold it. If a code matches more than one block (rare), all matching blocks are restored.
+
+## Before repeating a tool call
+
+Before calling a tool again, especially one with a cost, side effect, or rate limit, check whether a folded block already holds that tool's result. A `{#<code> FOLDED}` digest that mentions the same tool, file, or task is a signal the answer already exists. Prefer `recall` (or `unfold` if you will need it again) over re-running the tool. Re-calling a tool you already have a folded result for wastes the call and defeats the point of folding, the content was never lost, it was just waiting to be asked for.

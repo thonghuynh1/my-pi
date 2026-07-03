@@ -36,7 +36,6 @@ function makeView(blocks: ViewBlock[], budget: number, liveTokens: number): Cond
 		contextWindow: null,
 		protectedFromIndex: protectedFromIndex < 0 ? blocks.length : protectedFromIndex,
 		protectTokens: 0,
-		frozenFromIndex: 0,
 	};
 }
 

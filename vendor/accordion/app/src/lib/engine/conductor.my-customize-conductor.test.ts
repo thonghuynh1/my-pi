@@ -4,6 +4,12 @@ import type { Command, ConductorView, ViewBlock } from "$conductors/contract";
 import { foldTag } from "./digest";
 import { estSummaryTokens, mcpSummary, normalizePstackName, pstackLabel } from "$conductors/my-customize-conductor/mcp-summary";
 
+const POTETO_BEACON_LINES = [
+	"Poteto mode active.",
+	"- Apply pstack skills/principles/playbooks only with their full leaf visible in this prompt.",
+	'- For skill-pstack(name=...): full leaf visible → use; folded exact match → recall most recent; absent → call skill-pstack(name=...).',
+];
+
 function vb(
 	id: string,
 	kind: ViewBlock["kind"],
@@ -67,6 +73,28 @@ function projected(view: ConductorView, result: Command[] | null): number {
 		if (rep) live -= b.tokens - estSummaryTokens(rep.content);
 	}
 	return live;
+}
+
+function pstackCall(id: string, order: number, name: string): ViewBlock {
+	return vb(id, "tool_call", order, 50, 50, {
+		toolName: "mcp",
+		callId: id,
+		text: `mcp ${JSON.stringify({ server: "engineering-skills", tool: "skill-pstack", args: JSON.stringify({ name }) })}`,
+	});
+}
+
+function pstackResult(id: string, order: number, callId: string, text = "full pstack leaf"): ViewBlock {
+	return vb(id, "tool_result", order, 1500, 40, { toolName: "mcp", callId, text });
+}
+
+function expectBeacon(text: string): void {
+	for (const line of POTETO_BEACON_LINES) expect(text).toContain(line);
+}
+
+function expectNoBeacon(result: Command[] | null | undefined): void {
+	for (const c of result ?? []) {
+		if (c.kind === "replace") expect(c.content).not.toContain("Poteto mode active.");
+	}
 }
 
 describe("MyCustomizeConductor", () => {
@@ -388,5 +416,132 @@ describe("MyCustomizeConductor", () => {
 		expect(rep).toBeDefined();
 		expect(rep!.content).toContain('tool_result:recall code="missing123"');
 		expect(rep!.content).not.toContain("Contains: skill-pstack");
+	});
+
+	it("adds Poteto mode beacon to newest eligible poteto-mode result", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			pstackCall("c:poteto", 1, "poteto-mode"),
+			pstackResult("r:poteto", 2, "c:poteto", "# Poteto mode\nfull leaf"),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 320, 1_750));
+		const rep = replaceOf(result, "r:poteto");
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain('tool_result:mcp skill-pstack(name="poteto-mode")');
+		expect(rep!.content).toContain("Label: Poteto Mode skill");
+		expectBeacon(rep!.content);
+	});
+
+	it("disables Poteto beacon after explicit user off phrase", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "load poteto" }),
+			pstackCall("c:poteto", 1, "poteto-mode"),
+			pstackResult("r:poteto", 2, "c:poteto", "# Poteto mode\nfull leaf"),
+			vb("u:1", "user", 3, 120, 120, { text: "Please exit poteto mode now." }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 440, 1_870));
+		expectNoBeacon(result);
+	});
+
+	it("uses last Poteto mode event in conversation order", () => {
+		const offThenLoad = [
+			vb("u:0", "user", 0, 120, 120, { text: "disable pstack mode" }),
+			pstackCall("c:poteto", 1, "poteto-mode"),
+			pstackResult("r:poteto", 2, "c:poteto", "# Poteto mode\nfull leaf"),
+		];
+		const offThenLoadResult = new MyCustomizeConductor().conduct(makeView(offThenLoad, 320, 1_670));
+		expectBeacon(replaceOf(offThenLoadResult, "r:poteto")!.content);
+
+		const loadThenOff = [
+			vb("u:0", "user", 0, 120, 120, { text: "load poteto" }),
+			pstackCall("c:poteto", 1, "poteto-mode"),
+			pstackResult("r:poteto", 2, "c:poteto", "# Poteto mode\nfull leaf"),
+			vb("u:1", "user", 3, 120, 120, { text: "stop using poteto" }),
+		];
+		const loadThenOffResult = new MyCustomizeConductor().conduct(makeView(loadThenOff, 440, 1_790));
+		expectNoBeacon(loadThenOffResult);
+	});
+
+	it("does not re-enable Poteto mode from recall result", () => {
+		const sourceId = "r:poteto-source";
+		const digestCode = foldTag(sourceId).slice(2, 8);
+		const blocks = [
+			vb("u:0", "user", 0, 120, 120, { text: "load poteto" }),
+			pstackCall("c:poteto", 1, "poteto-mode"),
+			pstackResult("r:poteto-live", 2, "c:poteto", "# Poteto mode\nfull leaf"),
+			vb("u:1", "user", 3, 120, 120, { text: "exit poteto mode" }),
+			vb(sourceId, "tool_result", 4, 1500, 40, {
+				toolName: "mcp",
+				text: `${foldTag(sourceId)} tool_result:mcp skill-pstack(name="poteto-mode")\nLabel: Poteto Mode skill`,
+				folded: true,
+				held: true,
+			}),
+			vb("c:recall", "tool_call", 5, 50, 50, { toolName: "recall", callId: "c:recall", text: `recall ${JSON.stringify({ codes: [digestCode] })}` }),
+			vb("r:recall", "tool_result", 6, 1500, 40, { toolName: "recall", callId: "c:recall", text: "# Poteto mode\nrecalled leaf" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 3_000, 4_910));
+		const rep = replaceOf(result, "r:recall");
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain('Contains: skill-pstack(name="poteto-mode")');
+		expect(rep!.content).toContain("Label: Poteto Mode skill");
+		expect(rep!.content).not.toContain("Poteto mode active.");
+	});
+
+	it("puts beacon only on newest poteto-mode copy", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 120, 120, { text: "load poteto" }),
+			pstackCall("c:poteto:1", 1, "poteto-mode"),
+			pstackResult("r:poteto:1", 2, "c:poteto:1", "older poteto leaf"),
+			pstackCall("c:poteto:2", 3, "poteto-mode"),
+			pstackResult("r:poteto:2", 4, "c:poteto:2", "newer poteto leaf"),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 900, 3_220));
+		const older = replaceOf(result, "r:poteto:1");
+		const newer = replaceOf(result, "r:poteto:2");
+		expect(older).toBeDefined();
+		expect(newer).toBeDefined();
+		expect(older!.content).toContain('tool_result:mcp skill-pstack(name="poteto-mode")');
+		expect(older!.content).not.toContain("Poteto mode active.");
+		expectBeacon(newer!.content);
+	});
+
+	it("does not move beacon to older block when newest is protected", () => {
+		const makeProtectedCase = (opts: { newest: Partial<ViewBlock>; frozenFromIndex?: number }) => {
+			const blocks = [
+				vb("u:0", "user", 0, 120, 120, { text: "load poteto" }),
+				pstackCall("c:poteto:1", 1, "poteto-mode"),
+				pstackResult("r:poteto:1", 2, "c:poteto:1", "older poteto leaf"),
+				pstackCall("c:poteto:2", 3, "poteto-mode"),
+				vb("r:poteto:2", "tool_result", 4, 1500, 40, {
+					toolName: "mcp",
+					callId: "c:poteto:2",
+					text: "newer poteto leaf",
+					...opts.newest,
+				}),
+			];
+			return new MyCustomizeConductor().conduct(makeView(blocks, 900, 3_220, { frozenFromIndex: opts.frozenFromIndex }));
+		};
+
+		expectNoBeacon(makeProtectedCase({ newest: { protected: true } }));
+		expectNoBeacon(makeProtectedCase({ newest: { held: true } }));
+		expectNoBeacon(makeProtectedCase({ newest: { grouped: true } }));
+		expectNoBeacon(makeProtectedCase({ newest: {}, frozenFromIndex: 5 }));
+	});
+
+	it("recomputes plan when Poteto beacon state changes", () => {
+		const conductor = new MyCustomizeConductor();
+		const activeBlocks = [
+			vb("u:0", "user", 0, 120, 120, { text: "load poteto" }),
+			pstackCall("c:poteto", 1, "poteto-mode"),
+			pstackResult("r:poteto", 2, "c:poteto", "# Poteto mode\nfull leaf"),
+		];
+		const firstView = makeView(activeBlocks, 320, 1_670);
+		const first = conductor.conduct(firstView);
+		expectBeacon(replaceOf(first, "r:poteto")!.content);
+
+		const secondView = makeView([...activeBlocks, vb("u:1", "user", 3, 120, 120, { text: "exit poteto mode" })], 440, 1_790);
+		const second = conductor.conduct(secondView);
+		expect(second).not.toBe(first);
+		expect(replaceOf(second, "r:poteto")!.content).not.toContain("Poteto mode active.");
 	});
 });

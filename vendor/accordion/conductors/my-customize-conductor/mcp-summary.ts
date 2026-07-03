@@ -22,6 +22,12 @@ const RECALL_HINT = 'recall({"codes":["<code>"]})';
 const SENSITIVE_KEY_RE = /(token|key|password|secret|auth)/i;
 const PSTACK_NAME_RE = /skill-pstack\(name="([^"]+)"\)/i;
 const FOLD_TAG_RE = /\{#([0-9a-z]{6}) FOLDED\}/i;
+const POTETO_MODE_NAME = "poteto-mode";
+const POTETO_MODE_BEACON_LINES = [
+	"Poteto mode active.",
+	"- Apply pstack skills/principles/playbooks only with their full leaf visible in this prompt.",
+	'- For skill-pstack(name=...): full leaf visible → use; folded exact match → recall most recent; absent → call skill-pstack(name=...).',
+];
 
 /** An MCP tool result: a `tool_result` whose tool is the `mcp` gateway (case-insensitive). */
 export function isMcpResult(b: ViewBlock): boolean {
@@ -37,15 +43,19 @@ export function estSummaryTokens(summary: string): number {
  * A recoverable summary for a folded MCP tool result. `call` is the paired
  * `tool_call` block (matched by `callId`), or undefined when it can't be recovered.
  */
-export function mcpSummary(result: ViewBlock, call: ViewBlock | undefined): string {
+export function mcpSummary(result: ViewBlock, call: ViewBlock | undefined, opts: SummaryOptions = {}): string {
 	const parsed = parseOuterCall(call?.text);
 	const pstack = pstackIdentity(parsed);
 	if (pstack) {
-		return [
-			`tool_result:mcp skill-pstack(name="${pstack.name}")`,
-			`Label: ${pstack.label}`,
-			`Full result preserved. Use ${RECALL_HINT}, not unfold, before re-calling this exact MCP tool.`,
-		].join("\n");
+		return appendPotetoBeacon(
+			[
+				`tool_result:mcp skill-pstack(name="${pstack.name}")`,
+				`Label: ${pstack.label}`,
+				`Full result preserved. Use ${RECALL_HINT}, not unfold, before re-calling this exact MCP tool.`,
+			],
+			pstack,
+			opts,
+		).join("\n");
 	}
 	return [
 		`tool_result:mcp ${genericIdentity(parsed)}`,
@@ -73,6 +83,10 @@ export function pstackLabel(name: string): string {
 // ───────────────────────────── helpers ─────────────────────────────
 
 type McpCall = Record<string, unknown>;
+
+type SummaryOptions = {
+	potetoBeacon?: boolean;
+};
 
 export type PstackIdentity = {
 	name: string;
@@ -111,13 +125,17 @@ export function recallCodes(callText: string | undefined): string[] | undefined 
 	return [...codes] as string[];
 }
 
-export function pstackRecallSummary(identity: PstackIdentity): string {
-	return [
-		"tool_result:recall",
-		`Contains: skill-pstack(name="${identity.name}")`,
-		`Label: ${identity.label}`,
-		`Full result preserved. Use ${RECALL_HINT}, not unfold, to re-read this exact pstack leaf.`,
-	].join("\n");
+export function pstackRecallSummary(identity: PstackIdentity, opts: SummaryOptions = {}): string {
+	return appendPotetoBeacon(
+		[
+			"tool_result:recall",
+			`Contains: skill-pstack(name="${identity.name}")`,
+			`Label: ${identity.label}`,
+			`Full result preserved. Use ${RECALL_HINT}, not unfold, to re-read this exact pstack leaf.`,
+		],
+		identity,
+		opts,
+	).join("\n");
 }
 
 export function genericRecallSummary(codes: string[] | undefined): string {
@@ -129,6 +147,11 @@ export function genericRecallSummary(codes: string[] | undefined): string {
 		].join("\n");
 	}
 	return ["tool_result:recall", `Full result preserved. Use ${RECALL_HINT} if you need this exact prior result.`].join("\n");
+}
+
+function appendPotetoBeacon(lines: string[], identity: PstackIdentity, opts: SummaryOptions): string[] {
+	if (opts.potetoBeacon !== true || identity.name !== POTETO_MODE_NAME) return lines;
+	return [...lines, ...POTETO_MODE_BEACON_LINES];
 }
 
 function pstackIdentity(call: McpCall): PstackIdentity | undefined {

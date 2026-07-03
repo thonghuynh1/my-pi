@@ -544,4 +544,67 @@ describe("MyCustomizeConductor", () => {
 		expect(second).not.toBe(first);
 		expect(replaceOf(second, "r:poteto")!.content).not.toContain("Poteto mode active.");
 	});
+
+	it("does not group pstack identity blocks while Poteto mode is active", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 120, 120, { text: "load poteto" }),
+			pstackCall("c:poteto", 1, "poteto-mode"),
+			pstackResult("r:poteto", 2, "c:poteto", "# Poteto mode\nfull leaf"),
+			vb("r:bash:1", "tool_result", 3, 1_500, 40, { toolName: "bash", text: "older noisy output" }),
+			vb("r:bash:2", "tool_result", 4, 1_500, 40, { toolName: "bash", text: "newer noisy output" }),
+			vb("r:bash:3", "tool_result", 5, 1_500, 40, { toolName: "bash", text: "newest noisy output" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 1_600, 6_170));
+		expect(result.some((c) => c.kind === "group")).toBe(false);
+	});
+
+	it("does not drop pstack identity blocks while Poteto mode is active", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 120, 120, { text: "load poteto" }),
+			pstackCall("c:poteto", 1, "poteto-mode"),
+			pstackResult("r:poteto", 2, "c:poteto", "# Poteto mode\nfull leaf"),
+			vb("r:bash:1", "tool_result", 3, 1_500, 40, { toolName: "bash", text: "older noisy output" }),
+			vb("r:bash:2", "tool_result", 4, 1_500, 40, { toolName: "bash", text: "newer noisy output" }),
+			vb("r:bash:3", "tool_result", 5, 1_500, 40, { toolName: "bash", text: "newest noisy output" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 1_600, 6_170));
+		expect(result.some((c) => c.kind === "group" && (c.digest === null || c.digest === ""))).toBe(false);
+	});
+
+	it("keeps pstack identity visible as recoverable replace", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 120, 120, { text: "load poteto" }),
+			pstackCall("c:poteto", 1, "poteto-mode"),
+			pstackResult("r:poteto", 2, "c:poteto", "# Poteto mode\nfull leaf"),
+			vb("r:bash:1", "tool_result", 3, 1_500, 40, { toolName: "bash", text: "older noisy output" }),
+			vb("r:bash:2", "tool_result", 4, 1_500, 40, { toolName: "bash", text: "newer noisy output" }),
+			vb("r:bash:3", "tool_result", 5, 1_500, 40, { toolName: "bash", text: "newest noisy output" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 1_600, 6_170));
+		const rep = replaceOf(result, "r:poteto");
+		expect(rep).toBeDefined();
+		expect(rep!.recoverable).toBe(true);
+		expect(rep!.content).toContain('tool_result:mcp skill-pstack(name="poteto-mode")');
+		expect(foldIdsOf(result).has("r:poteto")).toBe(false);
+	});
+
+	it("does not fight human grouped pstack blocks", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 120, 120, { text: "load poteto" }),
+			pstackCall("c:poteto", 1, "poteto-mode"),
+			vb("r:poteto", "tool_result", 2, 1_500, 40, {
+				toolName: "mcp",
+				callId: "c:poteto",
+				text: "# Poteto mode\nfull leaf",
+				grouped: true,
+			}),
+			vb("r:bash:1", "tool_result", 3, 1_500, 40, { toolName: "bash", text: "older noisy output" }),
+			vb("r:bash:2", "tool_result", 4, 1_500, 40, { toolName: "bash", text: "newer noisy output" }),
+			vb("r:bash:3", "tool_result", 5, 1_500, 40, { toolName: "bash", text: "newest noisy output" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 1_600, 6_170));
+		expect(result.some((c) => c.kind === "replace" && c.id === "r:poteto")).toBe(false);
+		expect(result.some((c) => c.kind === "fold" && c.ids.includes("r:poteto"))).toBe(false);
+		expect(result.some((c) => c.kind === "group" && c.ids.includes("r:poteto"))).toBe(false);
+	});
 });

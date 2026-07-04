@@ -137,6 +137,27 @@
 		return p ? p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p : "";
 	}
 
+	function formatCompactTokens(n: number): string {
+		const r = Math.round(n);
+		if (r >= 1_000_000) {
+			const m = r / 1_000_000;
+			return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+		}
+		return r >= 1000 ? `${(r / 1000).toFixed(r >= 10000 ? 0 : 1)}k` : `${r}`;
+	}
+
+	const contextUsage = $derived.by(() => {
+		const st = displayStore;
+		if (!st || st.contextWindow == null || st.contextWindow <= 0) return null;
+		const used = (st.liveTokens + st.harnessOverhead) * st.calibration + st.outputReserve;
+		return {
+			used,
+			window: st.contextWindow,
+			percent: Math.max(0, (used / st.contextWindow) * 100),
+			hasHarness: st.harnessBreakdown != null,
+		};
+	});
+
 	function selectAndConnect(s: SessionEntry): void {
 		if (discovery.selected === s.sessionId && live.status === "connected") return;
 		session.readOnly = false; // a live pi session is steerable, not read-only
@@ -303,6 +324,19 @@
 						{/if}
 						<span class="meta-sep">·</span>
 						<span class="meta-chip mono tnum">{s.blocks.length} blocks</span>
+						{#if contextUsage}
+							<span class="meta-sep">·</span>
+							<span
+								class="meta-chip mono tnum context-chip"
+								class:warn={contextUsage.percent >= 70 && contextUsage.percent < 90}
+								class:danger={contextUsage.percent >= 90}
+								title={contextUsage.hasHarness
+									? "Real provider-window usage: folded messages plus harness and reply reserve."
+									: "Estimated context usage. Harness details arrive after the next model request."}
+							>
+								ctx {formatCompactTokens(contextUsage.used)} / {formatCompactTokens(contextUsage.window)} ({Math.round(contextUsage.percent)}%)
+							</span>
+						{/if}
 					</div>
 					<!-- Nav actions -->
 					<div class="nav-row">
@@ -613,6 +647,15 @@
 		font-size: var(--fs-xs);
 		color: var(--faint);
 		white-space: nowrap;
+	}
+	.context-chip {
+		color: var(--muted);
+	}
+	.context-chip.warn {
+		color: var(--warn);
+	}
+	.context-chip.danger {
+		color: var(--danger);
 	}
 	.meta-sep {
 		font-size: var(--fs-xs);

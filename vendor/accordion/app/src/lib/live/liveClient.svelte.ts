@@ -16,6 +16,7 @@ import { wireToBlock } from "./mapping";
 import { computeFoldOps, computeGroupOps, resolveUnfold, resolveRecall } from "./plan";
 import { folding } from "./folding.svelte";
 import { activeRemoteRunner } from "./conductorClient.svelte";
+import { attachActiveConductor } from "./activeConductor";
 import { DEFAULT_PORT, PROTOCOL_VERSION, isServerMessage, type ServerMessage, type PlanMessage, type FoldOp, type GroupOp, type UnfoldResultMessage, type RecallResultMessage, type CompleteRequestMessage } from "./protocol";
 import { ghostStart, ghostEnd, ghostClearAll } from "./ghostState.svelte";
 import type { CompletionRequest, CompletionResult } from "$conductors/contract";
@@ -253,6 +254,7 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 			// Cleared on disconnect/close so `host.can("complete")` returns false when
 			// there is no active model link.
 			session.store.completer = sendCompletion;
+			attachActiveConductor(session.store);
 			if (typeof msg.meta.contextWindow === "number" && msg.meta.contextWindow > 0) {
 				session.store.setContextWindow(msg.meta.contextWindow);
 				session.store.setBudget(Math.min(msg.meta.contextWindow, 100_000)); // overlay: cap budget at 100k
@@ -282,9 +284,12 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 				session.store.setProtect(prevProtect);
 				session.store.outputReserve = prevOutputReserve;
 				session.store.calibration = prevCalibration;
-				// Re-attach the completer: a structural reset builds a brand-new store object,
-				// so the reference from the hello path is gone. The socket is still live.
+				// Re-attach the completer and selected conductor: a structural reset builds a
+				// brand-new store object, so the references from the hello path are gone. This
+				// must happen before appendBlocks, because appendBlocks immediately refolds and
+				// the plan reply is computed in this same message handler.
 				session.store.completer = sendCompletion;
+				attachActiveConductor(session.store);
 			}
 			// Update contextWindow from the sync (refreshed each context hook, and pushed
 			// immediately on a `/model` swap). Snap the budget to the window the FIRST time

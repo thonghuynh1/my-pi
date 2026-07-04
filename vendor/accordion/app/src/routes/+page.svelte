@@ -6,8 +6,9 @@
 	import { discovery, startDiscovery, stopDiscovery, DEMO_ID } from "$lib/live/discovery.svelte";
 	import { claudeDiscovery, startClaudeDiscovery, stopClaudeDiscovery } from "$lib/live/claudeDiscovery.svelte";
 	import { conductorState } from "$lib/live/conductor.svelte";
-	import { startConductorDiscovery, stopConductorDiscovery, allConductors, isLaunching } from "$lib/live/conductorDiscovery.svelte";
-	import { attachConductor, conductorRetry } from "$lib/live/conductorClient.svelte";
+	import { startConductorDiscovery, stopConductorDiscovery } from "$lib/live/conductorDiscovery.svelte";
+	import { conductorRetry } from "$lib/live/conductorClient.svelte";
+	import { attachActiveConductor } from "$lib/live/activeConductor";
 	import { folding } from "$lib/live/folding.svelte";
 	import { foldAlarm, runFoldCheck } from "$lib/live/foldAlarm.svelte";
 	import { DEFAULT_PORT } from "$lib/live/protocol";
@@ -45,30 +46,15 @@
 	});
 
 	// ── Conductors (ADR 0007) ──────────────────────────────────────────────
-	// External conductors to offer in the switcher (discovered + configured). The built-in
-	// and "Raw" entries are added by the sidebar itself. Reactive so newly-found conductors
-	// appear without a reload.
-	const conductors = $derived(allConductors());
-
-	// Attach the selected conductor to the active session's store. Tracks the store, the
-	// selection, AND the available list — so a conductor selected before discovery found it
-	// (e.g. a remote id restored from localStorage on launch) gets attached once it appears.
-	// `attachConductor` is idempotent, so a poll refreshing the list when we're already
-	// correctly attached is a no-op (no reconnect churn).
-	//
-	// Flash suppression: if the active id is a launchable that is still launching (started
-	// but not yet discovered), hold — do NOT fall back to built-in while the process is
-	// booting. Once discovery sees the heartbeat, isLaunching clears, conductors changes,
-	// and this effect re-runs to attach the real RemoteRunner.
+	// Attach the selected conductor to the active session's store. The helper reads the
+	// selected id and current remote list synchronously, so live sync handlers can call the
+	// same path before they compute a fold plan.
 	$effect(() => {
 		void conductorRetry.tick;
+		void conductorState.activeId;
 		const store = displayStore;
-		const activeId = conductorState.activeId;
-		const list = conductors;
 		if (!store) return;
-		// Suppress the built-in fallback while the process is still starting up.
-		if (isLaunching(activeId) && !list.some((c) => c.id === activeId)) return;
-		attachConductor(store, activeId, list);
+		attachActiveConductor(store);
 	});
 
 	// Wire the host's `compress` capability (Bear-2 via The Token Company) onto the active

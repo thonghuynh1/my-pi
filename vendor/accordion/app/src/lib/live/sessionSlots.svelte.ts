@@ -29,6 +29,7 @@ import {
 } from "./protocol";
 import type { CompletionRequest, CompletionResult } from "$conductors/contract";
 import type { Ghost } from "./ghostState.svelte";
+import { attachActiveConductor } from "./activeConductor";
 
 /** Send a JSON message over a WebSocket, swallowing errors if the socket is gone. */
 function trySend(ws: WebSocket, msg: unknown): void {
@@ -342,7 +343,10 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 				skipped: 0,
 			});
 			// Expose the per-slot completion relay so conductors can call host.complete().
+			// Also attach the selected conductor synchronously; the broker may compute a
+			// fold plan before the route-level Svelte effect gets a turn.
 			slot.store.completer = sendCompletion;
+			attachActiveConductor(slot.store);
 			if (typeof msg.meta.contextWindow === "number" && msg.meta.contextWindow > 0) {
 				slot.store.setContextWindow(msg.meta.contextWindow);
 				slot.store.setBudget(Math.min(msg.meta.contextWindow, 100_000));
@@ -366,6 +370,7 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 				slot.store.setBudget(prevBudget);
 				slot.store.setProtect(prevProtect);
 				slot.store.completer = sendCompletion;
+				attachActiveConductor(slot.store);
 			}
 			const cw = msg.contextWindow;
 			if (typeof cw === "number" && cw > 0) {
@@ -376,6 +381,7 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 					budgetLive = true;
 				}
 			}
+			attachActiveConductor(slot.store);
 			slot.store.appendBlocks(msg.blocks.map(wireToBlock));
 			// Slice 0c: broker sync handler must also route the harness frame into
 			// the slot store, otherwise the map header / dashboard show the breakdown

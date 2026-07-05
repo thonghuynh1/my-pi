@@ -28,6 +28,12 @@ let manualClose = false;
  * Default tokens to reserve for the model's reply, sized to the window: ~15% capped at 8k.
  * Reserved (with the harness) from the window so conversation + harness + reply all fit.
  */
+const LIVE_BUDGET_CAP = 100_000;
+
+export function liveBudgetForContextWindow(contextWindow: number): number {
+	return Math.min(contextWindow, LIVE_BUDGET_CAP);
+}
+
 function defaultOutputReserve(contextWindow: number): number {
 	return Math.min(8192, Math.floor(contextWindow * 0.15));
 }
@@ -257,7 +263,7 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 			attachActiveConductor(session.store);
 			if (typeof msg.meta.contextWindow === "number" && msg.meta.contextWindow > 0) {
 				session.store.setContextWindow(msg.meta.contextWindow);
-				session.store.setBudget(Math.min(msg.meta.contextWindow, 100_000)); // overlay: cap budget at 100k
+				session.store.setBudget(liveBudgetForContextWindow(msg.meta.contextWindow));
 				if (session.store.outputReserve === 0) session.store.outputReserve = defaultOutputReserve(msg.meta.contextWindow);
 				budgetLive = true;
 			}
@@ -301,7 +307,7 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 				session.store.setContextWindow(cw);
 				if (session.store.outputReserve === 0) session.store.outputReserve = defaultOutputReserve(cw);
 				if (!budgetLive || (prev !== null && prev !== cw)) {
-					session.store.setBudget(cw);
+					session.store.setBudget(liveBudgetForContextWindow(cw));
 					budgetLive = true;
 				}			}
 			// overlay: slice 0 — the extension reports pi's total request size and the

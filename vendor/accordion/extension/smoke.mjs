@@ -118,6 +118,50 @@ if (accordionCmd) {
 	fails.push("accordion command was not registered");
 }
 
+// After /accordion, the next context hook should briefly wait for the GUI it just
+// asked to open. Without this grace, the user can run /accordion, immediately send
+// the next prompt, and still get one raw over-budget request before the app attaches.
+{
+	const attachDelayMs = 100;
+	let lateWs = null;
+	let lateContextSync = null;
+	let lateStoreSeeded = false;
+	const lateT0 = Date.now();
+	const lateMessages = [
+		{ role: "user", content: "after accordion", timestamp: lateT0 },
+		{ role: "assistant", content: [{ type: "text", text: "LATE ORIGINAL" }], responseId: "resp-late", timestamp: lateT0 + 1 },
+	];
+	const attachTimer = setTimeout(() => {
+		lateWs = new WebSocket(`ws://127.0.0.1:${PORT}`);
+		lateWs.on("message", (data) => {
+			const m = JSON.parse(data.toString());
+			if (m.type !== "sync") return;
+			if (m.blocks?.some((b) => b.id === "a:resp-late:p0")) {
+				lateStoreSeeded = true;
+				lateWs.send(JSON.stringify({ type: "plan", reqId: m.reqId, ops: [] }));
+			} else if (lateStoreSeeded) {
+				lateContextSync = m;
+				lateWs.send(JSON.stringify({ type: "plan", reqId: m.reqId, ops: [{ id: "a:resp-late:p0", digestText: "LATE FOLDED" }] }));
+			} else {
+				lateWs.send(JSON.stringify({ type: "plan", reqId: m.reqId, ops: [] }));
+			}
+		});
+	}, attachDelayMs);
+	const t0 = Date.now();
+	const ret = await Promise.resolve(handlers.context({ messages: lateMessages }, ctx));
+	const elapsed = Date.now() - t0;
+	clearTimeout(attachTimer);
+	if (elapsed < attachDelayMs) fails.push(`post-/accordion context returned before delayed GUI attach (${elapsed}ms < ${attachDelayMs}ms)`);
+	if (!lateContextSync) fails.push("post-/accordion context did not send a sync after delayed GUI attach");
+	if (ret?.messages?.[1]?.content?.[0]?.text !== "LATE FOLDED")
+		fails.push(`post-/accordion delayed attach did not apply the fold plan (got ${JSON.stringify(ret?.messages?.[1]?.content?.[0]?.text)})`);
+	await new Promise((resolve) => {
+		if (!lateWs || lateWs.readyState === WebSocket.CLOSED) return resolve();
+		lateWs.on("close", resolve);
+		lateWs.close();
+	});
+}
+
 // ── browser-served extension: HTTP static surface on the SAME ephemeral port ──
 // The extension now ALSO serves the SvelteKit browser build over HTTP on `PORT`,
 // gated by a per-session token. We harvest the token from the /accordion notify

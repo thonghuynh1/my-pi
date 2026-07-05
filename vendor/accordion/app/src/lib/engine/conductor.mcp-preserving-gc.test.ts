@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { IN_PROCESS_CONDUCTORS, McpPreservingGcConductor } from "$conductors";
-import type { Command, ConductorView, ViewBlock } from "$conductors/contract";
+import { availableCap, type Command, type ConductorView, type ViewBlock } from "$conductors/contract";
 
 function vb(
 	id: string,
@@ -27,7 +27,12 @@ function vb(
 	};
 }
 
-function makeView(blocks: ViewBlock[], budget: number, liveTokens: number): ConductorView {
+function makeView(
+	blocks: ViewBlock[],
+	budget: number,
+	liveTokens: number,
+	overrides: Partial<Pick<ConductorView, "contextWindow" | "harnessOverhead" | "outputReserve" | "calibration">> = {},
+): ConductorView {
 	const protectedFromIndex = blocks.findIndex((b) => b.protected);
 	return {
 		blocks,
@@ -37,6 +42,7 @@ function makeView(blocks: ViewBlock[], budget: number, liveTokens: number): Cond
 		protectedFromIndex: protectedFromIndex < 0 ? blocks.length : protectedFromIndex,
 		protectTokens: 0,
 		frozenFromIndex: 0,
+		...overrides,
 	};
 }
 
@@ -89,5 +95,27 @@ describe("McpPreservingGcConductor", () => {
 		const folded = foldIdsOf(new McpPreservingGcConductor().conduct(view));
 		expect(folded.has("r:mcp")).toBe(false);
 		expect(folded.has("r:bash")).toBe(true);
+	});
+
+	it("folds toward the real available cap, not the raw budget", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("r:mcp", "tool_result", 1, 12_000, 500, { toolName: "mcp", text: "# Poteto mode" }),
+			vb("r:bash", "tool_result", 2, 30_000, 500, { toolName: "bash", text: "large noisy output" }),
+			vb("a:1:p0", "thinking", 3, 20_000, 500, { text: "thoughts" }),
+		];
+		const view = makeView(blocks, 100_000, 62_200, {
+			contextWindow: 70_000,
+			harnessOverhead: 12_000,
+			outputReserve: 8_000,
+		});
+
+		const result = new McpPreservingGcConductor().conduct(view);
+		const folded = foldIdsOf(result);
+
+		expect(view.liveTokens).toBeGreaterThan(availableCap(view));
+		expect(folded.has("r:mcp")).toBe(false);
+		expect(folded.size).toBeGreaterThan(0);
+		expect(projected(view, result)).toBeLessThanOrEqual(availableCap(view));
 	});
 });

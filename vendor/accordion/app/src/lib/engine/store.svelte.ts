@@ -1197,6 +1197,7 @@ export class AccordionStore {
 		this.harnessBreakdown = h;
 		this.frozenFromIndex = h?.frozenFromIndex ?? 0;
 		this.updateCalibration();
+		this.refold();
 	}
 
 	/**

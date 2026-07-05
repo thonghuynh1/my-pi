@@ -8,7 +8,7 @@
  *   context. This conductor treats those MCP results as non-candidates, then
  *   garbage-collects the rest using the same reachability graph as the standard GC.
  */
-import type { Command, Conductor, ConductorView, ViewBlock } from "../contract";
+import { availableCap, type Command, type Conductor, type ConductorView, type ViewBlock } from "../contract";
 import { FOLD_RANK } from "../builtin/builtin";
 import { FOLDABLE_KINDS } from "../cold-score/score";
 import { buildGraph, markReachable } from "../garbage-collector/edges";
@@ -26,7 +26,8 @@ export class McpPreservingGcConductor implements Conductor {
 	readonly label = "MCP-preserving GC";
 
 	conduct(view: ConductorView): Command[] {
-		if (view.liveTokens <= view.budget) return [];
+		const cap = availableCap(view);
+		if (view.liveTokens <= cap) return [];
 
 		const roots: string[] = [];
 		let firstUserSeen = false;
@@ -57,7 +58,7 @@ export class McpPreservingGcConductor implements Conductor {
 		let live = view.liveTokens;
 		const ids: string[] = [];
 		for (const b of sorted) {
-			if (live <= view.budget) break;
+			if (live <= cap) break;
 			ids.push(b.id);
 			live += b.foldedTokens - b.tokens;
 		}

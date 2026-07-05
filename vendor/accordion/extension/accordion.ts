@@ -63,6 +63,8 @@ import {
 } from "../app/src/lib/live/registry";
 
 const REQUEST_TIMEOUT_MS = 250; // how long pi waits on the GUI before passing through
+const ATTACH_GRACE_MS = 2000; // after /accordion, wait this long for the GUI to attach before the next model call passes through
+const ATTACH_POLL_MS = 25;
 // Unfold replies arrive during the agent's OWN turn (not on the model-call critical
 // path), so a generous wait is fine — the user's next message isn't blocked.
 const UNFOLD_TIMEOUT_MS = 2000;
@@ -79,7 +81,11 @@ const BROWSER_BROKER_FILE = "browser-broker.json";
 const WATCH_REQUESTS_SUBDIR = "watch-requests";
 const BROWSER_BROKER_PATH = path.join(REGISTRY_ROOT, BROWSER_BROKER_FILE);
 const WATCH_REQUESTS_DIR = path.join(REGISTRY_ROOT, WATCH_REQUESTS_SUBDIR);
+const DIAGNOSTICS_SUBDIR = "diagnostics";
+const DIAGNOSTICS_DIR = path.join(REGISTRY_ROOT, DIAGNOSTICS_SUBDIR);
 const BROKER_STALE_AFTER_MS = 15_000;
+const DIAGNOSTIC_CHARS_PER_TOKEN = 4;
+const FOLDED_MARKER_RE = /\{#[0-9a-fA-F]+ FOLDED\}/g;
 
 type BrokerRegistryEntry = {
 	port: number;
@@ -251,6 +257,21 @@ function writeBrokerWatchRequest(sessionId: string): void {
 	fs.renameSync(tmp, target);
 }
 
+function diagnosticTokenSize(value: unknown): number {
+	try {
+		return Math.ceil((JSON.stringify(value) ?? "").length / DIAGNOSTIC_CHARS_PER_TOKEN);
+	} catch {
+		return 0;
+	}
+}
+
+function countFoldMarkers(value: unknown): number {
+	if (typeof value === "string") return [...value.matchAll(FOLDED_MARKER_RE)].length;
+	if (Array.isArray(value)) return value.reduce((sum, item) => sum + countFoldMarkers(item), 0);
+	if (value && typeof value === "object") return Object.values(value as Record<string, unknown>).reduce((sum, item) => sum + countFoldMarkers(item), 0);
+	return 0;
+}
+
 function resolveBrokerCwd(): string | null {
 	try {
 		const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -353,6 +374,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 	// `/model` event. Completion requests use this so `model: "current"` really follows a
 	// just-selected model instead of waiting for the next `context` hook to refresh latestCtx.
 	let latestModel: any = null;
+	let attachGraceUntil = 0;
 
 	// ── discovery (registry) state ──────────────────────────────────────────────
 	let port = 0; // actual ephemeral port, filled once the server is listening
@@ -367,6 +389,18 @@ export default function accordionLive(pi: ExtensionAPI): void {
 	let heartbeat: ReturnType<typeof setInterval> | null = null;
 
 	const attached = (): boolean => !!client && client.readyState === 1; /* OPEN */
+	const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+	async function waitForRequestedAttach(): Promise<boolean> {
+		if (attached()) return true;
+		const deadline = attachGraceUntil;
+		if (deadline <= Date.now()) return false;
+		while (!attached() && Date.now() < deadline) {
+			await sleep(Math.min(ATTACH_POLL_MS, Math.max(1, deadline - Date.now())));
+		}
+		if (attached()) attachGraceUntil = 0;
+		return attached();
+	}
 
 	/** Resolve every outstanding request as passthrough (used on connect-swap / shutdown). */
 	function flushPending(): void {
@@ -386,6 +420,19 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			ws.send(JSON.stringify(m));
 		} catch {
 			/* socket gone */
+		}
+	}
+
+	function writeContextDiagnostic(entry: Record<string, unknown>): void {
+		// Best-effort, content-free JSONL. This is the source of truth for whether
+		// Accordion actually changed the provider-bound payload; session JSONL may
+		// only contain the original saved conversation or unrelated example text.
+		if (!sessionId) return;
+		try {
+			fs.mkdirSync(DIAGNOSTICS_DIR, { recursive: true });
+			fs.appendFileSync(path.join(DIAGNOSTICS_DIR, `${sessionId}.context.jsonl`), `${JSON.stringify(entry)}\n`);
+		} catch {
+			/* diagnostics must never break the model-call path */
 		}
 	}
 
@@ -755,6 +802,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		wss.on("connection", (ws: WebSocket) => {
 			flushPending(); // supersede any prior GUI: its in-flight requests pass through
 			client = ws;
+			attachGraceUntil = 0;
 			epoch++;
 			sentCount = 0; // re-sync the whole context to the freshly-connected GUI
 			reqSeq = 0;
@@ -1042,7 +1090,6 @@ export default function accordionLive(pi: ExtensionAPI): void {
 	// returns undefined, so we never alter a model call without a plan.
 	pi.on("context", async (event, ctx: ExtensionContext) => {
 		latestCtx = ctx;
-		const myEpoch = epoch;
 		// Refresh model/usage in memory only — NO disk I/O on the model-call critical
 		// path. The 5s heartbeat persists these to the registry for the sidebar.
 		refreshFromCtx(ctx);
@@ -1053,19 +1100,82 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		// one are now subsumed by it — drop them.
 		lastMessages = event.messages as unknown as PiMessage[];
 		pendingSince = [];
+		const originalMessages = event.messages as unknown as PiMessage[];
 		const all = linearize(lastMessages);
-		if (!attached()) return; // no GUI → pass through untouched
+		if (!attached() && !(await waitForRequestedAttach())) return; // no GUI → pass through untouched
 
+		const myEpoch = epoch;
 		const fresh = all.slice(sentCount);
 		const reqId = ++reqSeq;
 		const full = sentCount === 0;
 		const plan = await requestPlan(reqId, full, fresh);
-		if (plan === null) return; // couldn't deliver → pass through, don't advance
+		if (plan === null) {
+			writeContextDiagnostic({
+				event: "accordion_context_plan_timeout",
+				timestamp: new Date().toISOString(),
+				sessionId,
+				reqId,
+				pid: process.pid,
+				cwd: meta.cwd,
+				model,
+				full,
+				blocksTotal: all.length,
+				freshBlocks: fresh.length,
+				originalMessageCount: originalMessages.length,
+				originalTokensApprox: diagnosticTokenSize(originalMessages),
+				frozenFromIndex: cacheTracker.getFrozenFromIndex(),
+				payloadAudit: payloadAudit.getLatestSizes(),
+			});
+			return; // couldn't deliver → pass through, don't advance
+		}
 		if (epoch !== myEpoch) return; // GUI reconnected mid-flight → don't apply/advance
 		sentCount = Math.max(sentCount, all.length); // advance cursor; never rewind (a message_end during the await may have advanced it further)
-		if (plan.ops.length === 0 && plan.groups.length === 0) return; // empty plan → pass through
+		if (plan.ops.length === 0 && plan.groups.length === 0) {
+			writeContextDiagnostic({
+				event: "accordion_context_empty_plan",
+				timestamp: new Date().toISOString(),
+				sessionId,
+				reqId,
+				pid: process.pid,
+				cwd: meta.cwd,
+				model,
+				full,
+				blocksTotal: all.length,
+				freshBlocks: fresh.length,
+				originalMessageCount: originalMessages.length,
+				originalTokensApprox: diagnosticTokenSize(originalMessages),
+				frozenFromIndex: cacheTracker.getFrozenFromIndex(),
+				payloadAudit: payloadAudit.getLatestSizes(),
+			});
+			return; // empty plan → pass through
+		}
 
-		return { messages: applyPlan(event.messages as unknown as PiMessage[], plan.ops, plan.groups) as unknown as AgentMessage[] };
+		const messagesForModel = applyPlan(originalMessages, plan.ops, plan.groups);
+		writeContextDiagnostic({
+			event: "accordion_context_apply_plan",
+			timestamp: new Date().toISOString(),
+			sessionId,
+			reqId,
+			pid: process.pid,
+			cwd: meta.cwd,
+			model,
+			full,
+			blocksTotal: all.length,
+			freshBlocks: fresh.length,
+			originalMessageCount: originalMessages.length,
+			appliedMessageCount: messagesForModel.length,
+			foldOpsRequested: plan.ops.length,
+			groupOpsRequested: plan.groups.length,
+			changed: messagesForModel !== originalMessages,
+			originalTokensApprox: diagnosticTokenSize(originalMessages),
+			appliedTokensApprox: diagnosticTokenSize(messagesForModel),
+			foldMarkersInAppliedPayload: countFoldMarkers(messagesForModel),
+			foldMarkersInOriginalPayload: countFoldMarkers(originalMessages),
+			frozenFromIndex: cacheTracker.getFrozenFromIndex(),
+			payloadAudit: payloadAudit.getLatestSizes(),
+		});
+
+		return { messages: messagesForModel as unknown as AgentMessage[] };
 	});
 
 	// ── model swap: keep the GUI's context window (and budget) in lockstep ───────
@@ -1248,6 +1358,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			// app is the only cross-process nudge we have; the app's single-instance guard turns
 			// that into "focus the existing window" when it is already running elsewhere.
 			const wasAttached = attached();
+			if (!wasAttached) attachGraceUntil = Date.now() + ATTACH_GRACE_MS;
 			const launch = wasAttached ? null : await launchAccordionApp(pi);
 			const action = launchResultLine(launch);
 			const brokerLine = brokerResultLine(broker);

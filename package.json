@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "postinstall": "node scripts/postinstall.mjs",
+    "session-cost-report": "node scripts/session-cost-report.mjs",
     "check": "tsc --noEmit",
     "accordion:install": "npm install --prefix vendor/accordion/app && npm install --prefix vendor/accordion/extension",
     "accordion:build": "npm run build --prefix vendor/accordion/app",

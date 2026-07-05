@@ -111,6 +111,33 @@ describe("protected working tail is never folded", () => {
 	});
 });
 
+// Harness data can arrive on a sync frame with no new blocks. Existing blocks still need
+// a fresh conductor pass because harness overhead and frozen prefix change the fold cap.
+describe("harness updates refold existing live blocks", () => {
+	it("folds already-loaded blocks when harness overhead reduces the available cap", () => {
+		const s = makeStore([30_000, 30_000, 2_000]);
+		s.setProtect(0);
+		s.setContextWindow(70_000);
+		s.setBudget(100_000);
+		s.outputReserve = 8_000;
+
+		expect(s.foldedCount).toBe(0);
+
+		s.setHarnessBreakdown({
+			totalTokens: 70_000,
+			systemPromptTokens: null,
+			actualWireTokens: 74_000,
+			messagesTokens: 62_000,
+			toolsTokens: null,
+			systemPayloadTokens: null,
+			frozenFromIndex: 0,
+		});
+
+		expect(s.harnessOverhead).toBe(12_000);
+		expect(s.foldedCount).toBeGreaterThan(0);
+	});
+});
+
 // appendBlocks must be idempotent by id: a block can arrive twice (streamed early
 // at message_end, then again in the next context reconcile). The source of truth
 // must never hold two blocks with one id, and a resend must not clobber fold state.

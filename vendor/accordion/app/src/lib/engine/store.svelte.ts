@@ -986,6 +986,8 @@ export class AccordionStore {
 	private clearConductorState(): void {
 		for (const b of this.blocks) {
 			if (b.override === null) {
+				// Moving boundaries must not make an existing automatic fold snap open.
+				if ((this.isProtected(b) || b.order < this.frozenFromIndex) && (b.autoFolded || b.subst !== undefined)) continue;
 				b.autoFolded = false;
 				b.subst = undefined;
 				if (b.by === "auto" || b.by === "conductor") b.by = null;

@@ -136,6 +136,62 @@ describe("harness updates refold existing live blocks", () => {
 		expect(s.harnessOverhead).toBe(12_000);
 		expect(s.foldedCount).toBeGreaterThan(0);
 	});
+
+	it("keeps already-folded blocks folded when a large new result expands the protected tail", () => {
+		const s = makeStore([30_000, 30_000, 30_000, 2_000]);
+		s.setProtect(0);
+		s.setContextWindow(70_000);
+		s.setBudget(100_000);
+		s.outputReserve = 8_000;
+		s.setHarnessBreakdown({
+			totalTokens: 70_000,
+			systemPromptTokens: null,
+			actualWireTokens: 74_000,
+			messagesTokens: 92_000,
+			toolsTokens: null,
+			systemPayloadTokens: null,
+			frozenFromIndex: 0,
+		});
+		const foldedBefore = s.blocks.filter((b) => s.isFolded(b)).map((b) => b.id);
+		expect(foldedBefore).toContain("m1:p0");
+
+		s.setProtect(55_000);
+
+		expect(s.protectedFromIndex).toBe(1);
+		expect(s.isProtected(s.get("m1:p0")!)).toBe(true);
+		expect(s.blocks.filter((b) => s.isFolded(b)).map((b) => b.id)).toEqual(foldedBefore);
+	});
+
+	it("keeps already-folded cached-prefix blocks folded when the provider marks them frozen", () => {
+		const s = makeStore([30_000, 30_000, 2_000]);
+		s.setProtect(0);
+		s.setContextWindow(70_000);
+		s.setBudget(100_000);
+		s.outputReserve = 8_000;
+		s.setHarnessBreakdown({
+			totalTokens: 70_000,
+			systemPromptTokens: null,
+			actualWireTokens: 74_000,
+			messagesTokens: 62_000,
+			toolsTokens: null,
+			systemPayloadTokens: null,
+			frozenFromIndex: 0,
+		});
+		const foldedBefore = s.blocks.filter((b) => s.isFolded(b)).map((b) => b.id);
+		expect(foldedBefore.length).toBeGreaterThan(0);
+
+		s.setHarnessBreakdown({
+			totalTokens: 70_000,
+			systemPromptTokens: null,
+			actualWireTokens: 74_000,
+			messagesTokens: 62_000,
+			toolsTokens: null,
+			systemPayloadTokens: null,
+			frozenFromIndex: 3,
+		});
+
+		expect(s.blocks.filter((b) => s.isFolded(b)).map((b) => b.id)).toEqual(foldedBefore);
+	});
 });
 
 // appendBlocks must be idempotent by id: a block can arrive twice (streamed early

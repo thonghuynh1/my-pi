@@ -192,6 +192,38 @@ describe("harness updates refold existing live blocks", () => {
 
 		expect(s.blocks.filter((b) => s.isFolded(b)).map((b) => b.id)).toEqual(foldedBefore);
 	});
+
+	it("clamps impossible provider-message frozen indexes and still emits the standing fold plan", () => {
+		const s = makeStore([30_000, 30_000, 2_000]);
+		s.setProtect(0);
+		s.setContextWindow(70_000);
+		s.setBudget(100_000);
+		s.outputReserve = 8_000;
+		s.setHarnessBreakdown({
+			totalTokens: 70_000,
+			systemPromptTokens: null,
+			actualWireTokens: 74_000,
+			messagesTokens: 62_000,
+			toolsTokens: null,
+			systemPayloadTokens: null,
+			frozenFromIndex: 0,
+		});
+		const foldedBefore = s.blocks.filter((b) => s.isFolded(b)).map((b) => b.id);
+		expect(foldedBefore.length).toBeGreaterThan(0);
+
+		s.setHarnessBreakdown({
+			totalTokens: 70_000,
+			systemPromptTokens: null,
+			actualWireTokens: 74_000,
+			messagesTokens: 62_000,
+			toolsTokens: null,
+			systemPayloadTokens: null,
+			frozenFromIndex: 507,
+		});
+
+		expect(s.frozenFromIndex).toBe(s.blocks.length);
+		expect(s.blocks.filter((b) => s.isFolded(b)).map((b) => b.id)).toEqual(foldedBefore);
+	});
 });
 
 // appendBlocks must be idempotent by id: a block can arrive twice (streamed early

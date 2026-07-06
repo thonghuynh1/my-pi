@@ -9,10 +9,11 @@ function requirePath(path) {
 	if (!existsSync(path)) throw new Error(`Missing required path: ${path}`);
 }
 
-function replaceOnce({ file, needle, replacement, label }) {
+function replaceOnce({ file, needle, replacement, label, satisfied = [] }) {
 	const path = join(vendorRoot, file);
 	let text = readFileSync(path, "utf8");
-	if (text.includes(replacement)) {
+	const satisfiedMarkers = [replacement, ...satisfied];
+	if (satisfiedMarkers.some((marker) => text.includes(marker))) {
 		console.log(`overlay kept ${label}`);
 		return;
 	}
@@ -40,6 +41,10 @@ replaceOnce({
 	label: "default budget 100k",
 	needle: 'session.store.setBudget(msg.meta.contextWindow);',
 	replacement: 'session.store.setBudget(Math.min(msg.meta.contextWindow, 100_000)); // overlay: cap budget at 100k',
+	satisfied: [
+		'const LIVE_BUDGET_CAP = 100_000;',
+		'session.store.setBudget(liveBudgetForContextWindow(msg.meta.contextWindow));',
+	],
 });
 
 replaceOnce({

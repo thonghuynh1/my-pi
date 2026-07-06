@@ -139,7 +139,7 @@ describe("conductor seam — attach / detach", () => {
 
 describe("conductor seam — harness ingest", () => {
 	it("threads harness.frozenFromIndex into store state and the next ConductorView", () => {
-		const s = makeStore(Array.from({ length: 3 }, (_, i) => blk(i)));
+		const s = makeStore(Array.from({ length: 6 }, (_, i) => blk(i)));
 		s.setProtect(0);
 		const stub = new StubConductor();
 		s.attach(stub);
@@ -150,6 +150,18 @@ describe("conductor seam — harness ingest", () => {
 		s.refold();
 
 		expect(stub.lastSnapshot?.frozenFromIndex).toBe(5);
+	});
+
+	it("clamps provider-message frozen indexes to the current block boundary", () => {
+		const s = makeStore(Array.from({ length: 3 }, (_, i) => blk(i)));
+		s.setProtect(0);
+		const stub = new StubConductor();
+		s.attach(stub);
+
+		s.setHarnessBreakdown({ totalTokens: 3000, systemPromptTokens: 100, frozenFromIndex: 507 });
+
+		expect(s.frozenFromIndex).toBe(3);
+		expect(stub.lastSnapshot?.frozenFromIndex).toBe(3);
 	});
 });
 

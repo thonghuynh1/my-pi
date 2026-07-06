@@ -51,7 +51,7 @@ import { linearize, applyPlan, type PiMessage } from "../app/src/lib/live/mappin
 import { DEFAULT_PORT, PROTOCOL_VERSION, type FoldOp, type GroupOp, type ServerMessage, type StreamMessage, type UnfoldRequestMessage, type UnfoldResultMessage, type RecallRequestMessage, type RecallContent, type CompleteRequestMessage, type CompleteResultMessage } from "../app/src/lib/live/protocol";
 
 /** The GUI's reply to a sync: in-place fold ops + group-collapse ops (ADR 0006). */
-type Plan = { ops: FoldOp[]; groups: GroupOp[] };
+type Plan = { ops: FoldOp[]; groups: GroupOp[]; steeringOff?: boolean; budgetExceeded?: boolean };
 import {
 	REGISTRY_PROTOCOL,
 	REGISTRY_DIR,
@@ -340,6 +340,12 @@ export default function accordionLive(pi: ExtensionAPI): void {
 
 	let sentCount = 0; // blocks already streamed to the current client
 	let reqSeq = 0;
+	// Last non-empty provider-safe plan applied on the model-call path. If the GUI
+	// briefly returns an empty plan in a long session (for example after a view-only
+	// message_end sync refolds the store while the provider prefix is frozen), using
+	// this as a one-turn safety net is cheaper and safer than sending the raw 500k+
+	// token history and detonating the provider cache/window.
+	let lastNonEmptyPlan: Plan | null = null;
 	let epoch = 0; // bumped on every new GUI connection; invalidates in-flight requests
 	const pending = new Map<number, (plan: Plan) => void>();
 	// Unfold requests: keyed by reqId, resolved when the GUI replies (or null on flush).
@@ -841,7 +847,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 					const resolve = pending.get(msg.reqId);
 					if (resolve) {
 						pending.delete(msg.reqId);
-						resolve({ ops: Array.isArray(msg.ops) ? msg.ops : [], groups: Array.isArray(msg.groups) ? msg.groups : [] });
+						resolve({ ops: Array.isArray(msg.ops) ? msg.ops : [], groups: Array.isArray(msg.groups) ? msg.groups : [], steeringOff: msg.steeringOff === true, budgetExceeded: msg.budgetExceeded === true });
 					}
 				}
 				if (msg?.type === "unfoldResult" && typeof msg.reqId === "number") {
@@ -1012,6 +1018,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		latestCtx = ctx;
 		sessionId = `s-${process.pid}-${Date.now()}`;
 		sentCount = 0;
+		lastNonEmptyPlan = null;
 		pendingSince = [];
 		// Seed the cache from the session itself. For a fresh session this is []; for a
 		// RESUMED/loaded session (reason "resume"/"startup"/"fork") it is the full prior
@@ -1131,6 +1138,41 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		if (epoch !== myEpoch) return; // GUI reconnected mid-flight → don't apply/advance
 		sentCount = Math.max(sentCount, all.length); // advance cursor; never rewind (a message_end during the await may have advanced it further)
 		if (plan.ops.length === 0 && plan.groups.length === 0) {
+			const originalTokensApprox = diagnosticTokenSize(originalMessages);
+			const frozenFromIndex = cacheTracker.getFrozenFromIndex();
+			const shouldHoldLastPlan =
+				lastNonEmptyPlan !== null &&
+				!plan.steeringOff &&
+				(plan.budgetExceeded || contextWindow === null || originalTokensApprox > Math.max(0, contextWindow - 8_192));
+			if (shouldHoldLastPlan) {
+				const heldMessagesForModel = applyPlan(originalMessages, lastNonEmptyPlan.ops, lastNonEmptyPlan.groups);
+				if (heldMessagesForModel !== originalMessages) {
+					writeContextDiagnostic({
+						event: "accordion_context_hold_last_plan",
+						timestamp: new Date().toISOString(),
+						sessionId,
+						reqId,
+						pid: process.pid,
+						cwd: meta.cwd,
+						model,
+						full,
+						blocksTotal: all.length,
+						freshBlocks: fresh.length,
+						originalMessageCount: originalMessages.length,
+						appliedMessageCount: heldMessagesForModel.length,
+						foldOpsRequested: lastNonEmptyPlan.ops.length,
+						groupOpsRequested: lastNonEmptyPlan.groups.length,
+						changed: true,
+						originalTokensApprox,
+						appliedTokensApprox: diagnosticTokenSize(heldMessagesForModel),
+						foldMarkersInAppliedPayload: countFoldMarkers(heldMessagesForModel),
+						foldMarkersInOriginalPayload: countFoldMarkers(originalMessages),
+						frozenFromIndex,
+						payloadAudit: payloadAudit.getLatestSizes(),
+					});
+					return { messages: heldMessagesForModel as unknown as AgentMessage[] };
+				}
+			}
 			writeContextDiagnostic({
 				event: "accordion_context_empty_plan",
 				timestamp: new Date().toISOString(),
@@ -1143,14 +1185,15 @@ export default function accordionLive(pi: ExtensionAPI): void {
 				blocksTotal: all.length,
 				freshBlocks: fresh.length,
 				originalMessageCount: originalMessages.length,
-				originalTokensApprox: diagnosticTokenSize(originalMessages),
-				frozenFromIndex: cacheTracker.getFrozenFromIndex(),
+				originalTokensApprox,
+				frozenFromIndex,
 				payloadAudit: payloadAudit.getLatestSizes(),
 			});
 			return; // empty plan → pass through
 		}
 
 		const messagesForModel = applyPlan(originalMessages, plan.ops, plan.groups);
+		lastNonEmptyPlan = plan;
 		writeContextDiagnostic({
 			event: "accordion_context_apply_plan",
 			timestamp: new Date().toISOString(),

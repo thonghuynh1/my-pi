@@ -387,14 +387,16 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 			// the slot store, otherwise the map header / dashboard show the breakdown
 			// in direct mode but not in broker mode — the wire carries it either way.
 			if (msg.harness && typeof msg.harness === "object") slot.store.setHarnessBreakdown(msg.harness);
-			const plan: { ops: FoldOp[]; groups: GroupOp[] } = slot.folding.enabled
-				? { ops: computeFoldOps(slot.store), groups: computeGroupOps(slot.store) }
-				: { ops: [], groups: [] };
+			const plan: { ops: FoldOp[]; groups: GroupOp[]; steeringOff?: boolean; budgetExceeded?: boolean } = slot.folding.enabled
+				? { ops: computeFoldOps(slot.store), groups: computeGroupOps(slot.store), budgetExceeded: slot.store.fullTokens * slot.store.calibration > slot.store.budget }
+				: { ops: [], groups: [], steeringOff: true };
 			const reply: PlanMessage = {
 				type: "plan",
 				reqId: msg.reqId,
 				ops: plan.ops,
 				groups: plan.groups,
+				...(plan.steeringOff && { steeringOff: true }),
+				...(plan.budgetExceeded && { budgetExceeded: true }),
 			};
 			trySend(ws, reply);
 		} else if (msg.type === "unfoldRequest") {

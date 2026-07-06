@@ -175,11 +175,7 @@ Example `models.json`:
 
 ```json
 {
-  "defaultModel": "github-copilot/claude-sonnet-4.6",
-  "agents": {
-    "reviewer": "inherit",
-    "test-runner": "github-copilot/gpt-4.1"
-  }
+  "defaultModel": "github-copilot/claude-sonnet-4.6"
 }
 ```
 

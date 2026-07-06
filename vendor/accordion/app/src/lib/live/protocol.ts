@@ -251,6 +251,10 @@ export interface PlanMessage {
 	ops: FoldOp[];
 	/** Group-collapse ops (ADR 0006). Optional/additive — omitted ⇒ no group collapse. */
 	groups?: GroupOp[];
+	/** True when the user explicitly disabled steering. Prevents the extension from re-applying a held plan. */
+	steeringOff?: boolean;
+	/** True when the store's live tokens exceed the user-configured budget. Signals the extension to hold the last plan even if contextWindow isn't near-full. */
+	budgetExceeded?: boolean;
 }
 
 /**

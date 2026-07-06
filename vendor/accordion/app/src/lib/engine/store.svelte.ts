@@ -145,9 +145,12 @@ export class AccordionStore {
 		frozenFromIndex?: number | null;
 	} | null>(null);
 	/**
-	 * Index of the first block the conductor may fold. Blocks before this index are in the
-	 * provider's cached prefix and are host-clamped with reason `"frozen"` if a conductor
-	 * targets them. 0 means no frozen prefix.
+	 * Block-order boundary of the provider's cached prefix. Blocks before this index are
+	 * host-clamped with reason `"frozen"` if a conductor targets them. 0 means no frozen
+	 * prefix. The pi-side tracker may report provider-message counts, which can be larger
+	 * than Accordion's block count in multi-part/tool-heavy sessions; clamp on ingest so an
+	 * impossible provider index cannot make every block look older than a non-existent
+	 * block boundary and collapse the fold plan.
 	 */
 	frozenFromIndex = $state(0);
 	/**
@@ -1197,7 +1200,8 @@ export class AccordionStore {
 		frozenFromIndex?: number | null;
 	} | null): void {
 		this.harnessBreakdown = h;
-		this.frozenFromIndex = h?.frozenFromIndex ?? 0;
+		const rawFrozen = typeof h?.frozenFromIndex === "number" && Number.isFinite(h.frozenFromIndex) ? h.frozenFromIndex : 0;
+		this.frozenFromIndex = Math.max(0, Math.min(this.blocks.length, Math.floor(rawFrozen)));
 		this.updateCalibration();
 		this.refold();
 	}

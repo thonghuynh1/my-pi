@@ -84,9 +84,12 @@ export const live = $state<{ status: "idle" | "connecting" | "connected" | "erro
  *
  * This is the one place the GUI can alter a real model call; keep it a pure read.
  */
-function computePlan(): { ops: FoldOp[]; groups: GroupOp[] } {
-	if (!folding.enabled || !session.store) return { ops: [], groups: [] };
-	return { ops: computeFoldOps(session.store), groups: computeGroupOps(session.store) };
+function computePlan(): { ops: FoldOp[]; groups: GroupOp[]; steeringOff?: boolean; budgetExceeded?: boolean } {
+	if (!folding.enabled || !session.store) return { ops: [], groups: [], steeringOff: true };
+	// Use fullTokens (raw, unfolded) not liveTokens (post-fold) to avoid the oscillation:
+	// after a fold, liveTokens drops below budget → overBudget=false → hold skips → raw passthrough → repeat.
+	const rawExceedsBudget = session.store.fullTokens * session.store.calibration > session.store.budget;
+	return { ops: computeFoldOps(session.store), groups: computeGroupOps(session.store), budgetExceeded: rawExceedsBudget };
 }
 
 /**
@@ -382,7 +385,7 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 			// Invariant: a ghost is only removed, never converted to a block.
 			session.store.appendBlocks(msg.blocks.map(wireToBlock));
 			const plan = computePlan();
-			const reply: PlanMessage = { type: "plan", reqId: msg.reqId, ops: plan.ops, groups: plan.groups };
+			const reply: PlanMessage = { type: "plan", reqId: msg.reqId, ops: plan.ops, groups: plan.groups, ...(plan.steeringOff && { steeringOff: true }), ...(plan.budgetExceeded && { budgetExceeded: true }) };
 			try {
 				ws.send(JSON.stringify(reply));
 			} catch {

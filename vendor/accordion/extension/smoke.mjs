@@ -871,13 +871,13 @@ await new Promise((resolve, reject) => {
 });
 await new Promise((resolve) => { ws5.on("close", resolve); ws5.close(); });
 
-// Part 1 — the anchor-less path round-trips with a POSITIONAL id.
+// Part 1 — with timestamp backfill, the anchor-less message now gets a durable id.
 if (!posFlush) fails.push("anchor-less path: never received the attach-flush sync");
 else {
 	const posBlock = posFlush.blocks?.find((b) => b.text === "ANCHORLESS ORIGINAL");
 	if (!posBlock) fails.push("anchor-less path: flush missing the anchor-less assistant block");
-	else if (!posBlock.id.startsWith("m")) fails.push(`anchor-less path: block id is not positional (got ${posBlock.id})`);
-	else if (posBlock.id !== "m0:p0") fails.push(`anchor-less path: expected positional id m0:p0, got ${posBlock.id}`);
+	else if (posBlock.id.startsWith("m")) fails.push(`anchor-less path: block id is still positional after backfill (got ${posBlock.id})`);
+	else if (!posBlock.id.startsWith("a:t")) fails.push(`anchor-less path: expected durable id a:t<N>:p<j>, got ${posBlock.id}`);
 }
 
 // Part 2 — the applyPlan guard refuses both ops, so pi's messages are UNCHANGED.

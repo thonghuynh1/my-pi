@@ -410,7 +410,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 
 	/** Resolve every outstanding request as passthrough (used on connect-swap / shutdown). */
 	function flushPending(): void {
-		for (const resolve of pending.values()) resolve({ ops: [], groups: [] });
+		for (const resolve of pending.values()) resolve({ ops: [], groups: [], budgetExceeded: true });
 		pending.clear();
 		// In-flight unfold requests (if any) must also be resolved. null signals "not
 		// attached" — the tool returns a safe "did not respond" message to the agent.
@@ -522,7 +522,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		if (!c) return [];
 		let sm: {
 			buildSessionContext?: () => { messages?: unknown };
-			getBranch?: (fromId?: string) => Array<{ type: string; message?: unknown }>;
+			getBranch?: (fromId?: string) => Array<{ type: string; timestamp?: string; message?: unknown }>;
 		} | undefined;
 		try {
 			sm = c.sessionManager as unknown as typeof sm;
@@ -532,18 +532,35 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		if (!sm) return [];
 		try {
 			const sc = sm.buildSessionContext?.();
-			if (sc && Array.isArray(sc.messages)) return sc.messages as PiMessage[];
+			if (sc && Array.isArray(sc.messages)) return backfillTimestamps(sc.messages as PiMessage[]);
 		} catch {
 			/* fall through to the branch reconstruction */
 		}
 		try {
 			const branch = sm.getBranch?.() ?? [];
-			const msgs = branch.filter((e) => e.type === "message" && e.message).map((e) => e.message as PiMessage);
+			const msgs = branch
+				.filter((e) => e.type === "message" && e.message)
+				.map((e) => {
+					const msg = e.message as PiMessage;
+					// Use the entry's ISO timestamp to synthesize a numeric timestamp when the message lacks one.
+					if (msg.timestamp == null && e.timestamp) msg.timestamp = new Date(e.timestamp).getTime();
+					return msg;
+				});
 			msgs.reverse(); // getBranch walks leaf→root; the view wants chronological order
 			return msgs;
 		} catch {
 			return [];
 		}
+	}
+
+	/** Ensure every message has a numeric timestamp so blockId() produces durable IDs. Old sessions may lack this field. */
+	function backfillTimestamps(msgs: PiMessage[]): PiMessage[] {
+		let seed = 1;
+		for (const m of msgs) {
+			if (m.timestamp == null) m.timestamp = seed;
+			seed = m.timestamp + 1;
+		}
+		return msgs;
 	}
 
 	/** Adopt a model's id + context window into the live + meta state (best-effort). */
@@ -964,12 +981,20 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		return new Promise((resolve) => {
 			const ws = client;
 			if (!ws || ws.readyState !== 1) return resolve(null);
+			// Full syncs send the entire block history; give the GUI more time to process + fold.
+			const timeout = full ? 2000 : REQUEST_TIMEOUT_MS;
 			const timer = setTimeout(() => {
 				if (pending.has(reqId)) {
-					pending.delete(reqId);
-					resolve({ ops: [], groups: [] }); // delivered but no reply in time → passthrough
+					// Replace the main resolve with a late-reply handler that captures the plan
+					// for future hold-last-plan use, even though this model call passes through.
+					pending.set(reqId, (latePlan) => {
+						if (latePlan.ops.length > 0 || latePlan.groups.length > 0) {
+							lastNonEmptyPlan = latePlan;
+						}
+					});
+					resolve({ ops: [], groups: [], budgetExceeded: true });
 				}
-			}, REQUEST_TIMEOUT_MS);
+			}, timeout);
 			pending.set(reqId, (plan) => {
 				clearTimeout(timer);
 				resolve(plan);
@@ -1105,9 +1130,9 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		// always a safe point-in-time snapshot of messages going INTO the model call.
 		// This snapshot is authoritative, so any messages we accumulated since the last
 		// one are now subsumed by it — drop them.
-		lastMessages = event.messages as unknown as PiMessage[];
+		lastMessages = backfillTimestamps(event.messages as unknown as PiMessage[]);
 		pendingSince = [];
-		const originalMessages = event.messages as unknown as PiMessage[];
+		const originalMessages = lastMessages;
 		const all = linearize(lastMessages);
 		if (!attached() && !(await waitForRequestedAttach())) return; // no GUI → pass through untouched
 
@@ -1188,6 +1213,9 @@ export default function accordionLive(pi: ExtensionAPI): void {
 				originalTokensApprox,
 				frozenFromIndex,
 				payloadAudit: payloadAudit.getLatestSizes(),
+				hasLastPlan: lastNonEmptyPlan !== null,
+				budgetExceeded: plan.budgetExceeded,
+				steeringOff: plan.steeringOff,
 			});
 			return; // empty plan → pass through
 		}
@@ -1319,7 +1347,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		// keeps the cached history COMPLETE (including this turn's final reply) so that a
 		// later `/accordion` attach can flush the whole conversation immediately. `context`
 		// alone keeps the cache only up to the last model call — one reply short.
-		lastMessages = event.messages as unknown as PiMessage[];
+		lastMessages = backfillTimestamps(event.messages as unknown as PiMessage[]);
 		pendingSince = [];
 
 		const ws = client;

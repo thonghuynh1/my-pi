@@ -1062,10 +1062,10 @@ export class AccordionStore {
 		for (const c of cmds) {
 			switch (c.kind) {
 				case "fold":
-					for (const id of c.ids) this.substOne(id, c.digest, by, "fold", reports);
+					for (const id of c.ids) this.substOne(id, c.digest, by, "fold", reports, false, c.breakFrozen ?? false);
 					break;
 				case "replace":
-					this.substOne(c.id, c.content, by, "replace", reports, c.recoverable ?? false);
+					this.substOne(c.id, c.content, by, "replace", reports, c.recoverable ?? false, c.breakFrozen ?? false);
 					break;
 				case "restore":
 				case "pin":
@@ -1085,7 +1085,7 @@ export class AccordionStore {
 	 * auto-folder; a non-empty string substitutes that exact content; an empty string `""`
 	 * can't be a wire content part, so it folds to the engine digest too (see the body).
 	 */
-	private substOne(id: string, content: string | undefined, by: Actor, kind: "fold" | "replace", reports: ClampReport[], recoverable = false): void {
+	private substOne(id: string, content: string | undefined, by: Actor, kind: "fold" | "replace", reports: ClampReport[], recoverable = false, breakFrozen = false): void {
 		const b = this.get(id);
 		if (!b) return void reports.push(clamp(kind, [id], "unknown-id", `no block ${id}`));
 		if (b.override !== null) return void reports.push(clamp(kind, [id], "human-override", `${label(b)} is held by the human`));
@@ -1093,7 +1093,7 @@ export class AccordionStore {
 		// Protection is ABSOLUTE: a block in the working tail is never folded, by a conductor
 		// OR the user. Refuse and report rather than violate the safety pillar.
 		if (this.isProtected(b)) return void reports.push(clamp(kind, [id], "protected", `${label(b)} is in the protected working tail`));
-		if (b.order < this.frozenFromIndex)
+		if (b.order < this.frozenFromIndex && !breakFrozen)
 			return void reports.push(
 				clamp(kind, [id], "frozen", `block ${id} is in the provider's cached prefix (order ${b.order} < frozen ${this.frozenFromIndex})`),
 			);

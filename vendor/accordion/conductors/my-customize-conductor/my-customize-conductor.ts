@@ -42,6 +42,8 @@ const HOLD_BAND = 0.9;
 const POTETO_MODE_NAME = "poteto-mode";
 const POTETO_OFF_PHRASES = ["exit poteto mode", "stop using poteto", "disable pstack mode"];
 
+type SavedFold = { tokens: number; breakFrozen: boolean };
+
 export class MyCustomizeConductor implements Conductor {
 	readonly id = "my-customize-conductor";
 	readonly label = "My Customize";
@@ -49,7 +51,7 @@ export class MyCustomizeConductor implements Conductor {
 	// Epoch gating state: the plan from the last pass and the per-block token savings it applies.
 	// Cleared when the view fits within cap (no folding needed) or when the hold band is crossed.
 	private lastPlan: Command[] | null = null;
-	private lastSavings = new Map<string, number>(); // block id → tokens saved
+	private lastSavings = new Map<string, SavedFold>(); // block id → tokens saved
 	private lastSemanticKey: string | null = null;
 
 	conduct(view: ConductorView): Command[] {
@@ -94,15 +96,10 @@ export class MyCustomizeConductor implements Conductor {
 			if (identity) pstackByBlockId.set(b.id, identity);
 		}
 
-		const candidates = view.blocks.filter(
-			(b) =>
-				!b.held &&
-				!b.protected &&
-				!b.grouped &&
-				b.order >= view.frozenFromIndex &&
-				b.foldedTokens < b.tokens &&
-				FOLDABLE_KINDS.has(b.kind),
+		const allCandidates = view.blocks.filter(
+			(b) => !b.held && !b.protected && !b.grouped && b.foldedTokens < b.tokens && FOLDABLE_KINDS.has(b.kind),
 		);
+		const candidates = allCandidates.filter((b) => b.order >= view.frozenFromIndex);
 		const candidateIds = new Set(candidates.map((b) => b.id));
 		let potetoModeActive = false;
 		let newestPotetoBlock: ViewBlock | undefined;
@@ -122,7 +119,7 @@ export class MyCustomizeConductor implements Conductor {
 			let projectedHeld = view.liveTokens;
 			for (const [id, saving] of this.lastSavings) {
 				const b = byId.get(id);
-				if (b && !b.held && !b.protected && !b.grouped && b.order >= view.frozenFromIndex) projectedHeld -= saving;
+				if (b && !b.held && !b.protected && !b.grouped) projectedHeld -= saving.tokens;
 			}
 			if (projectedHeld <= HOLD_BAND * cap) return this.lastPlan;
 		}
@@ -140,22 +137,23 @@ export class MyCustomizeConductor implements Conductor {
 		const marked = markReachable(buildGraph(view.blocks), roots);
 
 		// Scan each candidate's text once so the sort comparator doesn't redo it per comparison.
-		const riskCount = new Map(candidates.map((b) => [b.id, riskFlags(b.text ?? "").length]));
-
-		const sorted = [...candidates].sort(
-			(a, b) =>
-				(isMcpResult(a) ? 1 : 0) - (isMcpResult(b) ? 1 : 0) ||
-				(marked.has(a.id) ? 1 : 0) - (marked.has(b.id) ? 1 : 0) ||
-				(riskCount.get(a.id) ?? 0) - (riskCount.get(b.id) ?? 0) ||
-				FOLD_RANK[a.kind] - FOLD_RANK[b.kind] ||
-				a.order - b.order,
-		);
+		const riskCount = new Map(allCandidates.map((b) => [b.id, riskFlags(b.text ?? "").length]));
+		const sortCandidates = (items: ViewBlock[]): ViewBlock[] =>
+			[...items].sort(
+				(a, b) =>
+					(isMcpResult(a) ? 1 : 0) - (isMcpResult(b) ? 1 : 0) ||
+					(marked.has(a.id) ? 1 : 0) - (marked.has(b.id) ? 1 : 0) ||
+					(riskCount.get(a.id) ?? 0) - (riskCount.get(b.id) ?? 0) ||
+					FOLD_RANK[a.kind] - FOLD_RANK[b.kind] ||
+					a.order - b.order,
+			);
 
 		let live = view.liveTokens;
 		const foldIds: string[] = [];
+		const breakFoldIds: string[] = [];
 		const replaces: Command[] = [];
-		for (const b of sorted) {
-			if (live <= cap) break;
+		const alreadyPlanned = new Set<string>();
+		const applyCandidate = (b: ViewBlock, breakFrozen: boolean): void => {
 			let summary: string | undefined;
 			if (isMcpResult(b)) {
 				summary = mcpSummary(b, b.callId ? callById.get(b.callId) : undefined, { potetoBeacon: b.id === beaconCarrierId });
@@ -167,29 +165,45 @@ export class MyCustomizeConductor implements Conductor {
 			if (summary) {
 				const substTokens = estSummaryTokens(summary);
 				if (substTokens < b.tokens) {
-					replaces.push({ kind: "replace", id: b.id, content: summary, recoverable: true });
+					replaces.push({ kind: "replace", id: b.id, content: summary, recoverable: true, ...(breakFrozen ? { breakFrozen: true } : {}) });
 					live -= b.tokens - substTokens;
-					continue;
+					alreadyPlanned.add(b.id);
+					return;
 				}
 			}
-			foldIds.push(b.id);
+			(breakFrozen ? breakFoldIds : foldIds).push(b.id);
 			live += b.foldedTokens - b.tokens;
+			alreadyPlanned.add(b.id);
+		};
+
+		for (const b of sortCandidates(candidates)) {
+			if (live <= cap) break;
+			applyCandidate(b, false);
+		}
+		// If the unfrozen suffix cannot meet cap, deliberately break the cached prefix once.
+		// This is cheaper than repeatedly returning an empty plan and sending raw context forever.
+		if (live > cap) {
+			for (const b of sortCandidates(allCandidates.filter((b) => b.order < view.frozenFromIndex && !alreadyPlanned.has(b.id)))) {
+				if (live <= cap) break;
+				applyCandidate(b, true);
+			}
 		}
 
 		const cmds: Command[] = [...replaces];
 		if (foldIds.length) cmds.push({ kind: "fold", ids: foldIds });
+		if (breakFoldIds.length) cmds.push({ kind: "fold", ids: breakFoldIds, breakFrozen: true });
 
 		// Record the plan and per-block savings for the next-pass epoch hold check.
-		const savings = new Map<string, number>();
+		const savings = new Map<string, SavedFold>();
 		for (const c of cmds) {
 			if (c.kind === "fold") {
 				for (const id of c.ids) {
 					const b = byId.get(id);
-					if (b) savings.set(id, b.tokens - b.foldedTokens);
+					if (b) savings.set(id, { tokens: b.tokens - b.foldedTokens, breakFrozen: c.breakFrozen ?? false });
 				}
 			} else if (c.kind === "replace") {
 				const b = byId.get(c.id);
-				if (b) savings.set(c.id, b.tokens - estSummaryTokens(c.content));
+				if (b) savings.set(c.id, { tokens: b.tokens - estSummaryTokens(c.content), breakFrozen: c.breakFrozen ?? false });
 			}
 		}
 		this.lastPlan = cmds;

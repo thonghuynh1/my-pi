@@ -54,7 +54,7 @@ test("WS round-trip: hello → context/update → valid commands", async () => {
 		const foldable = new Set(["text", "thinking", "tool_result"]);
 		const byId = new Map(view.blocks.map((b: any) => [b.id, b]));
 
-		const commands: any[] = await new Promise((resolve, reject) => {
+		const commands = await new Promise<any[]>((resolve, reject) => {
 			const timer = setTimeout(() => reject(new Error("timed out waiting for commands")), 8000);
 			let gotHello = false;
 			ws.on("open", () => {
@@ -79,6 +79,20 @@ test("WS round-trip: hello → context/update → valid commands", async () => {
 			});
 			ws.on("error", reject);
 		});
+
+		const repeatCommands = new Promise<any[]>((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error("timed out waiting for repeated commands")), 8000);
+			const onMessage = (raw: Buffer) => {
+				const msg = JSON.parse(raw.toString());
+				if (msg.type !== "conductor/commands") return;
+				ws.off("message", onMessage);
+				clearTimeout(timer);
+				resolve(msg.commands);
+			};
+			ws.on("message", onMessage);
+		});
+		ws.send(JSON.stringify({ ...view, rev: 2 }));
+		assert.deepEqual(await repeatCommands, commands, "unchanged views re-emit the complete desired command batch");
 
 		assert.ok(commands.length > 0, "expected folds under pressure");
 		for (const c of commands) {

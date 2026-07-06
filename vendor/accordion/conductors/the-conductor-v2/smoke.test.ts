@@ -95,6 +95,20 @@ test("WS round-trip: hello → context/update → valid commands", async () => {
 		});
 
 		const commands = result.commands;
+		const repeatCommands = new Promise<any[]>((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error("timed out waiting for repeated commands")), 8000);
+			const onMessage = (raw: Buffer) => {
+				const msg = JSON.parse(raw.toString());
+				if (msg.type !== "conductor/commands") return;
+				ws.off("message", onMessage);
+				clearTimeout(timer);
+				resolve(msg.commands);
+			};
+			ws.on("message", onMessage);
+		});
+		ws.send(JSON.stringify({ ...view, rev: 2 }));
+		assert.deepEqual(await repeatCommands, commands, "unchanged views re-emit the complete desired command batch");
+
 		assert.ok(commands.length > 0, "expected folds under pressure");
 		for (const c of commands) {
 			assert.ok(["fold", "replace", "group"].includes(c.kind), `known command kind: ${c.kind}`);

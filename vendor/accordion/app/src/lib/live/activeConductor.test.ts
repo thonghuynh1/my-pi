@@ -29,7 +29,7 @@ function makeStore(blocks: Block[] = []): AccordionStore {
 }
 
 afterEach(() => {
-	setActiveConductor("mcp-preserving-gc");
+	setActiveConductor("my-customize-conductor");
 });
 
 describe("attachActiveConductor", () => {

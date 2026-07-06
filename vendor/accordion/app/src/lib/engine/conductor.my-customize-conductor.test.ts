@@ -164,7 +164,7 @@ describe("MyCustomizeConductor", () => {
 		for (let i = 5; i < 10; i++) expect(folded.has(`m${i}`)).toBe(true);
 	});
 
-	it("recomputes the plan when a previously folded block is now frozen", () => {
+	it("holds the plan even when a previously folded block becomes frozen (breakFrozen applies it)", () => {
 		const blocks = [
 			vb("u:0", "user", 0, 200, 200, { text: "task" }),
 			vb("r:3", "tool_result", 3, 1_500, 40, { toolName: "bash", text: "older output" }),
@@ -176,23 +176,26 @@ describe("MyCustomizeConductor", () => {
 		const first = conductor.conduct(firstView);
 		expect(foldIdsOf(first).has("r:3")).toBe(true);
 
+		// frozenFromIndex moves past r:3 — hold still fires because breakFrozen covers it.
 		const frozenView = makeView(blocks, 2_000, 4_700, { frozenFromIndex: 5 });
 		const second = conductor.conduct(frozenView);
-		const secondFolded = foldIdsOf(second);
-		expect(second).not.toBe(first);
-		expect(secondFolded.has("r:3")).toBe(false);
-		expect(secondFolded.has("r:5")).toBe(true);
-		expect(secondFolded.has("r:6")).toBe(true);
+		expect(second).toBe(first);
 	});
 
-	it("returns [] when every foldable block is frozen", () => {
+	it("breaks frozen prefix under pressure rather than returning empty", () => {
 		const blocks = [
 			vb("u:0", "user", 0, 200, 200, { text: "task" }),
 			vb("r:1", "tool_result", 1, 1_500, 40, { toolName: "bash", text: "output 1" }),
 			vb("r:2", "tool_result", 2, 1_500, 40, { toolName: "bash", text: "output 2" }),
 		];
 		const view = makeView(blocks, 500, 3_200, { frozenFromIndex: 3 });
-		expect(new MyCustomizeConductor().conduct(view)).toEqual([]);
+		const result = new MyCustomizeConductor().conduct(view);
+		expect(result.length).toBeGreaterThan(0);
+		const foldCmd = result.find((c) => c.kind === "fold");
+		expect(foldCmd).toBeDefined();
+		expect((foldCmd as any).breakFrozen).toBe(true);
+		expect((foldCmd as any).ids).toContain("r:1");
+		expect((foldCmd as any).ids).toContain("r:2");
 	});
 
 	it("is registered as a collaborative in-process conductor", () => {

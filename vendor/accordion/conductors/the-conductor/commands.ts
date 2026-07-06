@@ -64,14 +64,3 @@ export function buildCommands(
 	return commands;
 }
 
-/** A cheap stable signature of the desired state, used to HOLD (emit nothing) when nothing
- *  changed so the agent's prompt prefix stays cache-warm between real moves. Built from levels
- *  + group membership only (digest text can lag behind async summaries without changing intent). */
-export function planSignature(plan: FoldPlan): string {
-	const levels = [...plan.levels.entries()]
-		.filter(([, l]) => l > 0)
-		.sort((a, b) => (a[0] < b[0] ? -1 : 1))
-		.map(([id, l]) => `${id}:${l}`);
-	const groups = [...plan.groups.values()].map((g) => `g[${[...g.blockIds].sort().join(",")}]`).sort();
-	return levels.join("|") + "##" + groups.join("|");
-}

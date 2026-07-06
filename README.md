@@ -69,11 +69,11 @@ In normal use, `/accordion` starts the broker automatically, adds the current Pi
 
 ### Custom conductor overlay
 
-This repo ships a custom conductor (`MCP-preserving GC`) that garbage-collects old context but never folds MCP tool results. It lives in `overlays/accordion/` and is injected into the vendor submodule at install time.
+The overlay in `overlays/accordion/` patches vendor defaults at install time.
 
 Defaults applied by the overlay:
 
-- Conductor: `MCP-preserving GC`
+- Conductor: `My Customize`
 - Steering (live folding): ON
 - Budget: min(contextWindow, 100k)
 

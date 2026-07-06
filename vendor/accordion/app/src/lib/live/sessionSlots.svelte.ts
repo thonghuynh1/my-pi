@@ -377,7 +377,7 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 				const prev = slot.store.contextWindow;
 				slot.store.setContextWindow(cw);
 				if (!budgetLive || (prev !== null && prev !== cw)) {
-					slot.store.setBudget(cw);
+					slot.store.setBudget(Math.min(cw, 100_000));
 					budgetLive = true;
 				}
 			}

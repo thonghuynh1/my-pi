@@ -58,7 +58,7 @@ import {
 	applyPlanToState,
 	type ViewBlock,
 } from "./adapter.ts";
-import { buildCommands, planSignature } from "./commands.ts";
+import { buildCommands } from "./commands.ts";
 
 // Mirrors CONDUCTOR_PROTOCOL_VERSION in conductors/contract/protocol.ts (v3 = locks + complete).
 const CONDUCTOR_PROTOCOL_VERSION = 3;
@@ -187,7 +187,6 @@ interface View {
 interface ConnState {
 	accState: AccordionState;
 	deps: ConductorDependencies;
-	lastSig: string | null;
 	lastView: View | null;
 	warmInFlight: boolean;
 	/** This connection has completed at least one embedding warm (its cache is no longer empty).
@@ -202,7 +201,6 @@ function freshState(): ConnState {
 	return {
 		accState: createAccordionState(),
 		deps: { log },
-		lastSig: null,
 		lastView: null,
 		warmInFlight: false,
 		warmedOnce: false,
@@ -258,8 +256,7 @@ function maybeWarm(ws: import("ws").WebSocket, state: ConnState): void {
 		});
 }
 
-/** Plan the current view, translate to commands, and send IFF the desired state changed
- *  (holding otherwise keeps the agent's prompt prefix cache-warm). */
+/** Plan the current view, translate to a complete command batch, and send it every pass. */
 function recomputeAndSend(ws: import("ws").WebSocket, state: ConnState, rev: number): void {
 	const view = state.lastView;
 	if (!view || state.closed || ws.readyState !== ws.OPEN) return;
@@ -286,12 +283,8 @@ function recomputeAndSend(ws: import("ws").WebSocket, state: ConnState, rev: num
 
 	sendStatus(ws, state, view, plan, parsed.blocks, prompt);
 
-	const sig = planSignature(plan);
-	if (sig === state.lastSig) return; // no change → hold
-
 	const commands = buildCommands(plan, parsed.blocks, state.accState, state.deps, prompt);
 	ws.send(JSON.stringify({ type: "conductor/commands", rev, commands }));
-	state.lastSig = sig;
 	log(
 		`plan: ${commands.length} cmds · target ${(plan.foldTarget * 100).toFixed(0)}% · ` +
 			`assembled ~${plan.assembledTokens.toLocaleString()}/${view.budget.toLocaleString()} tok`,
@@ -370,7 +363,6 @@ function recordOverride(state: ConnState, ids: string[], event: "agentUnfold" | 
 		});
 	}
 	state.accState.manualChanges = state.accState.manualChanges.slice(-1000);
-	state.lastSig = null; // force a fresh emit next pass
 }
 
 wss.on("connection", (ws) => {
@@ -381,7 +373,6 @@ wss.on("connection", (ws) => {
 		summaryProvider,
 		onSummary: () => {
 			if (state.closed) return; // a late summary on a dead connection: drop it
-			state.lastSig = null;
 			recomputeAndSend(ws, state, state.lastView?.rev ?? -1);
 		},
 	};
@@ -408,9 +399,8 @@ wss.on("connection", (ws) => {
 
 		if (msg.type === "host/commandResult") {
 			// A clamp means the host refused part of our desired state (human override / protected /
-			// grouped / not-foldable). Force a fresh emit next pass; the next plan self-heals from
-			// the view's flags (offLimitsIds already excludes held/protected/grouped).
-			if ((msg.reports || []).length) state.lastSig = null;
+			// grouped / not-foldable). The next plan self-heals from the view's flags
+			// (offLimitsIds already excludes held/protected/grouped).
 			return;
 		}
 

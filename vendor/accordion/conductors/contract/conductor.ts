@@ -148,13 +148,13 @@ export function availableCap(view: {
 	//   want:  k·(liveTokens + harnessOverhead) + outputReserve ≤ contextWindow
 	//   ⇒     liveTokens ≤ contextWindow/k − harnessOverhead − outputReserve/k
 	const k = view.calibration && view.calibration > 0 ? view.calibration : 1;
-	// `budget`, `contextWindow` and `outputReserve` are REAL provider tokens; `harnessOverhead`
-	// is in estimate units (×k → real). Compute the real space available to messages, then
-	// convert back to estimate units (÷ k) so it compares against `liveTokens` (estimate units).
 	const harnessReal = (view.harnessOverhead ?? 0) * k;
 	const windowSpace = view.contextWindow != null ? view.contextWindow - harnessReal - (view.outputReserve ?? 0) : Number.POSITIVE_INFINITY;
 	const realCap = Math.min(view.budget, windowSpace);
-	return Math.max(0, realCap / k);
+	// When k < 1 (our estimate overcounts vs real tokens), dividing by k inflates the cap
+	// above budget. Clamp so the conductor never relaxes past budget in estimate units.
+	const estimateCap = realCap / k;
+	return Math.max(0, Math.min(estimateCap, view.budget));
 }
 
 /**
@@ -185,6 +185,8 @@ export interface FoldCommand {
 	kind: "fold";
 	ids: string[];
 	digest?: string;
+	/** Deliberately rewrite blocks in the provider's cached prefix to escape a raw-context loop. */
+	breakFrozen?: boolean;
 }
 
 /**
@@ -212,6 +214,8 @@ export interface ReplaceCommand {
 	id: string;
 	content: string;
 	recoverable?: boolean;
+	/** Deliberately rewrite a block in the provider's cached prefix to escape a raw-context loop. */
+	breakFrozen?: boolean;
 }
 
 /**

@@ -59,6 +59,20 @@
         "tool-panel": "enabled",
         "tools": "enabled"
       }
+    },
+    "aiknow": {
+      "tools": {
+        "aiknow_context": "agent-visible",
+        "aiknow_search": "agent-visible",
+        "aiknow_sync": "agent-visible",
+        "aiknow_status": "agent-visible",
+        "aiknow_capabilities": "agent-visible",
+        "aiknow_impact": "agent-visible",
+        "aiknow_read": "agent-visible",
+        "aiknow_file_map": "agent-visible",
+        "aiknow_neighbors": "agent-visible",
+        "aiknow_doctor": "agent-visible"
+      }
     }
   }
 }

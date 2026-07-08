@@ -1,0 +1,378 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import aiknowExtension, { piExtension } from "../aiknow.ts";
+import type { ManagedExtensionPiApi } from "../lib/capability-visibility.ts";
+
+// ── FakePi ────────────────────────────────────────────────────────────────
+
+interface FakePi extends ManagedExtensionPiApi {
+	tools: Map<string, unknown>;
+	handlers: Map<string, Array<(...args: unknown[]) => unknown>>;
+	emit(event: string, ...args: unknown[]): void;
+}
+
+function createFakePi(): FakePi {
+	const tools = new Map<string, unknown>();
+	let activeTools: string[] = [];
+	const handlers = new Map<string, Array<(...args: unknown[]) => unknown>>();
+
+	return {
+		tools,
+		handlers,
+		registerTool(tool: unknown) {
+			const def = tool as { name: string };
+			tools.set(def.name, tool);
+			if (!activeTools.includes(def.name)) activeTools = [...activeTools, def.name];
+		},
+		registerCommand() {},
+		getActiveTools() {
+			return [...activeTools];
+		},
+		setActiveTools(names: string[]) {
+			activeTools = [...names];
+		},
+		on(event: string, handler: (...args: unknown[]) => unknown) {
+			if (!handlers.has(event)) handlers.set(event, []);
+			handlers.get(event)!.push(handler);
+		},
+		emit(event: string, ...args: unknown[]) {
+			for (const handler of handlers.get(event) ?? []) handler(...args);
+		},
+	};
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+function getRegisteredToolNames(pi: FakePi): string[] {
+	return [...pi.tools.keys()];
+}
+
+function getToolDef(pi: FakePi, name: string) {
+	return pi.tools.get(name) as
+		| {
+				name: string;
+				description: string;
+				promptGuidelines?: string[];
+				parameters: unknown;
+				execute: (id: string, params: unknown, signal: undefined, onUpdate: undefined, ctx: unknown) => Promise<unknown>;
+		  }
+		| undefined;
+}
+
+// ── Tests: extension identity and tool registration ───────────────────────
+
+test("piExtension.id is 'aiknow'", () => {
+	assert.equal(piExtension.id, "aiknow");
+});
+
+test("extension registers all 10 expected tools", () => {
+	const pi = createFakePi();
+	aiknowExtension(pi as any);
+
+	const expected = [
+		"aiknow_context",
+		"aiknow_search",
+		"aiknow_sync",
+		"aiknow_status",
+		"aiknow_capabilities",
+		"aiknow_impact",
+		"aiknow_read",
+		"aiknow_file_map",
+		"aiknow_neighbors",
+		"aiknow_doctor",
+	];
+	for (const name of expected) {
+		assert.ok(pi.tools.has(name), `expected tool '${name}' to be registered`);
+	}
+	assert.equal(getRegisteredToolNames(pi).length, expected.length);
+});
+
+test("aiknow_context has always-on promptGuidelines", () => {
+	const pi = createFakePi();
+	aiknowExtension(pi as any);
+
+	const tool = getToolDef(pi, "aiknow_context");
+	assert.ok(tool, "aiknow_context must be registered");
+	assert.ok(Array.isArray(tool.promptGuidelines), "must have promptGuidelines array");
+	assert.ok(tool.promptGuidelines!.length > 0, "promptGuidelines must be non-empty");
+	assert.ok(
+		tool.promptGuidelines!.some((g) => g.includes("aiknow_context")),
+		"guideline must mention aiknow_context",
+	);
+});
+
+// ── Tests: path helpers (exported for testing via dynamic import) ─────────
+
+// These pure functions live in aiknow.ts. We verify them here without
+// needing a live server by testing the observable shape they produce.
+
+test("aiknow_sync has an 'init' parameter in its schema", () => {
+	const pi = createFakePi();
+	aiknowExtension(pi as any);
+
+	const tool = getToolDef(pi, "aiknow_sync");
+	assert.ok(tool, "aiknow_sync must be registered");
+	// The TypeBox schema object has a 'properties' map.
+	const schema = tool.parameters as { properties?: Record<string, unknown> };
+	assert.ok(schema.properties?.init, "aiknow_sync schema must include 'init' property");
+});
+
+// ── Tests: stale-file tracking (DEC-032) ─────────────────────────────────
+
+test("tool_result for 'edit' adds path to stale set and updates status", () => {
+	const pi = createFakePi();
+	aiknowExtension(pi as any);
+
+	const statusUpdates: Array<{ key: string; text: string | undefined }> = [];
+	const fakeCtx = {
+		ui: {
+			setStatus(key: string, text: string | undefined) {
+				statusUpdates.push({ key, text });
+			},
+		},
+	};
+
+	pi.emit(
+		"tool_result",
+		{
+			type: "tool_result",
+			toolCallId: "c1",
+			toolName: "edit",
+			input: { path: "src/foo.ts", edits: [] },
+			content: [{ type: "text", text: "ok" }],
+			isError: false,
+			details: undefined,
+		},
+		fakeCtx,
+	);
+
+	const last = statusUpdates.at(-1);
+	assert.ok(last, "setStatus should have been called");
+	assert.equal(last!.key, "aiknow");
+	assert.match(last!.text ?? "", /1 file stale/);
+});
+
+test("tool_result for 'write' adds path to stale set", () => {
+	const pi = createFakePi();
+	aiknowExtension(pi as any);
+
+	const statusUpdates: Array<{ key: string; text: string | undefined }> = [];
+	const fakeCtx = {
+		ui: {
+			setStatus(key: string, text: string | undefined) {
+				statusUpdates.push({ key, text });
+			},
+		},
+	};
+
+	pi.emit(
+		"tool_result",
+		{
+			type: "tool_result",
+			toolCallId: "c2",
+			toolName: "write",
+			input: { path: "src/bar.ts", content: "hello" },
+			content: [{ type: "text", text: "ok" }],
+			isError: false,
+			details: undefined,
+		},
+		fakeCtx,
+	);
+
+	const last = statusUpdates.at(-1);
+	assert.ok(last);
+	assert.match(last!.text ?? "", /1 file stale/);
+});
+
+test("tool_result with isError:true does not add path to stale set", () => {
+	const pi = createFakePi();
+	aiknowExtension(pi as any);
+
+	const statusUpdates: Array<{ key: string; text: string | undefined }> = [];
+	const fakeCtx = {
+		ui: {
+			setStatus(key: string, text: string | undefined) {
+				statusUpdates.push({ key, text });
+			},
+		},
+	};
+
+	pi.emit(
+		"tool_result",
+		{
+			type: "tool_result",
+			toolCallId: "c3",
+			toolName: "edit",
+			input: { path: "src/err.ts", edits: [] },
+			content: [{ type: "text", text: "conflict" }],
+			isError: true,
+			details: undefined,
+		},
+		fakeCtx,
+	);
+
+	assert.equal(statusUpdates.length, 0, "no status update for failed edit");
+});
+
+test("stale count accumulates across multiple edits", () => {
+	const pi = createFakePi();
+	aiknowExtension(pi as any);
+
+	const statusUpdates: Array<{ key: string; text: string | undefined }> = [];
+	const fakeCtx = {
+		ui: {
+			setStatus(key: string, text: string | undefined) {
+				statusUpdates.push({ key, text });
+			},
+		},
+	};
+
+	for (const p of ["src/a.ts", "src/b.ts", "src/c.ts"]) {
+		pi.emit(
+			"tool_result",
+			{
+				type: "tool_result",
+				toolCallId: `c-${p}`,
+				toolName: "edit",
+				input: { path: p, edits: [] },
+				content: [{ type: "text", text: "ok" }],
+				isError: false,
+				details: undefined,
+			},
+			fakeCtx,
+		);
+	}
+
+	const last = statusUpdates.at(-1);
+	assert.ok(last);
+	assert.match(last!.text ?? "", /3 files stale/);
+});
+
+test("duplicate paths are not double-counted in stale set", () => {
+	const pi = createFakePi();
+	aiknowExtension(pi as any);
+
+	const statusUpdates: Array<{ key: string; text: string | undefined }> = [];
+	const fakeCtx = {
+		ui: {
+			setStatus(key: string, text: string | undefined) {
+				statusUpdates.push({ key, text });
+			},
+		},
+	};
+
+	for (let i = 0; i < 3; i++) {
+		pi.emit(
+			"tool_result",
+			{
+				type: "tool_result",
+				toolCallId: `c-${i}`,
+				toolName: "edit",
+				input: { path: "src/same.ts", edits: [] },
+				content: [{ type: "text", text: "ok" }],
+				isError: false,
+				details: undefined,
+			},
+			fakeCtx,
+		);
+	}
+
+	const last = statusUpdates.at(-1);
+	assert.ok(last);
+	assert.match(last!.text ?? "", /1 file stale/);
+});
+
+// ── Tests: guidance injection ─────────────────────────────────────────────
+
+test("before_agent_start injects exploration guidance for explore prompts", () => {
+	const pi = createFakePi();
+	aiknowExtension(pi as any);
+
+	const handlers = pi.handlers.get("before_agent_start") ?? [];
+	assert.ok(handlers.length > 0, "before_agent_start handler must be registered");
+
+	const event = {
+		type: "before_agent_start",
+		prompt: "Explore how the authentication module works",
+		systemPrompt: "You are a helpful assistant.",
+		systemPromptOptions: {},
+	};
+
+	let result: unknown;
+	for (const h of handlers) {
+		const r = h(event, {});
+		if (r) result = r;
+	}
+
+	assert.ok(result, "handler should return a result for exploration prompts");
+	const sp = (result as { systemPrompt?: string }).systemPrompt ?? "";
+	assert.ok(sp.includes("investigation"), "guidance should mention 'investigation' playbook");
+});
+
+test("before_agent_start injects bug-fix guidance for debug prompts", () => {
+	const pi = createFakePi();
+	aiknowExtension(pi as any);
+
+	const handlers = pi.handlers.get("before_agent_start") ?? [];
+	const event = {
+		type: "before_agent_start",
+		prompt: "Debug the authentication error in login flow",
+		systemPrompt: "Base prompt.",
+		systemPromptOptions: {},
+	};
+
+	let result: unknown;
+	for (const h of handlers) {
+		const r = h(event, {});
+		if (r) result = r;
+	}
+
+	assert.ok(result);
+	const sp = (result as { systemPrompt?: string }).systemPrompt ?? "";
+	assert.ok(sp.includes("bug-fix"), "guidance should mention 'bug-fix' playbook");
+});
+
+test("before_agent_start returns undefined for unrelated prompts", () => {
+	const pi = createFakePi();
+	aiknowExtension(pi as any);
+
+	const handlers = pi.handlers.get("before_agent_start") ?? [];
+	const event = {
+		type: "before_agent_start",
+		prompt: "What is the capital of France?",
+		systemPrompt: "Base prompt.",
+		systemPromptOptions: {},
+	};
+
+	let result: unknown;
+	for (const h of handlers) {
+		const r = h(event, {});
+		if (r) result = r;
+	}
+
+	assert.equal(result, undefined, "no guidance for unrelated prompts");
+});
+
+test("before_agent_start injects refactor guidance", () => {
+	const pi = createFakePi();
+	aiknowExtension(pi as any);
+
+	const handlers = pi.handlers.get("before_agent_start") ?? [];
+	const event = {
+		type: "before_agent_start",
+		prompt: "Refactor the payment module to extract the retry logic",
+		systemPrompt: "Base.",
+		systemPromptOptions: {},
+	};
+
+	let result: unknown;
+	for (const h of handlers) {
+		const r = h(event, {});
+		if (r) result = r;
+	}
+
+	assert.ok(result);
+	const sp = (result as { systemPrompt?: string }).systemPrompt ?? "";
+	assert.ok(sp.includes("aiknow_impact"), "guidance should mention aiknow_impact for refactor");
+});

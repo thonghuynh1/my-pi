@@ -11,6 +11,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object";
 }
 
+
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isEstimatedWithoutAccordion(value: unknown): value is SessionEntry["estimatedWithoutAccordion"] {
+	if (!isRecord(value)) return false;
+	const components = value["components"];
+	if (!isRecord(components)) return false;
+	return (
+		isNonNegativeFiniteNumber(value["inputTokens"]) &&
+		typeof value["isPartial"] === "boolean" &&
+		isNonNegativeFiniteNumber(components["fullTokens"]) &&
+		(components["systemPromptTokens"] === undefined || isNonNegativeFiniteNumber(components["systemPromptTokens"])) &&
+		(components["toolsTokens"] === undefined || isNonNegativeFiniteNumber(components["toolsTokens"])) &&
+		(components["systemPayloadTokens"] === undefined || isNonNegativeFiniteNumber(components["systemPayloadTokens"]))
+	);
+}
+
 function isSessionEntry(value: unknown): value is SessionEntry {
 	if (!isRecord(value)) return false;
 	return (
@@ -24,6 +43,7 @@ function isSessionEntry(value: unknown): value is SessionEntry {
 		typeof value["model"] === "string" &&
 		(value["tokens"] === null || typeof value["tokens"] === "number") &&
 		(value["contextWindow"] === null || typeof value["contextWindow"] === "number") &&
+		(value["estimatedWithoutAccordion"] === undefined || isEstimatedWithoutAccordion(value["estimatedWithoutAccordion"])) &&
 		typeof value["startedAt"] === "number" &&
 		typeof value["heartbeatAt"] === "number"
 	);

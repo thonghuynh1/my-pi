@@ -48,6 +48,17 @@ export const FOCUS_FILE = "focus.json";
 export const HEARTBEAT_INTERVAL_MS = 5_000;
 export const STALE_AFTER_MS = 15_000;
 
+export interface EstimatedWithoutAccordion {
+	inputTokens: number;
+	isPartial: boolean;
+	components: {
+		fullTokens: number;
+		systemPromptTokens?: number;
+		toolsTokens?: number;
+		systemPayloadTokens?: number;
+	};
+}
+
 /** One live pi session, written to ~/.accordion/sessions/<sessionId>.json. */
 export interface SessionEntry {
 	/** REGISTRY_PROTOCOL at write time — the reader rejects mismatches. */
@@ -67,6 +78,7 @@ export interface SessionEntry {
 	tokens: number | null;
 	/** Model context window in tokens, or null if unknown. */
 	contextWindow: number | null;
+	estimatedWithoutAccordion?: EstimatedWithoutAccordion;
 	/** Epoch ms when the session started. */
 	startedAt: number;
 	/** Epoch ms of the last heartbeat refresh — the staleness/liveness signal. */

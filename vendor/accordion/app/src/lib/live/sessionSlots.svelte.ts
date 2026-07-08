@@ -328,6 +328,7 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 				cwd: msg.meta.cwd || slot.entry.cwd,
 				model: msg.meta.model || slot.entry.model,
 				contextWindow: msg.meta.contextWindow ?? slot.entry.contextWindow,
+				estimatedWithoutAccordion: slot.entry.estimatedWithoutAccordion,
 			};
 			budgetLive = false;
 			slot.store.dispose();

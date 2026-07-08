@@ -53,7 +53,29 @@ describe("watch requests", () => {
 	});
 });
 
-describe("pruneWatchedSessions", () => {
+describe("session registry", () => {
+	it("drops malformed estimates", () => {
+		const sessionsDir = path.join(home, ".accordion", "sessions");
+		fs.mkdirSync(sessionsDir, { recursive: true });
+		fs.writeFileSync(path.join(sessionsDir, "bad-estimate.json"), JSON.stringify({
+			registryProtocol: 1,
+			protocolVersion: 5,
+			sessionId: "bad-estimate",
+			port: 9999,
+			pid: process.pid,
+			cwd: "/tmp",
+			title: "bad",
+			model: "m",
+			tokens: null,
+			contextWindow: null,
+			estimatedWithoutAccordion: { inputTokens: -1, isPartial: false, components: { fullTokens: 1 } },
+			startedAt: Date.now(),
+			heartbeatAt: Date.now(),
+		}));
+
+		expect(registry.readSessionEntry("bad-estimate", Date.now())?.estimatedWithoutAccordion).toBeUndefined();
+	});
+
 	it("removes dead session IDs from watched-sessions.json", () => {
 		registry.writeWatchRequest("alive-session");
 		registry.writeWatchRequest("dead-session");
@@ -73,6 +95,11 @@ describe("pruneWatchedSessions", () => {
 			model: "m",
 			tokens: null,
 			contextWindow: null,
+			estimatedWithoutAccordion: {
+				inputTokens: 1500,
+				isPartial: false,
+				components: { fullTokens: 1000, systemPromptTokens: 100, toolsTokens: 300, systemPayloadTokens: 100 },
+			},
 			startedAt: Date.now(),
 			heartbeatAt: Date.now(),
 		}));
@@ -85,6 +112,11 @@ describe("pruneWatchedSessions", () => {
 		const watched = JSON.parse(fs.readFileSync(watchedPath, "utf8")) as Array<Record<string, unknown>>;
 		expect(watched).toHaveLength(1);
 		expect(watched[0]?.sessionId).toBe("alive-session");
+		expect(registry.readSessionEntry("alive-session", Date.now())?.estimatedWithoutAccordion).toEqual({
+			inputTokens: 1500,
+			isPartial: false,
+			components: { fullTokens: 1000, systemPromptTokens: 100, toolsTokens: 300, systemPayloadTokens: 100 },
+		});
 	});
 
 	it("returns 0 when all sessions are alive", () => {

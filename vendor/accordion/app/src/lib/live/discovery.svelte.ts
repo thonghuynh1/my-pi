@@ -131,6 +131,13 @@ export function stopDiscovery(): void {
  * not just a tooltip. Worst case (two sessions sharing an exact `startedAt` ms whose readdir
  * order flips) is a redundant reassign, never a missed update.
  */
+function estimateKey(e: SessionEntry): string {
+	const v = e.estimatedWithoutAccordion;
+	if (!v) return "";
+	const c = v.components;
+	return [v.inputTokens, v.isPartial, c.fullTokens, c.systemPromptTokens ?? "", c.toolsTokens ?? "", c.systemPayloadTokens ?? ""].join("|");
+}
+
 function sameSessions(a: SessionEntry[], b: SessionEntry[]): boolean {
 	if (a.length !== b.length) return false;
 	for (let i = 0; i < a.length; i++) {
@@ -144,6 +151,7 @@ function sameSessions(a: SessionEntry[], b: SessionEntry[]): boolean {
 			x.model !== y.model ||
 			x.tokens !== y.tokens ||
 			x.contextWindow !== y.contextWindow ||
+			estimateKey(x) !== estimateKey(y) ||
 			x.startedAt !== y.startedAt
 		) {
 			return false;

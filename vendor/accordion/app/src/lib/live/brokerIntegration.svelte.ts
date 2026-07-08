@@ -51,6 +51,7 @@ export function brokerSessionEntries(): SessionEntry[] {
 		model: slot.store.meta.model || slot.entry.model,
 		tokens: slot.entry.tokens,
 		contextWindow: slot.store.contextWindow,
+		estimatedWithoutAccordion: slot.store.estimatedWithoutAccordion,
 		startedAt: slot.entry.startedAt,
 		heartbeatAt: slot.entry.heartbeatAt,
 	}));

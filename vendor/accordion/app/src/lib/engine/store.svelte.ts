@@ -12,6 +12,7 @@
  * intent. Deterministic and explainable; the smarts come later.
  */
 import type { Block, Actor, SessionMeta, ParsedSession, Group } from "./types";
+import { estimateWithoutAccordionInput } from "../live/estimatedWithoutAccordion";
 import { digest, digestTokens, foldTag, groupDigest, groupDigestTokens, substTokens, wireFoldable } from "./digest";
 import { estTokens, BLOCK_OVERHEAD } from "./tokens";
 import type { Conductor, ConductorView, Command, ClampReport, ClampReason, LockName, ConductorHost, CompletionRequest, CompletionResult, JSONValue } from "$conductors/contract";
@@ -690,6 +691,14 @@ export class AccordionStore {
 		return n;
 	});
 	savedTokens = $derived.by(() => this.fullTokens - this.liveTokens);
+	estimatedWithoutAccordion = $derived.by(() =>
+		estimateWithoutAccordionInput({
+			fullTokens: this.fullTokens,
+			systemPromptTokens: this.harnessBreakdown?.systemPromptTokens,
+			toolsTokens: this.harnessBreakdown?.toolsTokens,
+			systemPayloadTokens: this.harnessBreakdown?.systemPayloadTokens,
+		}),
+	);
 	/**
 	 * Non-conversation overhead already consuming the window (system prompt + tool schemas incl.
 	 * MCP + framing), derived from the live harness breakdown. Preferred = the self-consistent

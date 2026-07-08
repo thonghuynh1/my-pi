@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { SessionEntry } from "$lib/live/registry";
 	import type { ClaudeCodeSession } from "$lib/live/claude";
+	import { formatEstimatedWithoutAccordion } from "$lib/live/estimatedWithoutAccordion";
 	import { folding } from "$lib/live/folding.svelte";
 	import AnimatedNumber from "$lib/ui/AnimatedNumber.svelte";
 	import Icon from "$lib/ui/Icon.svelte";
@@ -83,6 +84,11 @@
 	function pct(e: SessionEntry): number | null {
 		if (e.tokens == null || !e.contextWindow) return null;
 		return Math.min(100, Math.round((e.tokens / e.contextWindow) * 100));
+	}
+	function withoutPct(e: SessionEntry): number | null {
+		const estimate = e.estimatedWithoutAccordion;
+		if (!estimate || !e.contextWindow) return null;
+		return Math.round((estimate.inputTokens / e.contextWindow) * 100);
 	}
 	function fmtTokens(n: number | null): string {
 		if (n == null) return "";
@@ -307,6 +313,8 @@
 					<ul class="list">
 						{#each sessions as s (s.sessionId)}
 							{@const p = pct(s)}
+							{@const wp = withoutPct(s)}
+							{@const withoutLabel = s.estimatedWithoutAccordion ? formatEstimatedWithoutAccordion(s.estimatedWithoutAccordion, s.contextWindow) : null}
 							{@const isSel = s.sessionId === selected}
 							<li>
 								<button class="row" class:sel={isSel} onclick={() => onselect(s)} title={s.cwd}>
@@ -314,6 +322,9 @@
 									<span class="body">
 										<span class="t1">{label(s)}</span>
 										<span class="t2 mono">{shortModel(s.model)}</span>
+										{#if withoutLabel}
+											<span class="without mono" class:hot={wp !== null && wp > 100} title={withoutLabel}>{withoutLabel}</span>
+										{/if}
 									</span>
 									{#if p !== null}
 										<span class="usage" title={`${s.tokens} / ${s.contextWindow} tokens`}>
@@ -800,6 +811,16 @@
 		font-size: var(--fs-2xs);
 		color: var(--faint);
 		letter-spacing: 0.04em;
+	}
+	.without {
+		font-size: var(--fs-2xs);
+		color: var(--muted);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.without.hot {
+		color: var(--danger);
 	}
 
 	/* ===== CC meta (rel-time + read-only badge) ===== */

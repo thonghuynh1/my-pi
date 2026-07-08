@@ -48,6 +48,7 @@ import * as payloadAudit from "./payload-audit";
 import * as cacheTracker from "./cache-tracker";
 
 import { linearize, applyPlan, type PiMessage } from "../app/src/lib/live/mapping";
+import { estimateWithoutAccordionInput } from "../app/src/lib/live/estimatedWithoutAccordion";
 import { DEFAULT_PORT, PROTOCOL_VERSION, type FoldOp, type GroupOp, type ServerMessage, type StreamMessage, type UnfoldRequestMessage, type UnfoldResultMessage, type RecallRequestMessage, type RecallContent, type CompleteRequestMessage, type CompleteResultMessage } from "../app/src/lib/live/protocol";
 
 /** The GUI's reply to a sync: in-place fold ops + group-collapse ops (ADR 0006). */
@@ -363,6 +364,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 	// `message_end` committed-streaming path to build a full array for linearize
 	// without losing global turn/order numbering (see Phase 3 in ADR 0003).
 	let lastMessages: PiMessage[] = [];
+	let latestFullTokens: number | null = null;
 	// Messages that have FINISHED since the last `context`/`agent_end` snapshot, in
 	// finish order. In a tool loop the assistant message and its tool result both end
 	// before the next `context` fires; we must accumulate ALL of them (not just the
@@ -450,6 +452,21 @@ export default function accordionLive(pi: ExtensionAPI): void {
 	}
 
 	// ── registry file: advertise this session for the app to discover ───────────
+	function estimateEntryWithoutAccordion(): SessionEntry["estimatedWithoutAccordion"] | undefined {
+		if (latestFullTokens === null) return undefined;
+		const wire = payloadAudit.getLatestSizes();
+		return estimateWithoutAccordionInput({
+			fullTokens: latestFullTokens,
+			systemPromptTokens,
+			toolsTokens: wire?.toolsTokens,
+			systemPayloadTokens: wire?.systemPayloadTokens,
+		});
+	}
+
+	function rememberFullTokens(blocks: ReturnType<typeof linearize>): void {
+		latestFullTokens = blocks.reduce((sum, block) => sum + block.tokens, 0);
+	}
+
 	function buildEntry(): SessionEntry {
 		return {
 			registryProtocol: REGISTRY_PROTOCOL,
@@ -462,6 +479,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			model,
 			tokens,
 			contextWindow,
+			estimatedWithoutAccordion: estimateEntryWithoutAccordion(),
 			startedAt,
 			heartbeatAt: Date.now(),
 		};
@@ -848,6 +866,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			// VIEW-ONLY full sync: folding may legally happen only at `context`, so (like the
 			// agent_end/message_end paths) we do NOT await or apply a plan here.
 			const backlog = linearize(lastMessages);
+			rememberFullTokens(backlog);
 			if (backlog.length) {
 				send(ws, { type: "sync", reqId: ++reqSeq, full: true, blocks: backlog, contextWindow, harness: harnessFrame() });
 				sentCount = backlog.length; // cursor now matches what the GUI holds
@@ -1134,6 +1153,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		pendingSince = [];
 		const originalMessages = lastMessages;
 		const all = linearize(lastMessages);
+		rememberFullTokens(all);
 		if (!attached() && !(await waitForRequestedAttach())) return; // no GUI → pass through untouched
 
 		const myEpoch = epoch;
@@ -1321,6 +1341,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		if (msgIds.size > 0 && !alreadySeen) pendingSince.push(msg);
 
 		const all = linearize([...lastMessages, ...pendingSince]);
+		rememberFullTokens(all);
 		if (all.length <= sentCount) return; // nothing new since the last sync
 		const reqId = ++reqSeq;
 		const full = sentCount === 0;
@@ -1360,6 +1381,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		sendStream({ type: "stream", phase: "abort", kind: "text", contentIndex: -1 });
 
 		const all = linearize(lastMessages);
+		rememberFullTokens(all);
 		if (all.length <= sentCount) return; // nothing new since the last sync
 		const reqId = ++reqSeq;
 		const full = sentCount === 0;

@@ -42,6 +42,17 @@ export interface WatchedSession {
 	lastSeenAt: number;
 }
 
+export interface EstimatedWithoutAccordion {
+	inputTokens: number;
+	isPartial: boolean;
+	components: {
+		fullTokens: number;
+		systemPromptTokens?: number;
+		toolsTokens?: number;
+		systemPayloadTokens?: number;
+	};
+}
+
 /** One live pi session entry from `~/.accordion/sessions/<sessionId>.json`. */
 export interface SessionEntry {
 	registryProtocol: number;
@@ -55,6 +66,7 @@ export interface SessionEntry {
 	model: string;
 	tokens: number | null;
 	contextWindow: number | null;
+	estimatedWithoutAccordion?: EstimatedWithoutAccordion;
 	startedAt: number;
 	heartbeatAt: number;
 }

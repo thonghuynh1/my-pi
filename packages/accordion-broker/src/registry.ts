@@ -40,6 +40,35 @@ function readJsonFile<T>(filePath: string): T | null {
 	}
 }
 
+
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function parseEstimatedWithoutAccordion(value: unknown): SessionEntry["estimatedWithoutAccordion"] | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as Record<string, unknown>;
+	const components = raw["components"];
+	if (!components || typeof components !== "object") return undefined;
+	const c = components as Record<string, unknown>;
+	if (!isNonNegativeFiniteNumber(raw["inputTokens"]) || typeof raw["isPartial"] !== "boolean" || !isNonNegativeFiniteNumber(c["fullTokens"])) {
+		return undefined;
+	}
+	if (c["systemPromptTokens"] !== undefined && !isNonNegativeFiniteNumber(c["systemPromptTokens"])) return undefined;
+	if (c["toolsTokens"] !== undefined && !isNonNegativeFiniteNumber(c["toolsTokens"])) return undefined;
+	if (c["systemPayloadTokens"] !== undefined && !isNonNegativeFiniteNumber(c["systemPayloadTokens"])) return undefined;
+	return {
+		inputTokens: raw["inputTokens"],
+		isPartial: raw["isPartial"],
+		components: {
+			fullTokens: c["fullTokens"],
+			...(typeof c["systemPromptTokens"] === "number" && { systemPromptTokens: c["systemPromptTokens"] }),
+			...(typeof c["toolsTokens"] === "number" && { toolsTokens: c["toolsTokens"] }),
+			...(typeof c["systemPayloadTokens"] === "number" && { systemPayloadTokens: c["systemPayloadTokens"] }),
+		},
+	};
+}
+
 /**
  * Returns a live SessionEntry for `sessionId`, or null when the file is absent,
  * malformed, wrong protocol version, or the heartbeat is stale.
@@ -64,6 +93,7 @@ export function readSessionEntry(sessionId: string, now: number): SessionEntry |
 		model: typeof raw["model"] === "string" ? raw["model"] as string : "",
 		tokens: typeof raw["tokens"] === "number" ? raw["tokens"] as number : null,
 		contextWindow: typeof raw["contextWindow"] === "number" ? raw["contextWindow"] as number : null,
+		estimatedWithoutAccordion: parseEstimatedWithoutAccordion(raw["estimatedWithoutAccordion"]),
 		startedAt: typeof raw["startedAt"] === "number" ? raw["startedAt"] as number : 0,
 		heartbeatAt: raw["heartbeatAt"] as number,
 	};

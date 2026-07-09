@@ -9,8 +9,8 @@ import type { ManagedExtensionPiApi } from "../lib/capability-visibility.ts";
 
 interface FakePi extends ManagedExtensionPiApi {
 	tools: Map<string, unknown>;
-	execCalls: Array<{ shell: string; args: string[]; cwd: string }>;
-	exec(shell: string, args: string[], options: { cwd: string }): Promise<{ code: number; stdout: string; stderr: string }>;
+	execCalls: Array<{ shell: string; args: string[]; cwd: string; timeout?: number }>;
+	exec(shell: string, args: string[], options: { cwd: string; timeout?: number }): Promise<{ code: number; stdout: string; stderr: string }>;
 	emit(event: string): void;
 }
 
@@ -18,7 +18,7 @@ function createFakePi(execResult: { code: number; stdout: string; stderr: string
 	const tools = new Map<string, unknown>();
 	let activeTools: string[] = [];
 	const handlers = new Map<string, Array<(...args: unknown[]) => void>>();
-	const execCalls: Array<{ shell: string; args: string[]; cwd: string }> = [];
+	const execCalls: Array<{ shell: string; args: string[]; cwd: string; timeout?: number }> = [];
 
 	return {
 		tools,
@@ -42,8 +42,8 @@ function createFakePi(execResult: { code: number; stdout: string; stderr: string
 		emit(event: string) {
 			for (const handler of handlers.get(event) ?? []) handler();
 		},
-		async exec(shell: string, args: string[], options: { cwd: string }) {
-			execCalls.push({ shell, args, cwd: options.cwd });
+		async exec(shell: string, args: string[], options: { cwd: string; timeout?: number }) {
+			execCalls.push({ shell, args, cwd: options.cwd, timeout: options.timeout });
 			return execResult;
 		},
 	};
@@ -70,6 +70,16 @@ const repeatedDotnetFailureOutput = readFileSync(
 	path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "run-tests-dotnet-repeat.txt"),
 	"utf8",
 );
+
+test("run_tests applies a 15 minute execution timeout", async () => {
+	const pi = createFakePi({ code: 0, stdout: "1 test passed", stderr: "" });
+	runTestsExtension(pi as any);
+	const tool = getRunTestsTool(pi);
+
+	await tool.execute("call-timeout", { command: "npm test" }, undefined, () => {});
+
+	assert.equal(pi.execCalls[0]?.timeout, 15 * 60 * 1000);
+});
 
 test("run_tests condenses repeated dotnet failures into unique failure summaries", async () => {
 	const pi = createFakePi({ code: 1, stdout: repeatedDotnetFailureOutput, stderr: "" });

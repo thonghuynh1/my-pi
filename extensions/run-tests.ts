@@ -35,6 +35,7 @@ interface TestLogEntry {
 
 const LOG_DIR = join(homedir(), ".pi", "agent", "logs");
 const LOG_FILE = join(LOG_DIR, "run-tests.jsonl");
+const DEFAULT_TEST_TIMEOUT_MS = 15 * 60 * 1000;
 
 function writeLog(entry: TestLogEntry): void {
 	try {
@@ -250,7 +251,7 @@ export default function runTestsExtension(pi: ExtensionAPI) {
 			}, 10_000);
 
 			try {
-				const result = await pi.exec(shell, shellArgs, { cwd, signal });
+				const result = await pi.exec(shell, shellArgs, { cwd, signal, timeout: DEFAULT_TEST_TIMEOUT_MS });
 				clearInterval(updateInterval);
 
 				const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);

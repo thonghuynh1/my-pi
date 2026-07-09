@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import aiknowExtension, { piExtension } from "../aiknow.ts";
+import aiknowExtension, { piExtension, resolveAiknowCliCommand } from "../aiknow.ts";
 import type { ManagedExtensionPiApi } from "../lib/capability-visibility.ts";
 
 // ── FakePi ────────────────────────────────────────────────────────────────
@@ -66,7 +66,7 @@ test("piExtension.id is 'aiknow'", () => {
 	assert.equal(piExtension.id, "aiknow");
 });
 
-test("extension registers all 10 expected tools", () => {
+test("extension registers all current aiKnow tools", () => {
 	const pi = createFakePi();
 	aiknowExtension(pi as any);
 
@@ -80,7 +80,6 @@ test("extension registers all 10 expected tools", () => {
 		"aiknow_read",
 		"aiknow_file_map",
 		"aiknow_neighbors",
-		"aiknow_doctor",
 	];
 	for (const name of expected) {
 		assert.ok(pi.tools.has(name), `expected tool '${name}' to be registered`);
@@ -97,15 +96,47 @@ test("aiknow_context has always-on promptGuidelines", () => {
 	assert.ok(Array.isArray(tool.promptGuidelines), "must have promptGuidelines array");
 	assert.ok(tool.promptGuidelines!.length > 0, "promptGuidelines must be non-empty");
 	assert.ok(
-		tool.promptGuidelines!.some((g) => g.includes("aiknow_context")),
-		"guideline must mention aiknow_context",
+		tool.promptGuidelines!.some((g) => g.includes("aiknow_context") && g.includes("aiknow_search")),
+		"guideline must mention aiknow_context followed by aiknow_search",
 	);
 });
 
-// ── Tests: path helpers (exported for testing via dynamic import) ─────────
+// ── Tests: CLI/path helpers ──────────────────────────────────────────────
 
-// These pure functions live in aiknow.ts. We verify them here without
-// needing a live server by testing the observable shape they produce.
+test("resolveAiknowCliCommand uses AIKNOW_CLI as a Node CLI path", () => {
+	const oldCli = process.env.AIKNOW_CLI;
+	const oldBin = process.env.AIKNOW_BIN;
+	process.env.AIKNOW_CLI = "F:/MyWork/aiKnow/dist/cli.js";
+	delete process.env.AIKNOW_BIN;
+	try {
+		const cmd = resolveAiknowCliCommand();
+		assert.equal(cmd.command, process.execPath);
+		assert.deepEqual(cmd.argsPrefix, ["F:\\MyWork\\aiKnow\\dist\\cli.js"]);
+		assert.match(cmd.display, /node .*cli\.js/);
+	} finally {
+		if (oldCli === undefined) delete process.env.AIKNOW_CLI;
+		else process.env.AIKNOW_CLI = oldCli;
+		if (oldBin === undefined) delete process.env.AIKNOW_BIN;
+		else process.env.AIKNOW_BIN = oldBin;
+	}
+});
+
+test("resolveAiknowCliCommand uses AIKNOW_BIN as an installed command override", () => {
+	const oldCli = process.env.AIKNOW_CLI;
+	const oldBin = process.env.AIKNOW_BIN;
+	delete process.env.AIKNOW_CLI;
+	process.env.AIKNOW_BIN = "aiknow-dev";
+	try {
+		const cmd = resolveAiknowCliCommand();
+		assert.equal(cmd.command, "aiknow-dev");
+		assert.deepEqual(cmd.argsPrefix, []);
+	} finally {
+		if (oldCli === undefined) delete process.env.AIKNOW_CLI;
+		else process.env.AIKNOW_CLI = oldCli;
+		if (oldBin === undefined) delete process.env.AIKNOW_BIN;
+		else process.env.AIKNOW_BIN = oldBin;
+	}
+});
 
 test("aiknow_sync has an 'init' parameter in its schema", () => {
 	const pi = createFakePi();
@@ -308,6 +339,7 @@ test("before_agent_start injects exploration guidance for explore prompts", () =
 	assert.ok(result, "handler should return a result for exploration prompts");
 	const sp = (result as { systemPrompt?: string }).systemPrompt ?? "";
 	assert.ok(sp.includes("investigation"), "guidance should mention 'investigation' playbook");
+	assert.ok(sp.includes("aiknow_search"), "exploration guidance should encourage aiknow_search follow-ups");
 });
 
 test("before_agent_start injects bug-fix guidance for debug prompts", () => {
@@ -331,6 +363,7 @@ test("before_agent_start injects bug-fix guidance for debug prompts", () => {
 	assert.ok(result);
 	const sp = (result as { systemPrompt?: string }).systemPrompt ?? "";
 	assert.ok(sp.includes("bug-fix"), "guidance should mention 'bug-fix' playbook");
+	assert.ok(sp.includes("aiknow_search"), "bug-fix guidance should encourage aiknow_search follow-ups");
 });
 
 test("before_agent_start returns undefined for unrelated prompts", () => {

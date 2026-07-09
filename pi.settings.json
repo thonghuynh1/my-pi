@@ -70,8 +70,7 @@
         "aiknow_impact": "agent-visible",
         "aiknow_read": "agent-visible",
         "aiknow_file_map": "agent-visible",
-        "aiknow_neighbors": "agent-visible",
-        "aiknow_doctor": "agent-visible"
+        "aiknow_neighbors": "agent-visible"
       }
     }
   }

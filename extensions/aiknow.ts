@@ -1,17 +1,18 @@
 // Pi extension for aiKnow — registers aiKnow tools, lazy-starts or reuses the
-// shared local server, confirms first init, marks edited files stale, and
-// injects brief guidance for registered repos.
+// shared TypeScript local server, confirms first init, marks edited files stale,
+// and injects brief guidance for registered repos.
 //
 // DEC-001 (CLI+MCP+Pi), DEC-012 (shared local server), DEC-021 (playbook intents),
 // DEC-032 (stale marking, no auto-sync), DEC-033 (init confirmation),
-// DEC-035 (status/doctor/capabilities), DEC-054 (no installer in v1).
+// DEC-035 (status/capabilities), DEC-054 (no installer in v1).
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import {
 	createManagedExtension,
@@ -21,7 +22,7 @@ import {
 
 export const piExtension = { id: "aiknow" };
 
-// ── Runtime server info (mirrors Go's runtime.ServerInfo) ─────────────────
+// ── Runtime server info (mirrors aiKnow's runtime ServerInfo) ──────────────
 
 interface ServerInfo {
 	url: string;
@@ -29,7 +30,7 @@ interface ServerInfo {
 	pid: number;
 }
 
-// ── Path helpers (mirror Go's paths package) ───────────────────────────────
+// ── Path helpers (mirror aiKnow's paths package) ───────────────────────────
 
 /** First 8 bytes of SHA-256 of the canonical absolute path, as 16-char hex (DEC-005). */
 function repoId(canonicalPath: string): string {
@@ -37,7 +38,7 @@ function repoId(canonicalPath: string): string {
 	return hash.subarray(0, 8).toString("hex");
 }
 
-/** Filesystem-safe branch name (mirrors Go's SanitizeBranch). */
+/** Filesystem-safe branch name (mirrors aiKnow's sanitizeBranch). */
 function sanitizeBranch(branch: string): string {
 	return branch.replace(/[/\\:*?"<>|]/g, "_");
 }
@@ -45,6 +46,52 @@ function sanitizeBranch(branch: string): string {
 /** `~/.aiknow` */
 function aiknowDir(): string {
 	return join(homedir(), ".aiknow");
+}
+
+interface AiknowCliCommand {
+	command: string;
+	argsPrefix: string[];
+	display: string;
+}
+
+function nodeCliCommand(cliPath: string): AiknowCliCommand {
+	return {
+		command: process.execPath,
+		argsPrefix: [cliPath],
+		display: `node ${cliPath}`,
+	};
+}
+
+/**
+ * Resolve the current TypeScript aiKnow CLI.
+ *
+ * Preferred overrides:
+ * - AIKNOW_CLI: absolute/relative path to dist/cli.js
+ * - AIKNOW_BIN: command/shim name (for an npm global bin)
+ *
+ * Development fallback supports this workspace layout:
+ * F:/MyWork/my-pi/extensions/aiknow.ts + F:/MyWork/aiKnow/dist/cli.js.
+ */
+export function resolveAiknowCliCommand(): AiknowCliCommand {
+	const envCli = process.env.AIKNOW_CLI?.trim();
+	if (envCli) return nodeCliCommand(resolve(envCli));
+
+	const envBin = process.env.AIKNOW_BIN?.trim();
+	if (envBin) {
+		return { command: envBin, argsPrefix: [], display: envBin };
+	}
+
+	const extensionDir = dirname(fileURLToPath(import.meta.url));
+	const candidates = [
+		join(extensionDir, "..", "..", "aiKnow", "dist", "cli.js"),
+		join(process.cwd(), "..", "aiKnow", "dist", "cli.js"),
+	];
+	for (const candidate of candidates) {
+		if (existsSync(candidate)) return nodeCliCommand(candidate);
+	}
+
+	// Keep supporting an installed npm shim when one is present on PATH.
+	return { command: "aiknow", argsPrefix: [], display: "aiknow" };
 }
 
 /** Reads `~/.aiknow/runtime/<repoId>/<branch>/server.json`. Returns null when absent. */
@@ -91,7 +138,7 @@ async function callTool(url: string, token: string, endpoint: string, args: unkn
 
 /**
  * Returns [url, token] for a live local server, starting one if needed.
- * Throws with a descriptive message when the binary is absent or startup fails.
+ * Throws with a descriptive message when the TypeScript CLI is absent or startup fails.
  */
 async function ensureServer(
 	canonicalRoot: string,
@@ -104,10 +151,15 @@ async function ensureServer(
 		return [existing.url, existing.token];
 	}
 
-	// Spawn `aiknow serve-local` detached so it outlives the Pi process (DEC-012).
-	const child = spawn("aiknow", ["serve-local", "--repo", canonicalRoot, "--branch", branch], {
+	// Spawn the TypeScript CLI's `serve-local` detached so it outlives Pi (DEC-012).
+	const cli = resolveAiknowCliCommand();
+	let spawnErrorMessage = "";
+	const child = spawn(cli.command, [...cli.argsPrefix, "serve-local", "--repo", canonicalRoot, "--branch", branch], {
 		detached: true,
 		stdio: "ignore",
+	});
+	child.on("error", (err) => {
+		spawnErrorMessage = err.message;
 	});
 	child.unref();
 
@@ -122,7 +174,9 @@ async function ensureServer(
 
 	throw new Error(
 		"aiKnow local server did not start in time. " +
-			"Ensure `aiknow` is in PATH and `aiknow serve-local` runs without errors.",
+			`Tried ${cli.display} serve-local. ` +
+			(spawnErrorMessage ? `Spawn error: ${spawnErrorMessage}. ` : "") +
+			"Set AIKNOW_CLI to aiKnow's dist/cli.js or AIKNOW_BIN to an installed aiknow command.",
 	);
 }
 
@@ -138,7 +192,6 @@ const toolEndpoints: Record<string, string> = {
 	aiknow_read: "/tools/read",
 	aiknow_file_map: "/tools/file_map",
 	aiknow_neighbors: "/tools/neighbors",
-	aiknow_doctor: "/tools/doctor",
 };
 
 // ── Tool parameter schemas ─────────────────────────────────────────────────
@@ -193,17 +246,17 @@ const NeighborsParams = Type.Object({
 // ── Guidance ───────────────────────────────────────────────────────────────
 
 const ALWAYS_ON_GUIDELINE =
-	"For codebase exploration, prefer aiknow_context before broad grep/read. " +
-	"aiknow_context returns ranked entrypoints, call-graph flow, and freshness warnings in one call.";
+	"Use aiKnow only when it will reduce follow-up reads. For most exploration, prefer one focused aiknow_search first; " +
+	"use aiknow_context with tier='compact' only for broad/unclear questions, then follow with targeted aiknow_search instead of broad grep/read.";
 
 const CONDITIONAL_GUIDELINES: Array<{ pattern: RegExp; text: string }> = [
 	{
 		pattern: /\b(explore|understand|how does|explain|trace|investigate|where is)\b/i,
-		text: "Use aiknow_context with playbook='investigation' to get ranked entrypoints and call graphs before exploring with grep/read.",
+		text: "Token-frugal investigation path: if you have names/keywords, start with aiknow_search; use aiknow_context with tier='compact' and playbook='investigation' only when the question is broad or unclear, then follow with aiknow_search for exact files/symbols before grep/read.",
 	},
 	{
 		pattern: /\b(bug|debug|error|failure|broken|crash|exception|fix)\b/i,
-		text: "Use aiknow_context with playbook='bug-fix' to rank evidence by call-graph proximity to the suspected site before broad grep.",
+		text: "Token-frugal debug path: start with aiknow_search for the error text/suspected symbol; use aiknow_context with tier='compact' and playbook='bug-fix' only if search does not identify the flow.",
 	},
 	{
 		pattern: /\b(refactor|rename|move|extract|reorganize|restructure)\b/i,
@@ -211,7 +264,7 @@ const CONDITIONAL_GUIDELINES: Array<{ pattern: RegExp; text: string }> = [
 	},
 	{
 		pattern: /\b(perf|performance|slow|latency|throughput|optimize)\b/i,
-		text: "Use aiknow_context with playbook='perf-issue' to surface call-graph paths and hot symbols relevant to the performance site.",
+		text: "Token-frugal perf path: use aiknow_search for known hot functions/files first; use aiknow_context with tier='compact' and playbook='perf-issue' only for unknown call paths.",
 	},
 ];
 
@@ -281,9 +334,9 @@ export default function aiknowExtension(pi: ExtensionAPI): void {
 		name: "aiknow_context",
 		defaultVisibility: "agent-visible",
 		label: "aiKnow Context",
-		description: "Adaptive context: entrypoints, graph flow, signatures, snippets, and warnings for a query.",
+		description: "Adaptive compact context for broad/unclear codebase questions. Prefer aiknow_search first when you already have names, symbols, or keywords.",
 		promptSnippet:
-			"Get ranked entrypoints, call-graph flow, signatures, and freshness warnings for a codebase query.",
+			"Use sparingly for broad/unclear questions; pass tier='compact' by default, then follow with targeted aiknow_search.",
 		promptGuidelines: [ALWAYS_ON_GUIDELINE],
 		parameters: ContextParams,
 		async execute(_id: string, params: Static<typeof ContextParams>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
@@ -295,8 +348,12 @@ export default function aiknowExtension(pi: ExtensionAPI): void {
 		name: "aiknow_search",
 		defaultVisibility: "agent-visible",
 		label: "aiKnow Search",
-		description: "Deterministic symbol and file search with optional graph expansion.",
-		promptSnippet: "Symbol and file search with graph expansion.",
+		description: "Deterministic symbol, file, and keyword search with optional graph expansion. Prefer this first when you have names, symbols, files, or error text.",
+		promptSnippet: "Token-frugal first choice for targeted symbol/file/keyword/error lookups, with optional graph expansion.",
+		promptGuidelines: [
+			"Prefer aiknow_search before aiknow_context when the prompt contains concrete symbols, filenames, keywords, or error text; use small depth first.",
+			"After aiknow_context identifies likely entrypoints, use aiknow_search for exact follow-ups before broad grep/read.",
+		],
 		parameters: SearchParams,
 		async execute(_id: string, params: Static<typeof SearchParams>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
 			return forward("aiknow_search", params, pi, ctx.cwd);
@@ -329,6 +386,19 @@ export default function aiknowExtension(pi: ExtensionAPI): void {
 					console.warn("[aiknow] init:true — proceeding without interactive confirmation (non-UI mode).");
 				}
 			}
+			if (params.init === true) {
+				const cli = resolveAiknowCliCommand();
+				const result = await pi.exec(cli.command, [...cli.argsPrefix, "init", resolve(ctx.cwd)], { cwd: ctx.cwd });
+				if (result.code !== 0) {
+					return {
+						content: [{
+							type: "text" as const,
+							text: `aiKnow init failed via ${cli.display}:\n${result.stderr || result.stdout || `exit ${result.code}`}`,
+						}],
+					};
+				}
+			}
+
 			// Strip the Pi-only `init` flag before forwarding (server doesn't accept it).
 			const { init: _init, ...serverArgs } = params;
 			const result = await forward("aiknow_sync", serverArgs, pi, ctx.cwd);
@@ -408,18 +478,6 @@ export default function aiknowExtension(pi: ExtensionAPI): void {
 		parameters: NeighborsParams,
 		async execute(_id: string, params: Static<typeof NeighborsParams>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
 			return forward("aiknow_neighbors", params, pi, ctx.cwd);
-		},
-	});
-
-	managed.registerTool({
-		name: "aiknow_doctor",
-		defaultVisibility: "agent-visible",
-		label: "aiKnow Doctor",
-		description: "Diagnostic checks: binary version, registry health, CGO availability, and index issues (DEC-035).",
-		promptSnippet: "Run aiKnow diagnostic checks for setup and trust inspection.",
-		parameters: EmptyParams,
-		async execute(_id: string, _params: Static<typeof EmptyParams>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
-			return forward("aiknow_doctor", {}, pi, ctx.cwd);
 		},
 	});
 

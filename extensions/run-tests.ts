@@ -280,6 +280,20 @@ export default function runTestsExtension(pi: ExtensionAPI) {
 					};
 				}
 
+				const binaryNotFound = detectBinaryNotFound(fullOutput, command);
+				if (binaryNotFound) {
+					writeLog({ ts: new Date().toISOString(), project, command, result: "error", durationMs: Date.now() - startTime, exitCode: result.code, errorMessage: binaryNotFound.binary });
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: binaryNotFound.message,
+							},
+						],
+						details: undefined,
+					};
+				}
+
 				const failureOutput = formatFailureOutput(command, fullOutput, tailLines);
 				writeLog({ ts: new Date().toISOString(), project, command, result: "fail", durationMs: Date.now() - startTime, exitCode: result.code, summary: outputLines.slice(-3).join(" | ") });
 				return {
@@ -308,6 +322,93 @@ export default function runTestsExtension(pi: ExtensionAPI) {
 			}
 		},
 	});
+}
+
+interface BinaryNotFoundResult {
+	binary: string;
+	message: string;
+}
+
+function detectBinaryNotFound(output: string, command: string): BinaryNotFoundResult | null {
+	const lines = output.trim().split("\n").map((l) => l.trim()).filter(Boolean);
+
+	// Windows: "'vitest' is not recognized as an internal or external command"
+	const notRecognized = output.match(/'([^']+)' is not recognized as an internal or external command/);
+	if (notRecognized) {
+		return buildBinaryNotFoundMessage(notRecognized[1]!, command);
+	}
+
+	// Windows: "The system cannot find the path specified."
+	// This is a short, generic error. Only match when the entire output is just this error
+	// (possibly with npm ERR! lines) to avoid false positives on real test failures.
+	const substantiveLines = lines.filter((l) => !l.startsWith("npm ERR!") && !l.startsWith("npm warn") && !/^\s*$/.test(l));
+	const isOnlyPathError = substantiveLines.length <= 2 && substantiveLines.some((l) => /the system cannot find the (path|file) specified/i.test(l));
+	if (isOnlyPathError) {
+		const binary = extractBinaryFromCommand(command);
+		return buildBinaryNotFoundMessage(binary, command);
+	}
+
+	// Unix: "command not found" or "No such file or directory"
+	const cmdNotFound = output.match(/(?:bash|sh|zsh):\s*(?:line \d+:\s*)?([^:]+):\s*(?:command not found|No such file or directory)/);
+	if (cmdNotFound) {
+		return buildBinaryNotFoundMessage(cmdNotFound[1]!.trim(), command);
+	}
+
+	// npm error when lifecycle script binary is missing
+	const npmMissing = output.match(/npm ERR!.*?Missing script:/);
+	if (npmMissing) {
+		return {
+			binary: "(missing script)",
+			message: [
+				`⚠️ Test runner not found. npm reports a missing script.`,
+				`Command attempted: \`${command}\``,
+				``,
+				`Likely causes:`,
+				`  1. package.json "scripts.test" references a binary not in node_modules/.bin`,
+				`  2. Dependencies not installed (run \`npm install\`)`,
+				``,
+				`Next steps: check package.json scripts.test, verify the test runner is a devDependency, then retry with run_tests({ command: "npx vitest run" }) or the correct runner.`,
+			].join("\n"),
+		};
+	}
+
+	return null;
+}
+
+function extractBinaryFromCommand(command: string): string {
+	// For "npm test", the actual binary is in package.json scripts.test
+	// For direct commands like "vitest run", extract the first word
+	if (command === "npm test" || command === "npm run test") {
+		return "(test script binary)";
+	}
+	const parts = command.split(/\s+/);
+	return parts[0] ?? command;
+}
+
+function buildBinaryNotFoundMessage(binary: string, command: string): BinaryNotFoundResult {
+	const isNpmScript = command === "npm test" || command.startsWith("npm run");
+	const lines = [
+		`⚠️ Test runner binary not found: \`${binary}\``,
+		`Command attempted: \`${command}\``,
+		``,
+		`The test framework binary is not installed or not in PATH.`,
+		``,
+		`Likely causes:`,
+		`  1. Dependencies not installed (run \`npm install\` or \`npm ci\`)`,
+	];
+	if (isNpmScript) {
+		lines.push(`  2. package.json "scripts.test" references a binary not listed in devDependencies`);
+		lines.push(`  3. Monorepo with hoisted deps — binary lives in a nested node_modules/.bin`);
+	} else {
+		lines.push(`  2. Binary not in devDependencies or not in node_modules/.bin`);
+	}
+	lines.push(``);
+	lines.push(`Next steps:`);
+	lines.push(`  - Check package.json to find what test runner is configured`);
+	lines.push(`  - Verify the runner is in devDependencies and installed`);
+	lines.push(`  - Try: run_tests({ command: "npx <runner> run" }) to bypass PATH issues`);
+
+	return { binary, message: lines.join("\n") };
 }
 
 function extractPassSummary(lines: string[]): string | null {

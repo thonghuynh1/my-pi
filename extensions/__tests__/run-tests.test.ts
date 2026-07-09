@@ -129,3 +129,36 @@ test("run_tests keeps tail output for non-dotnet failures", async () => {
 	assert.match(text, /third line\nfourth line/);
 	assert.equal(text.includes("first line"), false);
 });
+
+test("run_tests detects Windows 'system cannot find the path' as binary-not-found", async () => {
+	const pi = createFakePi({
+		code: 1,
+		stdout: "The system cannot find the path specified.",
+		stderr: "",
+	});
+	runTestsExtension(pi as any);
+	const tool = getRunTestsTool(pi);
+
+	const result = await tool.execute("call-4", { command: "npm test" }, undefined, () => {});
+	const text = result.content[0]?.text ?? "";
+
+	assert.match(text, /Test runner binary not found/);
+	assert.match(text, /Dependencies not installed/);
+	assert.match(text, /npx/);
+});
+
+test("run_tests detects Windows 'not recognized' as binary-not-found", async () => {
+	const pi = createFakePi({
+		code: 1,
+		stdout: "'vitest' is not recognized as an internal or external command,\noperable program or batch file.",
+		stderr: "",
+	});
+	runTestsExtension(pi as any);
+	const tool = getRunTestsTool(pi);
+
+	const result = await tool.execute("call-5", { command: "npm test" }, undefined, () => {});
+	const text = result.content[0]?.text ?? "";
+
+	assert.match(text, /Test runner binary not found: `vitest`/);
+	assert.match(text, /Dependencies not installed/);
+});

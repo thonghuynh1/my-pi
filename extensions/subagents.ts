@@ -48,6 +48,7 @@ import {
 	type SettingItem,
 } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
+import { EXPLORE_PROMPT } from "./prompts.ts";
 
 type SubagentType = "explore" | "shell" | "custom";
 type AgentSource = "user" | "project";
@@ -864,7 +865,7 @@ class SubagentModelsEditor extends Container {
 }
 
 function resolveRunConfig(params: SubagentParamsType, cwd: string): RunConfig {
-	const explore = readFileSync(path.join(PROMPTS_DIR, "scout-dispatch.md"), "utf8");
+
 	
 	if (params.type === "explore") {
 		const defaults = readSubagentTypeDefaults(cwd);
@@ -872,7 +873,7 @@ function resolveRunConfig(params: SubagentParamsType, cwd: string): RunConfig {
 			type: "explore",
 			name: "explore",
 			description: "Read-only codebase exploration",
-			prompt: explore,
+			prompt: EXPLORE_PROMPT,
 			tools: ["read", "grep", "find", "ls"],
 			model: params.model ?? defaults.default,
 		};

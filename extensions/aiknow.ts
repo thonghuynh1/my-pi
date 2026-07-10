@@ -268,7 +268,15 @@ const CONDITIONAL_GUIDELINES: Array<{ pattern: RegExp; text: string }> = [
 	},
 ];
 
+const PSTACK_PATTERN = /\b(poteto|poteto-mode|pstack|skill-pstack|playbook|principle|why skill|how skill)\b/i;
+
+const PSTACK_MERGED_HINT =
+	"Poteto/pstack owns reasoning and playbook choice. If aiKnow tools are available and this repo is indexed, use one focused aiknow_search for concrete code lookup before broad grep/read; if unsure, use aiknow_status once for larger exploration or normal tools for small tasks. Use aiknow_context with tier='compact' only when the code area or flow is unclear.";
+
 function buildConditionalGuidance(prompt: string): string | null {
+	if (PSTACK_PATTERN.test(prompt)) {
+		return `\n\naiKnow guidance for this task:\n- ${PSTACK_MERGED_HINT}`;
+	}
 	const matched = CONDITIONAL_GUIDELINES.filter((g) => g.pattern.test(prompt)).map((g) => `- ${g.text}`);
 	if (matched.length === 0) return null;
 	return `\n\naiKnow guidance for this task:\n${matched.join("\n")}`;

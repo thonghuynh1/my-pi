@@ -340,6 +340,7 @@ test("before_agent_start injects exploration guidance for explore prompts", () =
 	const sp = (result as { systemPrompt?: string }).systemPrompt ?? "";
 	assert.ok(sp.includes("investigation"), "guidance should mention 'investigation' playbook");
 	assert.ok(sp.includes("aiknow_search"), "exploration guidance should encourage aiknow_search follow-ups");
+	assert.ok(!sp.includes("Poteto/pstack owns reasoning"), "normal explore prompt must not get poteto guidance");
 });
 
 test("before_agent_start injects bug-fix guidance for debug prompts", () => {
@@ -408,4 +409,31 @@ test("before_agent_start injects refactor guidance", () => {
 	assert.ok(result);
 	const sp = (result as { systemPrompt?: string }).systemPrompt ?? "";
 	assert.ok(sp.includes("aiknow_impact"), "guidance should mention aiknow_impact for refactor");
+});
+
+test("before_agent_start injects pstack aiKnow guidance for poteto explore prompts", () => {
+	const pi = createFakePi();
+	aiknowExtension(pi as any);
+
+	const handlers = pi.handlers.get("before_agent_start") ?? [];
+	const event = {
+		type: "before_agent_start",
+		prompt: "/poteto-mode explore auth flow",
+		systemPrompt: "You are a helpful assistant.",
+		systemPromptOptions: {},
+	};
+
+	let result: unknown;
+	for (const h of handlers) {
+		const r = h(event, {});
+		if (r) result = r;
+	}
+
+	assert.ok(result, "handler should return a result for poteto prompts");
+	const sp = (result as { systemPrompt?: string }).systemPrompt ?? "";
+	assert.ok(sp.includes("Poteto/pstack owns reasoning"), "guidance must contain merged pstack hint");
+	assert.ok(sp.includes("aiknow_search"), "guidance must mention aiknow_search");
+	assert.ok(sp.includes("aiknow_status"), "guidance must mention aiknow_status");
+	assert.ok(sp.includes("tier='compact'"), "guidance must mention tier='compact'");
+	assert.ok(!sp.includes("Token-frugal investigation path"), "guidance must not duplicate normal investigation wording");
 });

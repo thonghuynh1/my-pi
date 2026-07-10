@@ -324,19 +324,7 @@ const SubagentParams = Type.Object({
 
 type SubagentParamsType = Static<typeof SubagentParams>;
 
-const EXPLORE_PROMPT = `You are Pi's explore subagent.
-
-Role:
-- Investigate the codebase with an isolated context window.
-- Prefer read/search/list tools.
-- Do not edit files.
-- Do not make risky shell changes.
-
-Return a concise report with:
-- Relevant files and symbols
-- Key observations
-- Evidence, paths, and line references when possible
-- Suggested next steps for the parent agent`;
+import { EXPLORE_PROMPT } from "./prompts.ts";
 
 const SHELL_PROMPT = `You are Pi's shell subagent.
 

@@ -247,12 +247,12 @@ const NeighborsParams = Type.Object({
 
 const ALWAYS_ON_GUIDELINE =
 	"Use aiKnow only when it will reduce follow-up reads. For most exploration, prefer one focused aiknow_search first; " +
-	"use aiknow_context with tier='compact' only for broad/unclear questions, then follow with targeted aiknow_search instead of broad grep/read.";
+	"use aiknow_context with tier='compact' only for broad/unclear questions. After aiknow_context returns candidate files, symbols, or keywords, run one targeted aiknow_search before grep/read unless the next file path is already exact. If aiknow_search returns a next aiknow_read suggestion, follow it before grep/read.";
 
 const CONDITIONAL_GUIDELINES: Array<{ pattern: RegExp; text: string }> = [
 	{
 		pattern: /\b(explore|understand|how does|explain|trace|investigate|where is)\b/i,
-		text: "Token-frugal investigation path: if you have names/keywords, start with aiknow_search; use aiknow_context with tier='compact' and playbook='investigation' only when the question is broad or unclear, then follow with aiknow_search for exact files/symbols before grep/read.",
+		text: "Token-frugal investigation path: if you have names/keywords, start with aiknow_search; use aiknow_context with tier='compact' and playbook='investigation' only when the question is broad or unclear. After aiknow_context returns candidate files, symbols, or keywords, run one targeted aiknow_search before grep/read unless the next file path is already exact. If aiknow_search returns a next aiknow_read suggestion, follow it before grep/read.",
 	},
 	{
 		pattern: /\b(bug|debug|error|failure|broken|crash|exception|fix)\b/i,
@@ -361,6 +361,7 @@ export default function aiknowExtension(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"Prefer aiknow_search before aiknow_context when the prompt contains concrete symbols, filenames, keywords, or error text; use small depth first.",
 			"After aiknow_context identifies likely entrypoints, use aiknow_search for exact follow-ups before broad grep/read.",
+			"When aiknow_search returns a next aiknow_read suggestion, call aiknow_read before grep/read.",
 		],
 		parameters: SearchParams,
 		async execute(_id: string, params: Static<typeof SearchParams>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
@@ -458,7 +459,7 @@ export default function aiknowExtension(pi: ExtensionAPI): void {
 		defaultVisibility: "agent-visible",
 		label: "aiKnow Read",
 		description: "Read a file from the index (modes: map, signatures, lines, full).",
-		promptSnippet: "Read a file from the aiKnow index (map, signatures, lines, or full).",
+		promptSnippet: "Read a file from the aiKnow index (map, signatures, lines, or full). Prefer this over grep/read when aiknow_search suggests a next aiknow_read call.",
 		parameters: ReadParams,
 		async execute(_id: string, params: Static<typeof ReadParams>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
 			return forward("aiknow_read", params, pi, ctx.cwd);

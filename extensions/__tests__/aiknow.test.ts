@@ -99,6 +99,23 @@ test("aiknow_context has always-on promptGuidelines", () => {
 		tool.promptGuidelines!.some((g) => g.includes("aiknow_context") && g.includes("aiknow_search")),
 		"guideline must mention aiknow_context followed by aiknow_search",
 	);
+	assert.ok(
+		tool.promptGuidelines!.some((g) => g.includes("aiknow_read") && g.includes("before grep/read")),
+		"guideline must say to follow aiknow_read suggestions before grep/read",
+	);
+});
+
+
+test("aiknow_search guidance says to follow aiknow_read next suggestions", () => {
+	const pi = createFakePi();
+	aiknowExtension(pi as any);
+
+	const tool = getToolDef(pi, "aiknow_search");
+	assert.ok(tool, "aiknow_search must be registered");
+	assert.ok(
+		tool.promptGuidelines?.some((g) => g.includes("next aiknow_read") && g.includes("before grep/read")),
+		"aiknow_search guidance must prefer suggested aiknow_read before grep/read",
+	);
 });
 
 // ── Tests: CLI/path helpers ──────────────────────────────────────────────
@@ -340,6 +357,14 @@ test("before_agent_start injects exploration guidance for explore prompts", () =
 	const sp = (result as { systemPrompt?: string }).systemPrompt ?? "";
 	assert.ok(sp.includes("investigation"), "guidance should mention 'investigation' playbook");
 	assert.ok(sp.includes("aiknow_search"), "exploration guidance should encourage aiknow_search follow-ups");
+	assert.ok(
+		sp.includes("After aiknow_context returns candidate files, symbols, or keywords"),
+		"exploration guidance should require an aiknow_search follow-up after broad context",
+	);
+	assert.ok(
+		sp.includes("If aiknow_search returns a next aiknow_read suggestion"),
+		"exploration guidance should require following aiknow_read next suggestions",
+	);
 	assert.ok(!sp.includes("Poteto/pstack owns reasoning"), "normal explore prompt must not get poteto guidance");
 });
 

@@ -56,6 +56,12 @@ function foldIdsOf(result: Command[] | null | undefined): Set<string> {
 	return ids;
 }
 
+function groupedIdsOf(result: Command[] | null | undefined): Set<string> {
+	const ids = new Set<string>();
+	for (const c of result ?? []) if (c.kind === "group") for (const id of c.ids) ids.add(id);
+	return ids;
+}
+
 function replaceOf(result: Command[] | null | undefined, id: string): Extract<Command, { kind: "replace" }> | undefined {
 	for (const c of result ?? []) if (c.kind === "replace" && c.id === id) return c;
 	return undefined;
@@ -1008,25 +1014,20 @@ describe("MyCustomizeConductor", () => {
 		const blocks = [
 			vb("u:0", "user", 0, 100, 100, { text: "task" }),
 			vb("c:read", "tool_call", 1, 30, 30, { toolName: "read", callId: "c:read", text: 'read {"path":"/src/file.ts"}' }),
-			vb("r:read", "tool_result", 2, 2_000, 40, { toolName: "read", callId: "c:read", text: "compact source snapshot" }),
-			vb("r:text", "text", 3, 1_000, 200, { text: "old context" }),
+			vb("r:read", "tool_result", 2, 2_000, 1, { toolName: "read", callId: "c:read", text: "compact source snapshot" }),
+			vb("r:text", "text", 3, 1_000, 1, { text: "old context" }),
 		];
-		const view = makeView(blocks, 300, 3_130);
+		const view = makeView(blocks, 100, 3_130);
 		const result = new MyCustomizeConductor().conduct(view);
 		const group = result.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
 		expect(group?.ids).toContain("r:read");
-		const replacement = replaceOf(result, "r:read");
-		expect(replacement).toBeDefined();
+		expect(replaceOf(result, "r:read"), "a grouped member has no replacement residue command").toBeUndefined();
 		const members = group!.ids.map((id) => view.blocks.find((block) => block.id === id)!);
-		const replacementResidue = estSummaryTokens(replacement!.content);
-		const plannedResidue = members.reduce((total, block) => total + (block.id === "r:read" ? replacementResidue : block.foldedTokens), 0);
 		const groupCost = estimateDefaultGroupDigestCost(members);
 		const originalResidue = members.reduce((total, block) => total + block.tokens, 0);
-		expect(plannedResidue).toBeLessThan(originalResidue);
-		const projectedAfterPlanning = view.liveTokens - originalResidue + plannedResidue;
-		const estimatedSaving = plannedResidue - groupCost;
-		expect(projected(view, result)).toBe(projectedAfterPlanning - estimatedSaving);
-		expect(estimatedSaving).toBeGreaterThan(0);
+		const foldedResidue = members.reduce((total, block) => total + block.foldedTokens, 0);
+		expect(foldedResidue).toBeLessThanOrEqual(groupCost);
+		expect(originalResidue).toBeGreaterThan(groupCost);
 		expect(projected(view, result)).toBe(view.liveTokens - originalResidue + groupCost);
 	});
 
@@ -1045,14 +1046,69 @@ describe("MyCustomizeConductor", () => {
 			vb("u:0", "user", 0, 100, 100, { text: "task" }),
 			vb("r:1", "text", 1, 1_000, 200, { text: "old one" }),
 			vb("u:1", "user", 2, 100, 100, { text: "keep intent" }),
-			vb("r:mcp", "tool_result", 3, 1_000, 200, { toolName: "mcp", text: "identity" }),
-			vb("r:2", "text", 4, 1_000, 200, { text: "old two" }),
+			vb("r:mcp-call", "tool_call", 3, 50, 50, { toolName: "mcp", callId: "mcp-call", text: "mcp call" }),
+			vb("r:mcp", "tool_result", 4, 1_000, 200, { toolName: "mcp", callId: "mcp-call", text: "identity" }),
+			vb("r:2", "text", 5, 1_000, 200, { text: "old two" }),
+			vb("r:3", "text", 6, 1_000, 200, { text: "old three" }),
 		];
-		const result = new MyCustomizeConductor().conduct(makeView(blocks, 300, 3_200));
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 300, 4_250));
 		for (const command of result) {
 			if (command.kind !== "group") continue;
 			expect(command.ids).not.toContain("u:1");
+			expect(command.ids).not.toContain("r:mcp-call");
 			expect(command.ids).not.toContain("r:mcp");
+		}
+		expect(groupedIdsOf(result).has("r:2")).toBe(true);
+		expect(groupedIdsOf(result).has("r:3")).toBe(true);
+	});
+
+	it("keeps recall, pstack provenance, held, protected, and grouped blocks out of groups", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("r:before", "text", 1, 1_000, 200, { text: "before" }),
+			vb("r:recall", "tool_result", 2, 1_000, 200, { toolName: "recall", text: "recalled content" }),
+			vb("r:pstack", "text", 3, 1_000, 200, { text: `${foldTag("r:pstack")} tool_result:mcp skill-pstack(name="architect")` }),
+			vb("r:held", "text", 4, 1_000, 200, { held: true, text: "held" }),
+			vb("r:protected", "text", 5, 1_000, 200, { protected: true, text: "protected" }),
+			vb("r:grouped", "text", 6, 1_000, 200, { grouped: true, text: "already grouped" }),
+			vb("r:after", "text", 7, 1_000, 200, { text: "after" }),
+			vb("r:after2", "text", 8, 1_000, 200, { text: "after two" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 300, 7_100));
+		const grouped = groupedIdsOf(result);
+		for (const id of ["r:recall", "r:pstack", "r:held", "r:protected", "r:grouped"]) expect(grouped.has(id)).toBe(false);
+		expect(grouped.has("r:after")).toBe(true);
+		expect(grouped.has("r:after2")).toBe(true);
+	});
+
+	it("allows non-MCP tool calls and results in a safe group run", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("c:bash", "tool_call", 1, 50, 50, { toolName: "bash", callId: "c:bash", text: "bash command" }),
+			vb("r:bash", "tool_result", 2, 1_500, 40, { toolName: "bash", callId: "c:bash", text: "large output" }),
+			vb("r:text", "text", 3, 1_500, 200, { text: "more context" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 300, 3_150));
+		const group = result.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
+		expect(group).toBeDefined();
+		expect(group!.ids).toEqual(expect.arrayContaining(["c:bash", "r:bash", "r:text"]));
+	});
+
+	it("does not give a block both a group and another structural disposition", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("c:read", "tool_call", 1, 30, 30, { toolName: "read", callId: "c:read", text: 'read {"path":"/src/file.ts"}' }),
+			vb("r:read", "tool_result", 2, 2_000, 40, { toolName: "read", callId: "c:read", text: "source" }),
+			vb("r:text", "text", 3, 1_000, 200, { text: "context" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 300, 3_130));
+		const groupIds = groupedIdsOf(result);
+		for (const command of result) {
+			if (command.kind === "fold") for (const id of command.ids) expect(groupIds.has(id)).toBe(false);
+			if (command.kind === "replace") expect(groupIds.has(command.id)).toBe(false);
+		}
+		for (const command of result) {
+			if (command.kind === "group") expect(command.digest).toBeUndefined();
 		}
 	});
 

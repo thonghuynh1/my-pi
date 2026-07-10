@@ -150,6 +150,9 @@ type AssistantUsage = {
 	};
 };
 
+const extDir = typeof __dirname !== "undefined" ? __dirname : path.dirname(new URL(import.meta.url).pathname);
+const PROMPTS_DIR = path.join(extDir, "prompts");
+
 // Returns the total USD cost of an assistant message robustly: prefers
 // the SDK-precomputed `cost.total` (which already covers input + output
 // + cacheRead + cacheWrite at each rate), and falls back to summing the
@@ -324,7 +327,7 @@ const SubagentParams = Type.Object({
 
 type SubagentParamsType = Static<typeof SubagentParams>;
 
-import { EXPLORE_PROMPT } from "./prompts.ts";
+import { readFileSync } from "node:fs";
 
 const SHELL_PROMPT = `You are Pi's shell subagent.
 
@@ -861,13 +864,15 @@ class SubagentModelsEditor extends Container {
 }
 
 function resolveRunConfig(params: SubagentParamsType, cwd: string): RunConfig {
+	const explore = readFileSync(path.join(PROMPTS_DIR, "scout-dispatch.md"), "utf8");
+	
 	if (params.type === "explore") {
 		const defaults = readSubagentTypeDefaults(cwd);
 		return {
 			type: "explore",
 			name: "explore",
 			description: "Read-only codebase exploration",
-			prompt: EXPLORE_PROMPT,
+			prompt: explore,
 			tools: ["read", "grep", "find", "ls"],
 			model: params.model ?? defaults.default,
 		};

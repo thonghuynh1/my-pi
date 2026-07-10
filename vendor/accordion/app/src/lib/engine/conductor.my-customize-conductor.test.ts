@@ -825,6 +825,129 @@ describe("MyCustomizeConductor", () => {
 		expect(rep!.content).not.toContain('cwd=');
 	});
 
+	it("grep result is folded via a recoverable replace", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:grep", "tool_call", 1, 30, 30, { toolName: "grep", callId: "c:grep", text: `grep ${JSON.stringify({ pattern: "foldCode", path: "./src" })}` }),
+			vb("r:grep", "tool_result", 2, 1500, 40, { toolName: "grep", callId: "c:grep", text: "src/lib/engine.ts:10:foldCode('x')\nsrc/lib/store.ts:42:foldCode('y')" }),
+		];
+		const view = makeView(blocks, 400, 1_730);
+		const result = new MyCustomizeConductor().conduct(view);
+		const rep = replaceOf(result, "r:grep");
+		expect(rep, "grep result is replaced, not plain-folded").toBeDefined();
+		expect(rep!.recoverable, "replace is recoverable").toBe(true);
+		expect(foldIdsOf(result).has("r:grep"), "grep result is not in plain fold list").toBe(false);
+		expect(projected(view, result)).toBeLessThanOrEqual(view.budget);
+	});
+
+	it("grep summary includes pattern identity, path, signals, Shape, exact recall code, and search wording", () => {
+		const resultId = "r:grep2";
+		const expectedCode = foldCode(resultId);
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:grep", "tool_call", 1, 30, 30, {
+				toolName: "grep", callId: "c:grep",
+				text: `grep ${JSON.stringify({ pattern: "MyClass", path: "/home/user/project/src" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, {
+				toolName: "grep", callId: "c:grep",
+				text: "src/service.ts:5:class MyClass {\nsrc/service.ts:15:  new MyClass()\nsrc/util.ts:3:export { MyClass }",
+			}),
+		];
+		const view = makeView(blocks, 400, 1_730);
+		const rep = replaceOf(new MyCustomizeConductor().conduct(view), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain('tool_result:grep pattern="MyClass"');
+		expect(rep!.content).toContain('path="~/project/src"');
+		expect(rep!.content).toContain("Contains:");
+		expect(rep!.content).toContain("Shape:");
+		expect(rep!.content).toContain(`recall({"codes":["${expectedCode}"]})`);
+		expect(rep!.content).toContain("before repeating this search");
+		expect(rep!.content).not.toContain("unfold");
+	});
+
+	it("find result is folded via a recoverable replace", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:find", "tool_call", 1, 30, 30, { toolName: "find", callId: "c:find", text: `find ${JSON.stringify({ path: "./src", pattern: "*.ts" })}` }),
+			vb("r:find", "tool_result", 2, 1500, 40, { toolName: "find", callId: "c:find", text: "src/a.ts\nsrc/b.ts\nsrc/c.ts" }),
+		];
+		const view = makeView(blocks, 400, 1_730);
+		const result = new MyCustomizeConductor().conduct(view);
+		const rep = replaceOf(result, "r:find");
+		expect(rep, "find result is replaced, not plain-folded").toBeDefined();
+		expect(rep!.recoverable, "replace is recoverable").toBe(true);
+		expect(foldIdsOf(result).has("r:find"), "find result is not in plain fold list").toBe(false);
+		expect(projected(view, result)).toBeLessThanOrEqual(view.budget);
+	});
+
+	it("find summary includes path, glob pattern, signals, Shape, exact recall code, and file discovery wording", () => {
+		const resultId = "r:find2";
+		const expectedCode = foldCode(resultId);
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:find", "tool_call", 1, 30, 30, {
+				toolName: "find", callId: "c:find",
+				text: `find ${JSON.stringify({ path: "/home/user/project", pattern: "*.ts" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, {
+				toolName: "find", callId: "c:find",
+				text: "src/a.ts\nsrc/b.ts\nlib/c.ts\nlib/d.ts\ntest/e.ts",
+			}),
+		];
+		const view = makeView(blocks, 400, 1_730);
+		const rep = replaceOf(new MyCustomizeConductor().conduct(view), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toMatch(/tool_result:find path="[^"]+"/);
+		expect(rep!.content).toContain('path="~/project"');
+		expect(rep!.content).toContain('pattern="*.ts"');
+		expect(rep!.content).toContain("Contains:");
+		expect(rep!.content).toContain("Shape:");
+		expect(rep!.content).toContain(`recall({"codes":["${expectedCode}"]})`);
+		expect(rep!.content).toContain("before repeating this file discovery");
+		expect(rep!.content).not.toContain("unfold");
+	});
+
+	it("ls result is folded via a recoverable replace", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:ls", "tool_call", 1, 30, 30, { toolName: "ls", callId: "c:ls", text: `ls ${JSON.stringify({ path: "./src" })}` }),
+			vb("r:ls", "tool_result", 2, 1500, 40, { toolName: "ls", callId: "c:ls", text: "index.ts\nutils.ts\nmodels/\ntypes.ts" }),
+		];
+		const view = makeView(blocks, 400, 1_730);
+		const result = new MyCustomizeConductor().conduct(view);
+		const rep = replaceOf(result, "r:ls");
+		expect(rep, "ls result is replaced, not plain-folded").toBeDefined();
+		expect(rep!.recoverable, "replace is recoverable").toBe(true);
+		expect(foldIdsOf(result).has("r:ls"), "ls result is not in plain fold list").toBe(false);
+		expect(projected(view, result)).toBeLessThanOrEqual(view.budget);
+	});
+
+	it("ls summary includes path, signals, Shape, exact recall code, and listing wording", () => {
+		const resultId = "r:ls2";
+		const expectedCode = foldCode(resultId);
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:ls", "tool_call", 1, 30, 30, {
+				toolName: "ls", callId: "c:ls",
+				text: `ls ${JSON.stringify({ path: "/home/user/project/src" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, {
+				toolName: "ls", callId: "c:ls",
+				text: "index.ts\nutils.ts\nmodels/\ntypes.ts\nhelpers/",
+			}),
+		];
+		const view = makeView(blocks, 400, 1_730);
+		const rep = replaceOf(new MyCustomizeConductor().conduct(view), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toMatch(/tool_result:ls path="[^"]+"/);
+		expect(rep!.content).toContain("Contains:");
+		expect(rep!.content).toContain("Shape:");
+		expect(rep!.content).toContain(`recall({"codes":["${expectedCode}"]})`);
+		expect(rep!.content).toContain("before repeating this listing");
+		expect(rep!.content).not.toContain("unfold");
+	});
+
 	it("unknown (bash) tool result falls back to plain fold, not replace", () => {
 		const blocks = [
 			vb("u:0", "user", 0, 200, 200, { text: "task" }),

@@ -27,5 +27,5 @@ export function setActiveConductor(id: string): void {
 
 function load(): string {
 	if (typeof localStorage === "undefined") return BUILTIN_ID;
-	return localStorage.getItem(KEY) || "my-customize-conductor"; // overlay: default to My Customize
+	return localStorage.getItem(KEY) || "my-customize-conductor";
 }

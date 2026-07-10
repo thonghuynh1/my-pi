@@ -248,7 +248,7 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 			session.readOnly = false;
 			// Safety (review Q5b): every new live attach starts DISARMED - folding is
 			// opt-in per session, never silently carried from a previously armed agent.
-			folding.enabled = true; // overlay: default steering ON
+			folding.enabled = true;
 			// Structural reset: clear all ghosts — no ghost survives a session reconnect.
 			ghostClearAll();
 			budgetLive = false;
@@ -313,10 +313,7 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 					session.store.setBudget(liveBudgetForContextWindow(cw));
 					budgetLive = true;
 				}			}
-			// overlay: slice 0 — the extension reports pi's total request size and the
-			// system-prompt size on every sync. Stored only; no budget/conductor effect.
-			// The GUI/dev tools subtract `liveTokens` to display harness overhead and
-			// attribute it to system prompt vs everything else (tool schemas + framing).
+
 			if (msg.harness && typeof msg.harness === "object") {
 				session.store.setHarnessBreakdown(msg.harness);
 				// Slice 0 debug: print the breakdown each turn so the user can read it

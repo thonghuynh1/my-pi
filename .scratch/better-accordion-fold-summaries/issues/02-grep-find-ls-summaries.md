@@ -1,3 +1,7 @@
+---
+status: closed
+---
+
 Status: ready-for-agent
 
 # Add rich folded summaries for `grep`, `find`, and `ls`

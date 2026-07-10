@@ -33,6 +33,7 @@ import {
 	pstackIdentityFromMcpCall,
 	pstackRecallSummary,
 	recallCodes,
+	toolResultSummary,
 	type PstackIdentity,
 } from "./mcp-summary";
 import { riskFlags } from "../keel/ledger";
@@ -160,7 +161,9 @@ export class MyCustomizeConductor implements Conductor {
 			} else if (isRecallResult(b)) {
 				const codes = b.callId ? recallCodes(callById.get(b.callId)?.text) : undefined;
 				const identity = pstackByBlockId.get(b.id) ?? (codes?.length === 1 ? pstackByFoldCode.get(codes[0]) : undefined);
-				summary = identity ? pstackRecallSummary(identity, { potetoBeacon: b.id === beaconCarrierId }) : genericRecallSummary(codes);
+				summary = identity ? pstackRecallSummary(identity, { potetoBeacon: b.id === beaconCarrierId, resultId: b.id }) : genericRecallSummary(codes);
+			} else {
+				summary = toolResultSummary(b, b.callId ? callById.get(b.callId) : undefined);
 			}
 			if (summary) {
 				const substTokens = estSummaryTokens(summary);

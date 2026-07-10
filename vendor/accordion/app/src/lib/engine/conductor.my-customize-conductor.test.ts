@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { IN_PROCESS_CONDUCTORS, MyCustomizeConductor } from "$conductors";
 import type { Command, ConductorView, ViewBlock } from "$conductors/contract";
 import { foldTag } from "./digest";
-import { estSummaryTokens, mcpSummary, normalizePstackName, pstackLabel } from "$conductors/my-customize-conductor/mcp-summary";
+import { compactPath, estSummaryTokens, foldCode, mcpSummary, normalizePstackName, pstackLabel } from "$conductors/my-customize-conductor/mcp-summary";
 
 const POTETO_BEACON_LINES = [
 	"Poteto mode active.",
@@ -609,5 +609,95 @@ describe("MyCustomizeConductor", () => {
 		expect(result.some((c) => c.kind === "replace" && c.id === "r:poteto")).toBe(false);
 		expect(result.some((c) => c.kind === "fold" && c.ids.includes("r:poteto"))).toBe(false);
 		expect(result.some((c) => c.kind === "group" && c.ids.includes("r:poteto"))).toBe(false);
+	});
+
+
+	it("pstack MCP summary includes exact recall code and not-unfold wording", () => {
+		const resultId = "r:pstack";
+		const expectedCode = foldCode(resultId);
+		const summary = mcpSummary(
+			vb(resultId, "tool_result", 1, 1500, 40, { toolName: "mcp", callId: "c1", text: "result" }),
+			vb("c1", "tool_call", 0, 50, 50, {
+				toolName: "mcp",
+				callId: "c1",
+				text: `mcp ${JSON.stringify({ server: "engineering-skills", tool: "skill-pstack", args: JSON.stringify({ name: "principle-prove-it-works" }) })}`,
+			}),
+		);
+		expect(summary).toContain(`recall({"codes":["${expectedCode}"]})`);
+		expect(summary).toContain("not unfold");
+	});
+
+	it("generic MCP summary includes exact recall code and no not-unfold wording", () => {
+		const resultId = "r:generic";
+		const expectedCode = foldCode(resultId);
+		const summary = mcpSummary(
+			vb(resultId, "tool_result", 1, 1500, 40, { toolName: "mcp", callId: "c2", text: "result" }),
+			vb("c2", "tool_call", 0, 50, 50, {
+				toolName: "mcp",
+				callId: "c2",
+				text: `mcp ${JSON.stringify({ tool: "some_lookup", args: { project: "my-pi" } })}`,
+			}),
+		);
+		expect(summary).toContain(`recall({"codes":["${expectedCode}"]})`);
+		expect(summary).not.toContain("not unfold");
+	});
+
+	it("read tool result is folded via a recoverable replace", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:read", "tool_call", 1, 30, 30, { toolName: "read", callId: "c:read", text: `read ${JSON.stringify({ path: "/some/path/file.ts" })}` }),
+			vb("r:read", "tool_result", 2, 1500, 40, { toolName: "read", callId: "c:read", text: "line one\nline two\nline three" }),
+		];
+		const view = makeView(blocks, 400, 1_730);
+		const result = new MyCustomizeConductor().conduct(view);
+		const rep = replaceOf(result, "r:read");
+		expect(rep, "read result is replaced, not plain-folded").toBeDefined();
+		expect(rep!.recoverable, "replace is recoverable").toBe(true);
+		expect(foldIdsOf(result).has("r:read"), "read result is not in plain fold list").toBe(false);
+		expect(projected(view, result)).toBeLessThanOrEqual(view.budget);
+	});
+
+	it("read summary includes compacted path, signals, Shape, exact recall code, and snapshot wording", () => {
+		const resultId = "r:read2";
+		const expectedCode = foldCode(resultId);
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:read", "tool_call", 1, 30, 30, {
+				toolName: "read", callId: "c:read",
+				text: `read ${JSON.stringify({ path: "/home/user/project/src/service.ts" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, {
+				toolName: "read", callId: "c:read",
+				text: "# Service\nexport class ServiceManager {\n  setup() {}\n}\nexport function start() {}",
+			}),
+		];
+		const view = makeView(blocks, 400, 1_730);
+		const rep = replaceOf(new MyCustomizeConductor().conduct(view), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toMatch(/tool_result:read path="[^"]+"/);
+		expect(rep!.content).toContain("Shape:");
+		expect(rep!.content).toContain(`recall({"codes":["${expectedCode}"]})`);
+		expect(rep!.content).toContain("prior read snapshot");
+		expect(rep!.content).toContain("re-read if the file may have changed");
+	});
+
+	it("unknown (bash) tool result falls back to plain fold, not replace", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("r:bash", "tool_result", 1, 1500, 40, { toolName: "bash", text: "some output" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 400, 1_700));
+		expect(foldIdsOf(result).has("r:bash"), "bash result is plain-folded").toBe(true);
+		expect(replaceOf(result, "r:bash"), "bash result has no replace").toBeUndefined();
+	});
+
+	it("compactPath normalises slashes and abbreviates home prefix", () => {
+		expect(compactPath("C:/Users/Admin/project/file.ts")).toBe("~/project/file.ts");
+		expect(compactPath("/home/user/project/file.ts")).toBe("~/project/file.ts");
+		expect(compactPath(String.raw`C:\Users\Admin\project\file.ts`)).toBe("~/project/file.ts");
+		const long = "~/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z/file.ts";
+		const compacted = compactPath(long);
+		expect(compacted.length).toBeLessThanOrEqual(60);
+		expect(compacted).toContain("file.ts");
 	});
 });

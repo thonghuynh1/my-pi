@@ -20,6 +20,9 @@ const SUMMARY_OVERHEAD_TOKENS = 8;
 const REDACTED = "[redacted]";
 const RECALL_HINT = 'recall({"codes":["<code>"]})';
 const SENSITIVE_KEY_RE = /(token|key|password|secret|auth)/i;
+const READ_SIGNAL_MAX = 4;
+const READ_SIGNAL_LEN = 50;
+const COMPACT_PATH_MAX = 60;
 const PSTACK_NAME_RE = /skill-pstack\(name="([^"]+)"\)/i;
 const FOLD_TAG_RE = /\{#([0-9a-z]{6}) FOLDED\}/i;
 const POTETO_MODE_NAME = "poteto-mode";
@@ -51,7 +54,7 @@ export function mcpSummary(result: ViewBlock, call: ViewBlock | undefined, opts:
 			[
 				`tool_result:mcp skill-pstack(name="${pstack.name}")`,
 				`Label: ${pstack.label}`,
-				`Full result preserved. Use ${RECALL_HINT}, not unfold, before re-calling this exact MCP tool.`,
+				`Full result preserved. Use recall({"codes":["${foldCode(result.id)}"]}) , not unfold, before re-calling this exact MCP tool.`,
 			],
 			pstack,
 			opts,
@@ -59,7 +62,7 @@ export function mcpSummary(result: ViewBlock, call: ViewBlock | undefined, opts:
 	}
 	return [
 		`tool_result:mcp ${genericIdentity(parsed)}`,
-		`Full result preserved. Use ${RECALL_HINT} if you need this exact prior result.`,
+		`Full result preserved. Use recall({"codes":["${foldCode(result.id)}"]}) if you need this exact prior result.`,
 	].join("\n");
 }
 
@@ -86,6 +89,8 @@ type McpCall = Record<string, unknown>;
 
 type SummaryOptions = {
 	potetoBeacon?: boolean;
+	/** Exact result block id; fold code is embedded rather than the `<code>` placeholder. */
+	resultId?: string;
 };
 
 export type PstackIdentity = {
@@ -126,16 +131,80 @@ export function recallCodes(callText: string | undefined): string[] | undefined 
 }
 
 export function pstackRecallSummary(identity: PstackIdentity, opts: SummaryOptions = {}): string {
+	const code = opts.resultId ? foldCode(opts.resultId) : "<code>";
 	return appendPotetoBeacon(
 		[
 			"tool_result:recall",
 			`Contains: skill-pstack(name="${identity.name}")`,
 			`Label: ${identity.label}`,
-			`Full result preserved. Use ${RECALL_HINT}, not unfold, to re-read this exact pstack leaf.`,
+			`Full result preserved. Use recall({"codes":["${code}"]}) , not unfold, to re-read this exact pstack leaf.`,
 		],
 		identity,
 		opts,
 	).join("\n");
+}
+
+/**
+ * Returns a recoverable summary for a non-MCP, non-recall tool result, or `undefined`
+ * when the tool is not a recognised target (caller falls back to plain fold).
+ * Currently handles: `read`.
+ */
+export function toolResultSummary(result: ViewBlock, call: ViewBlock | undefined): string | undefined {
+	const tool = (result.toolName ?? "").trim().toLowerCase();
+	if (tool === "read") return readSummary(result, call);
+	return undefined;
+}
+
+function readSummary(result: ViewBlock, call: ViewBlock | undefined): string {
+	const args = parseOuterCall(call?.text);
+	const rawPath = str(args.path);
+	const path = rawPath ? compactPath(rawPath) : "(unknown path)";
+	const text = result.text ?? "";
+	const lineCount = text.split("\n").length;
+	const tokenEst = Math.ceil(text.length / 4);
+	const signals = readSignals(text);
+	const code = foldCode(result.id);
+	const lines: string[] = [`tool_result:read path="${path}"`];
+	if (signals.length > 0) lines.push(`Contains: ${signals.join(" · ")}`);
+	lines.push(`Shape: ${lineCount} lines · ~${tokenEst} tok`);
+	lines.push(`Full result preserved. Use recall({"codes":["${code}"]}) for this prior read snapshot; re-read if the file may have changed.`);
+	return lines.join("\n");
+}
+
+/** Compact a path: normalise slashes, abbreviate home prefix as `~`,
+ *  middle-ellipsise if longer than COMPACT_PATH_MAX. */
+export function compactPath(raw: string): string {
+	let p = raw.replace(/\\/g, "/");
+	p = p.replace(/^[A-Za-z]:\/[Uu]sers\/[^\/]+(?=\/)/, "~");
+	p = p.replace(/^\/home\/[^\/]+(?=\/)/, "~");
+	if (p.length <= COMPACT_PATH_MAX) return p;
+	const parts = p.split("/");
+	if (parts.length <= 3) return p;
+	const last = parts[parts.length - 1];
+	let prefix = parts[0];
+	let best = `${prefix}/...${last ? "/" + last : ""}`;
+	for (let i = 1; i < parts.length - 1; i++) {
+		const candidate = `${prefix}/${parts[i]}/...${last ? "/" + last : ""}`;
+		if (candidate.length <= COMPACT_PATH_MAX) { prefix = `${prefix}/${parts[i]}`; best = candidate; }
+		else break;
+	}
+	return best;
+}
+
+function readSignals(text: string): string[] {
+	const signals: string[] = [];
+	for (const line of text.split("\n")) {
+		if (signals.length >= READ_SIGNAL_MAX) break;
+		const t = line.trim();
+		if (!t) continue;
+		const heading = t.match(/^#{1,3}\s+(.+)/);
+		if (heading) { signals.push(clip(heading[1], READ_SIGNAL_LEN)); continue; }
+		const exp = t.match(/^export\s+(?:(?:default|abstract)\s+)?(?:class|function|const|type|interface|enum)\s+\w/);
+		if (exp) { signals.push(clip(t.replace(/[({].*$/, "").trim(), READ_SIGNAL_LEN)); continue; }
+		const decl = t.match(/^(?:(?:abstract\s+)?class|(?:async\s+)?function)\s+\w/);
+		if (decl) { signals.push(clip(t.replace(/[({].*$/, "").trim(), READ_SIGNAL_LEN)); continue; }
+	}
+	return signals;
 }
 
 export function genericRecallSummary(codes: string[] | undefined): string {

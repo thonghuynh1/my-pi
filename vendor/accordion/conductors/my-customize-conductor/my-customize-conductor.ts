@@ -253,7 +253,9 @@ export class MyCustomizeConductor implements Conductor {
 			flushRun();
 		}
 
-		const plannedReplaces = replaces;
+		const plannedReplaces = replaces.filter(
+			(command): command is Extract<Command, { kind: "replace" }> => command.kind === "replace" && !groupedIds.has(command.id),
+		);
 		const plannedFoldIds = foldIds.filter((id) => !groupedIds.has(id));
 		const plannedBreakFoldIds = breakFoldIds.filter((id) => !groupedIds.has(id));
 		const cmds: Command[] = [...plannedReplaces, ...groups];

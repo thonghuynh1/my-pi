@@ -3,6 +3,7 @@ import { IN_PROCESS_CONDUCTORS, MyCustomizeConductor } from "$conductors";
 import type { Command, ConductorView, ViewBlock } from "$conductors/contract";
 import { foldTag } from "./digest";
 import { compactPath, estSummaryTokens, foldCode, mcpSummary, normalizePstackName, pstackLabel } from "$conductors/my-customize-conductor/mcp-summary";
+import { estimateDefaultGroupDigestCost } from "$conductors/my-customize-conductor/my-customize-conductor";
 
 const POTETO_BEACON_LINES = [
 	"Poteto mode active.",
@@ -60,17 +61,24 @@ function replaceOf(result: Command[] | null | undefined, id: string): Extract<Co
 	return undefined;
 }
 
-/** Live tokens after applying the conductor's fold + replace commands. */
+/** Live tokens after applying the conductor's fold, replace, and group commands. */
 function projected(view: ConductorView, result: Command[] | null): number {
 	const folded = foldIdsOf(result);
+	const groups = (result ?? []).filter((c): c is Extract<Command, { kind: "group" }> => c.kind === "group");
+	const grouped = new Set(groups.flatMap((group) => group.ids));
 	let live = view.liveTokens;
 	for (const b of view.blocks) {
+		if (grouped.has(b.id)) continue;
 		if (folded.has(b.id)) {
 			live += b.foldedTokens - b.tokens;
 			continue;
 		}
 		const rep = replaceOf(result, b.id);
 		if (rep) live -= b.tokens - estSummaryTokens(rep.content);
+	}
+	for (const group of groups) {
+		const members = group.ids.map((id) => view.blocks.find((b) => b.id === id)).filter((b): b is ViewBlock => b !== undefined);
+		live += estimateDefaultGroupDigestCost(members) - members.reduce((total, b) => total + b.tokens, 0);
 	}
 	return live;
 }
@@ -558,7 +566,7 @@ describe("MyCustomizeConductor", () => {
 			vb("r:bash:3", "tool_result", 5, 1_500, 40, { toolName: "bash", text: "newest noisy output" }),
 		];
 		const result = new MyCustomizeConductor().conduct(makeView(blocks, 1_600, 6_170));
-		expect(result.some((c) => c.kind === "group")).toBe(false);
+		expect(result.some((c) => c.kind === "group" && c.ids.includes("r:poteto"))).toBe(false);
 	});
 
 	it("does not drop pstack identity blocks while Poteto mode is active", () => {
@@ -956,6 +964,57 @@ describe("MyCustomizeConductor", () => {
 		const result = new MyCustomizeConductor().conduct(makeView(blocks, 400, 1_700));
 		expect(foldIdsOf(result).has("r:bash"), "bash result is plain-folded").toBe(true);
 		expect(replaceOf(result, "r:bash"), "bash result has no replace").toBeUndefined();
+	});
+
+	it("does not group when folds already reach the cap", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("r:1", "text", 1, 1_000, 200, { text: "old one" }),
+			vb("r:2", "text", 2, 1_000, 200, { text: "old two" }),
+			vb("r:3", "text", 3, 1_000, 200, { text: "old three" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 700, 3_100));
+		expect(result.some((command) => command.kind === "group")).toBe(false);
+	});
+
+	it("groups a non-frozen run only after fold residue remains over cap", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("r:1", "text", 1, 1_000, 200, { text: "old one" }),
+			vb("r:2", "text", 2, 1_000, 200, { text: "old two" }),
+			vb("r:3", "text", 3, 1_000, 200, { text: "old three" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 500, 3_100));
+		const groups = result.filter((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
+		expect(groups.length).toBeGreaterThan(0);
+		expect(projected(makeView(blocks, 500, 3_100), result)).toBeLessThanOrEqual(500);
+		for (const group of groups) expect(group.digest).toBeUndefined();
+	});
+
+	it("does not group a run whose planned residue cannot beat the default digest", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("r:1", "text", 1, 10, 9, { text: "a" }),
+			vb("r:2", "text", 2, 10, 9, { text: "b" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 100, 120));
+		expect(result.some((command) => command.kind === "group")).toBe(false);
+	});
+
+	it("keeps user and MCP blocks out of group runs", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("r:1", "text", 1, 1_000, 200, { text: "old one" }),
+			vb("u:1", "user", 2, 100, 100, { text: "keep intent" }),
+			vb("r:mcp", "tool_result", 3, 1_000, 200, { toolName: "mcp", text: "identity" }),
+			vb("r:2", "text", 4, 1_000, 200, { text: "old two" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 300, 3_200));
+		for (const command of result) {
+			if (command.kind !== "group") continue;
+			expect(command.ids).not.toContain("u:1");
+			expect(command.ids).not.toContain("r:mcp");
+		}
 	});
 
 	it("compactPath normalises slashes and abbreviates home prefix", () => {

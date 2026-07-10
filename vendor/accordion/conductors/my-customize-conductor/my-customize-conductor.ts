@@ -45,6 +45,31 @@ const POTETO_OFF_PHRASES = ["exit poteto mode", "stop using poteto", "disable ps
 
 type SavedFold = { tokens: number; breakFrozen: boolean };
 
+/** Conservative estimate of the host's default recoverable group digest. */
+export function estimateDefaultGroupDigestCost(run: ViewBlock[]): number {
+	let totalTokens = 0;
+	let lowestTurn = Infinity;
+	let highestTurn = -Infinity;
+	const kinds = new Set<string>();
+	for (const block of run) {
+		totalTokens += block.tokens;
+		lowestTurn = Math.min(lowestTurn, block.turn);
+		highestTurn = Math.max(highestTurn, block.turn);
+		kinds.add(block.kind);
+	}
+	let chars = 64 + String(run.length).length + String(Math.max(0, totalTokens)).length;
+	chars += String(Math.max(0, lowestTurn === Infinity ? 0 : lowestTurn)).length;
+	chars += String(Math.max(0, highestTurn === -Infinity ? 0 : highestTurn)).length;
+	chars += kinds.size * 24;
+	return Math.ceil(chars / 4) + 8;
+}
+
+function isGroupBoundary(block: ViewBlock, pstackByBlockId: Map<string, PstackIdentity>): boolean {
+	if (block.kind === "user" || block.held || block.protected || block.grouped) return true;
+	const tool = (block.toolName ?? "").trim().toLowerCase();
+	return tool === "mcp" || tool === "recall" || pstackByBlockId.has(block.id);
+}
+
 export class MyCustomizeConductor implements Conductor {
 	readonly id = "my-customize-conductor";
 	readonly label = "My Customize";
@@ -153,6 +178,7 @@ export class MyCustomizeConductor implements Conductor {
 		const foldIds: string[] = [];
 		const breakFoldIds: string[] = [];
 		const replaces: Command[] = [];
+		const plannedContribution = new Map(view.blocks.map((b) => [b.id, b.tokens]));
 		const alreadyPlanned = new Set<string>();
 		const applyCandidate = (b: ViewBlock, breakFrozen: boolean): void => {
 			let summary: string | undefined;
@@ -170,12 +196,14 @@ export class MyCustomizeConductor implements Conductor {
 				if (substTokens < b.tokens) {
 					replaces.push({ kind: "replace", id: b.id, content: summary, recoverable: true, ...(breakFrozen ? { breakFrozen: true } : {}) });
 					live -= b.tokens - substTokens;
+					plannedContribution.set(b.id, substTokens);
 					alreadyPlanned.add(b.id);
 					return;
 				}
 			}
 			(breakFrozen ? breakFoldIds : foldIds).push(b.id);
 			live += b.foldedTokens - b.tokens;
+			plannedContribution.set(b.id, b.foldedTokens);
 			alreadyPlanned.add(b.id);
 		};
 
@@ -192,21 +220,64 @@ export class MyCustomizeConductor implements Conductor {
 			}
 		}
 
-		const cmds: Command[] = [...replaces];
-		if (foldIds.length) cmds.push({ kind: "fold", ids: foldIds });
-		if (breakFoldIds.length) cmds.push({ kind: "fold", ids: breakFoldIds, breakFrozen: true });
+		// Group only the non-frozen suffix, and only after all rich replacements and folds are planned.
+		const groups: Command[] = [];
+		const groupedIds = new Set<string>();
+		if (live > cap) {
+			let run: ViewBlock[] = [];
+			const flushRun = (): void => {
+				if (run.length >= 2) {
+					const residue = run.reduce((total, block) => total + (plannedContribution.get(block.id) ?? block.tokens), 0);
+					const groupCost = estimateDefaultGroupDigestCost(run);
+					const saving = residue - groupCost;
+					if (saving > 0) {
+						groups.push({ kind: "group", ids: run.map((block) => block.id) });
+						for (const block of run) groupedIds.add(block.id);
+						live -= saving;
+					}
+				}
+				run = [];
+			};
+
+			for (const block of view.blocks) {
+				if (live <= cap) break;
+				if (
+					block.order < view.frozenFromIndex ||
+					isGroupBoundary(block, pstackByBlockId)
+				) {
+					flushRun();
+					continue;
+				}
+				run.push(block);
+			}
+			flushRun();
+		}
+
+		const plannedReplaces = replaces;
+		const plannedFoldIds = foldIds.filter((id) => !groupedIds.has(id));
+		const plannedBreakFoldIds = breakFoldIds.filter((id) => !groupedIds.has(id));
+		const cmds: Command[] = [...plannedReplaces, ...groups];
+		if (plannedFoldIds.length) cmds.push({ kind: "fold", ids: plannedFoldIds });
+		if (plannedBreakFoldIds.length) cmds.push({ kind: "fold", ids: plannedBreakFoldIds, breakFrozen: true });
 
 		// Record the plan and per-block savings for the next-pass epoch hold check.
 		const savings = new Map<string, SavedFold>();
 		for (const c of cmds) {
-			if (c.kind === "fold") {
+			if (c.kind === "group") {
+				const firstId = c.ids[0];
+				if (firstId) {
+					const residue = c.ids.reduce((total, id) => total + (plannedContribution.get(id) ?? byId.get(id)?.tokens ?? 0), 0);
+					const saving = residue - estimateDefaultGroupDigestCost(c.ids.map((id) => byId.get(id)).filter((b): b is ViewBlock => b !== undefined));
+					savings.set(firstId, { tokens: Math.max(0, saving), breakFrozen: false });
+				}
+			} else if (c.kind === "fold") {
 				for (const id of c.ids) {
 					const b = byId.get(id);
 					if (b) savings.set(id, { tokens: b.tokens - b.foldedTokens, breakFrozen: c.breakFrozen ?? false });
 				}
 			} else if (c.kind === "replace") {
 				const b = byId.get(c.id);
-				if (b) savings.set(c.id, { tokens: b.tokens - estSummaryTokens(c.content), breakFrozen: c.breakFrozen ?? false });
+				if (b && !groupedIds.has(c.id)) savings.set(c.id, { tokens: b.tokens - estSummaryTokens(c.content), breakFrozen: c.breakFrozen ?? false });
 			}
 		}
 		this.lastPlan = cmds;

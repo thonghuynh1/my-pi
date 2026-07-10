@@ -1112,6 +1112,86 @@ describe("MyCustomizeConductor", () => {
 		}
 	});
 
+	it("does not group frozen blocks when non-frozen planning reaches the cap", () => {
+		const blocks = [
+			vb("f:1", "text", 0, 1_000, 200, { text: "cached one" }),
+			vb("f:2", "text", 1, 1_000, 200, { text: "cached two" }),
+			vb("n:1", "text", 2, 1_000, 200, { text: "new one" }),
+			vb("n:2", "text", 3, 1_000, 200, { text: "new two" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 400, 4_000, { frozenFromIndex: 2 }));
+		expect(result.some((command) => command.kind === "group")).toBe(false);
+	});
+
+	it("does not emit frozen groups below the significant-savings threshold", () => {
+		const blocks = [
+			vb("f:1", "text", 0, 1_000, 200, { text: "cached one" }),
+			vb("f:2", "text", 1, 1_000, 200, { text: "cached two" }),
+			vb("tail", "user", 2, 5_000, 5_000, { protected: true, text: "working tail" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 5_000, 7_000, { frozenFromIndex: 2 }));
+		expect(result.some((command) => command.kind === "group")).toBe(false);
+	});
+
+	it("batches significant frozen savings into a recoverable group epoch", () => {
+		const frozen = Array.from({ length: 30 }, (_, i) => vb(`f:${i}`, "text", i, 3_000, 100, { text: `cached ${i}` }));
+		const tail = vb("tail", "user", 30, 5_000, 5_000, { protected: true, text: "working tail" });
+		const view = makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length });
+		const conductor = new MyCustomizeConductor();
+		const first = conductor.conduct(view);
+		const group = first.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
+		expect(group?.ids).toEqual(frozen.map((block) => block.id));
+		expect(group?.digest).toBeUndefined();
+	});
+
+	it("does not emit a second frozen grouping epoch for an identical view", () => {
+		const frozen = Array.from({ length: 30 }, (_, i) => vb(`f:${i}`, "text", i, 3_000, 100, { text: `cached ${i}` }));
+		const tail = vb("tail", "user", 30, 5_000, 5_000, { protected: true, text: "working tail" });
+		const view = makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length });
+		const conductor = new MyCustomizeConductor();
+		const first = conductor.conduct(view);
+		const second = conductor.conduct(view);
+		expect(second).toBe(first);
+		expect(second.filter((command) => command.kind === "group")).toEqual(first.filter((command) => command.kind === "group"));
+	});
+
+	it("resets the frozen grouping epoch after a semantic-key change", () => {
+		const frozen = Array.from({ length: 30 }, (_, i) => vb(`f:${i}`, "text", i, 3_000, 100, { text: `cached ${i}` }));
+		const firstUser = vb("u:1", "user", 30, 100, 100, { text: "load poteto" });
+		const call = pstackCall("c:poteto", 31, "poteto-mode");
+		const result = pstackResult("r:poteto", 32, "c:poteto", "full pstack leaf");
+		const tail = vb("tail", "user", 33, 5_000, 5_000, { protected: true, text: "working tail" });
+		const conductor = new MyCustomizeConductor();
+		const first = conductor.conduct(makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length }));
+		const changed = conductor.conduct(makeView([...frozen, firstUser, call, result, tail], 5_000, 95_000 + 1_720, { frozenFromIndex: frozen.length + 3 }));
+		expect(first.some((command) => command.kind === "group")).toBe(true);
+		expect(changed.some((command) => command.kind === "group")).toBe(true);
+	});
+
+	it("allows a later frozen grouping epoch after projected tokens return under cap", () => {
+		const frozen = Array.from({ length: 30 }, (_, i) => vb(`f:${i}`, "text", i, 3_000, 100, { text: `cached ${i}` }));
+		const tail = vb("tail", "user", 30, 5_000, 5_000, { protected: true, text: "working tail" });
+		const conductor = new MyCustomizeConductor();
+		const overCap = makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length });
+		const first = conductor.conduct(overCap);
+		const underCap = makeView([...frozen, tail], 5_000, 4_900, { frozenFromIndex: frozen.length });
+		expect(conductor.conduct(underCap)).toEqual([]);
+		const later = conductor.conduct(overCap);
+		expect(later.some((command) => command.kind === "group")).toBe(true);
+		expect(first.some((command) => command.kind === "group")).toBe(true);
+	});
+
+	it("keeps frozen grouped IDs out of fold and replace commands", () => {
+		const frozen = Array.from({ length: 30 }, (_, i) => vb(`f:${i}`, "text", i, 3_000, 100, { text: `cached ${i}` }));
+		const tail = vb("tail", "user", 30, 5_000, 5_000, { protected: true, text: "working tail" });
+		const result = new MyCustomizeConductor().conduct(makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length }));
+		const grouped = groupedIdsOf(result);
+		for (const command of result) {
+			if (command.kind === "fold") for (const id of command.ids) expect(grouped.has(id)).toBe(false);
+			if (command.kind === "replace") expect(grouped.has(command.id)).toBe(false);
+		}
+	});
+
 	it("compactPath normalises slashes and abbreviates home prefix", () => {
 		expect(compactPath("C:/Users/Admin/project/file.ts")).toBe("~/project/file.ts");
 		expect(compactPath("/home/user/project/file.ts")).toBe("~/project/file.ts");

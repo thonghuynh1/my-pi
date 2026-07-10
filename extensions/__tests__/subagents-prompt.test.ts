@@ -5,9 +5,13 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-import { EXPLORE_PROMPT } from "../prompts.ts";
+const PROMPTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "prompts");
+const EXPLORE_PROMPT = readFileSync(join(PROMPTS_DIR, "explore.md"), "utf8");
 
 test("explore prompt includes the soft aiKnow availability gate", () => {
 	assert.ok(

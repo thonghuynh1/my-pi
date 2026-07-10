@@ -48,7 +48,6 @@ import {
 	type SettingItem,
 } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
-import { EXPLORE_PROMPT } from "./prompts.ts";
 
 type SubagentType = "explore" | "shell" | "custom";
 type AgentSource = "user" | "project";
@@ -327,21 +326,6 @@ const SubagentParams = Type.Object({
 });
 
 type SubagentParamsType = Static<typeof SubagentParams>;
-
-import { readFileSync } from "node:fs";
-
-const SHELL_PROMPT = `You are Pi's shell subagent.
-
-Role:
-- Use shell commands and read/search tools to inspect the project, run tests, inspect logs, and diagnose issues.
-- Avoid modifying files unless the delegated task explicitly asks for it.
-- Prefer safe, read-only commands first.
-
-Return a concise report with:
-- Commands run
-- Important output or failures
-- Diagnosis
-- Suggested next steps for the parent agent`;
 
 function normalizePathArgument(input: string): string {
 	return input.startsWith("@") ? input.slice(1) : input;
@@ -865,15 +849,14 @@ class SubagentModelsEditor extends Container {
 }
 
 function resolveRunConfig(params: SubagentParamsType, cwd: string): RunConfig {
-
-	
 	if (params.type === "explore") {
 		const defaults = readSubagentTypeDefaults(cwd);
+		const prompt = fs.readFileSync(path.join(PROMPTS_DIR, "explore.md"), "utf8");
 		return {
 			type: "explore",
 			name: "explore",
 			description: "Read-only codebase exploration",
-			prompt: EXPLORE_PROMPT,
+			prompt,
 			tools: ["read", "grep", "find", "ls"],
 			model: params.model ?? defaults.default,
 		};
@@ -881,11 +864,12 @@ function resolveRunConfig(params: SubagentParamsType, cwd: string): RunConfig {
 
 	if (params.type === "shell") {
 		const defaults = readSubagentTypeDefaults(cwd);
+		const prompt = fs.readFileSync(path.join(PROMPTS_DIR, "shell.md"), "utf8");
 		return {
 			type: "shell",
 			name: "shell",
 			description: "Shell-oriented investigation",
-			prompt: SHELL_PROMPT,
+			prompt,
 			tools: ["read", "grep", "find", "ls", "bash"],
 			model: params.model ?? defaults.default,
 		};

@@ -681,6 +681,150 @@ describe("MyCustomizeConductor", () => {
 		expect(rep!.content).toContain("re-read if the file may have changed");
 	});
 
+	it("subagent result is folded via a recoverable replace", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:sub", "tool_call", 1, 50, 50, {
+				toolName: "subagent",
+				callId: "c:sub",
+				text: `subagent ${JSON.stringify({ type: "explore", task: "Find all TypeScript entry points", cwd: "/home/user/project" })}`,
+			}),
+			vb("r:sub", "tool_result", 2, 1500, 40, {
+				toolName: "subagent",
+				callId: "c:sub",
+				text: "- Found src/index.ts\n- Found src/lib/core.ts\n- Both use strict mode",
+			}),
+		];
+		const view = makeView(blocks, 400, 1_750);
+		const result = new MyCustomizeConductor().conduct(view);
+		const rep = replaceOf(result, "r:sub");
+		expect(rep, "subagent result is replaced, not plain-folded").toBeDefined();
+		expect(rep!.recoverable, "replace is recoverable").toBe(true);
+		expect(foldIdsOf(result).has("r:sub"), "subagent result is not in plain fold list").toBe(false);
+		expect(projected(view, result)).toBeLessThanOrEqual(view.budget);
+	});
+
+	it("subagent summary includes type, capped task, compacted cwd, and exact recall code", () => {
+		const resultId = "r:sub:meta";
+		const expectedCode = foldCode(resultId);
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:sub:meta", "tool_call", 1, 50, 50, {
+				toolName: "subagent",
+				callId: "c:sub:meta",
+				text: `subagent ${JSON.stringify({ type: "shell", task: "Run tests and capture failures", cwd: "C:\\Users\\Admin\\project" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, {
+				toolName: "subagent",
+				callId: "c:sub:meta",
+				text: "All tests pass.",
+			}),
+		];
+		const rep = replaceOf(new MyCustomizeConductor().conduct(makeView(blocks, 400, 1_750)), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain('type="shell"');
+		expect(rep!.content).toContain("Task: Run tests and capture failures");
+		expect(rep!.content).toContain('cwd="~/project"');
+		expect(rep!.content).toContain(`recall({"codes":["${expectedCode}"]})`);
+		expect(rep!.content).not.toContain("unfold");
+	});
+
+	it("subagent summary: bullet-preferred findings skip headings and separators", () => {
+		const resultId = "r:sub:bullets";
+		const text = [
+			"## Investigation Results",
+			"---",
+			"Here is what was found:",
+			"- Entry point is src/index.ts",
+			"- Core logic lives in src/lib/core.ts",
+			"- Tests are under src/__tests__",
+			"- Additional file src/utils.ts",
+		].join("\n");
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:sub:bullets", "tool_call", 1, 50, 50, {
+				toolName: "subagent",
+				callId: "c:sub:bullets",
+				text: `subagent ${JSON.stringify({ type: "explore", task: "Map repo structure" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, { toolName: "subagent", callId: "c:sub:bullets", text }),
+		];
+		const rep = replaceOf(new MyCustomizeConductor().conduct(makeView(blocks, 400, 1_750)), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain("Findings:");
+		// Bullet content (not headings or separators) appears in findings.
+		expect(rep!.content).toContain("Entry point is src/index.ts");
+		expect(rep!.content).not.toContain("Investigation Results");
+		// Findings capped at 3; the 4th bullet does not appear.
+		expect(rep!.content).not.toContain("Additional file src/utils.ts");
+		// Preamble prose line does not appear when bullets exist.
+		expect(rep!.content).not.toContain("Here is what was found");
+	});
+
+	it("subagent summary: prose-only output falls back to first useful prose lines", () => {
+		const resultId = "r:sub:prose";
+		const text = [
+			"## Overview",
+			"---",
+			"The repo uses a monorepo layout with three packages.",
+			"Each package has its own tsconfig and vitest config.",
+			"The root package.json orchestrates builds via turborepo.",
+			"A fourth package was added recently for shared types.",
+		].join("\n");
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:sub:prose", "tool_call", 1, 50, 50, {
+				toolName: "subagent",
+				callId: "c:sub:prose",
+				text: `subagent ${JSON.stringify({ type: "explore", task: "Describe repo layout" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, { toolName: "subagent", callId: "c:sub:prose", text }),
+		];
+		const rep = replaceOf(new MyCustomizeConductor().conduct(makeView(blocks, 400, 1_750)), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain("Findings:");
+		// First prose line (after heading/separator skip) is included.
+		expect(rep!.content).toContain("The repo uses a monorepo layout");
+		// Heading is not included.
+		expect(rep!.content).not.toContain("Overview");
+		// Findings capped at 3; the 4th prose line does not appear.
+		expect(rep!.content).not.toContain("A fourth package");
+	});
+
+	it("subagent custom type includes customAgent identity", () => {
+		const resultId = "r:sub:custom";
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:sub:custom", "tool_call", 1, 50, 50, {
+				toolName: "subagent",
+				callId: "c:sub:custom",
+				text: `subagent ${JSON.stringify({ type: "custom", customAgent: "my-agent", task: "Run specialized analysis" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, { toolName: "subagent", callId: "c:sub:custom", text: "Analysis complete." }),
+		];
+		const rep = replaceOf(new MyCustomizeConductor().conduct(makeView(blocks, 400, 1_750)), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain('type="custom"');
+		expect(rep!.content).toContain('customAgent="my-agent"');
+	});
+
+	it("subagent without cwd omits cwd from summary", () => {
+		const resultId = "r:sub:nocwd";
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:sub:nocwd", "tool_call", 1, 50, 50, {
+				toolName: "subagent",
+				callId: "c:sub:nocwd",
+				text: `subagent ${JSON.stringify({ type: "explore", task: "Check types" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, { toolName: "subagent", callId: "c:sub:nocwd", text: "Types are clean." }),
+		];
+		const rep = replaceOf(new MyCustomizeConductor().conduct(makeView(blocks, 400, 1_750)), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain('type="explore"');
+		expect(rep!.content).not.toContain('cwd=');
+	});
+
 	it("unknown (bash) tool result falls back to plain fold, not replace", () => {
 		const blocks = [
 			vb("u:0", "user", 0, 200, 200, { text: "task" }),

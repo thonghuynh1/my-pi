@@ -78,7 +78,15 @@ function projected(view: ConductorView, result: Command[] | null): number {
 	}
 	for (const group of groups) {
 		const members = group.ids.map((id) => view.blocks.find((b) => b.id === id)).filter((b): b is ViewBlock => b !== undefined);
-		live += estimateDefaultGroupDigestCost(members) - members.reduce((total, b) => total + b.tokens, 0);
+		const residue = members.reduce((total, b) => {
+			const replacement = replaceOf(result, b.id);
+			if (replacement) return total + estSummaryTokens(replacement.content);
+			const foldable = b.kind === "text" || b.kind === "thinking" || b.kind === "tool_result";
+			return total + (folded.has(b.id) || (foldable && b.foldedTokens < b.tokens) ? b.foldedTokens : b.tokens);
+		}, 0);
+		const original = members.reduce((total, b) => total + b.tokens, 0);
+		live += residue - original;
+		live += estimateDefaultGroupDigestCost(members) - residue;
 	}
 	return live;
 }
@@ -985,10 +993,41 @@ describe("MyCustomizeConductor", () => {
 			vb("r:3", "text", 3, 1_000, 200, { text: "old three" }),
 		];
 		const result = new MyCustomizeConductor().conduct(makeView(blocks, 500, 3_100));
+		const view = makeView(blocks, 500, 3_100);
 		const groups = result.filter((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
 		expect(groups.length).toBeGreaterThan(0);
-		expect(projected(makeView(blocks, 500, 3_100), result)).toBeLessThanOrEqual(500);
+		const plannedResidue = groups[0].ids.reduce((total, id) => total + view.blocks.find((block) => block.id === id)!.foldedTokens, 0);
+		const estimatedSaving = plannedResidue - estimateDefaultGroupDigestCost(groups[0].ids.map((id) => view.blocks.find((block) => block.id === id)!));
+		const projectedAfterFolds = view.liveTokens - blocks.slice(1).reduce((total, block) => total + (block.tokens - block.foldedTokens), 0);
+		expect(projectedAfterFolds - projected(view, result)).toBe(estimatedSaving);
+		expect(projected(view, result)).toBe(projectedAfterFolds - estimatedSaving);
 		for (const group of groups) expect(group.digest).toBeUndefined();
+	});
+
+	it("uses rich replacement residue instead of original tokens when grouping", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("c:read", "tool_call", 1, 30, 30, { toolName: "read", callId: "c:read", text: 'read {"path":"/src/file.ts"}' }),
+			vb("r:read", "tool_result", 2, 2_000, 40, { toolName: "read", callId: "c:read", text: "compact source snapshot" }),
+			vb("r:text", "text", 3, 1_000, 200, { text: "old context" }),
+		];
+		const view = makeView(blocks, 300, 3_130);
+		const result = new MyCustomizeConductor().conduct(view);
+		const group = result.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
+		expect(group?.ids).toContain("r:read");
+		const replacement = replaceOf(result, "r:read");
+		expect(replacement).toBeDefined();
+		const members = group!.ids.map((id) => view.blocks.find((block) => block.id === id)!);
+		const replacementResidue = estSummaryTokens(replacement!.content);
+		const plannedResidue = members.reduce((total, block) => total + (block.id === "r:read" ? replacementResidue : block.foldedTokens), 0);
+		const groupCost = estimateDefaultGroupDigestCost(members);
+		const originalResidue = members.reduce((total, block) => total + block.tokens, 0);
+		expect(plannedResidue).toBeLessThan(originalResidue);
+		const projectedAfterPlanning = view.liveTokens - originalResidue + plannedResidue;
+		const estimatedSaving = plannedResidue - groupCost;
+		expect(projected(view, result)).toBe(projectedAfterPlanning - estimatedSaving);
+		expect(estimatedSaving).toBeGreaterThan(0);
+		expect(projected(view, result)).toBe(view.liveTokens - originalResidue + groupCost);
 	});
 
 	it("does not group a run whose planned residue cannot beat the default digest", () => {

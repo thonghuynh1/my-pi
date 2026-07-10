@@ -147,11 +147,14 @@ export function pstackRecallSummary(identity: PstackIdentity, opts: SummaryOptio
 /**
  * Returns a recoverable summary for a non-MCP, non-recall tool result, or `undefined`
  * when the tool is not a recognised target (caller falls back to plain fold).
- * Currently handles: `read`.
+ * Currently handles: `read`, `grep`, `find`, `ls`.
  */
 export function toolResultSummary(result: ViewBlock, call: ViewBlock | undefined): string | undefined {
 	const tool = (result.toolName ?? "").trim().toLowerCase();
 	if (tool === "read") return readSummary(result, call);
+	if (tool === "grep") return grepSummary(result, call);
+	if (tool === "find") return findSummary(result, call);
+	if (tool === "ls") return lsSummary(result, call);
 	return undefined;
 }
 
@@ -189,6 +192,111 @@ export function compactPath(raw: string): string {
 		else break;
 	}
 	return best;
+}
+
+function grepSummary(result: ViewBlock, call: ViewBlock | undefined): string {
+	const args = parseOuterCall(call?.text);
+	const pattern = str(args.pattern);
+	const rawPath = str(args.path);
+	const path = rawPath ? compactPath(rawPath) : undefined;
+
+	const text = result.text ?? "";
+	const lineCount = text.split("\n").length;
+	const tokenEst = Math.ceil(text.length / 4);
+	const code = foldCode(result.id);
+
+	const identParts: string[] = [];
+	if (pattern) identParts.push(`pattern="${clip(pattern, READ_SIGNAL_LEN)}"`);
+	if (path) identParts.push(`path="${path}"`);
+	const identity = identParts.length > 0 ? identParts.join(" ") : "(no pattern)";
+
+	const output: string[] = [`tool_result:grep ${identity}`];
+	const signals = grepSignals(text);
+	if (signals.length > 0) output.push(`Contains: ${signals.join(" \u00b7 ")}`);
+	output.push(`Shape: ${lineCount} lines \u00b7 ~${tokenEst} tok`);
+	output.push(`Full result preserved. Use recall({"codes":["${code}"]}) before repeating this search.`);
+	return output.join("\n");
+}
+
+function findSummary(result: ViewBlock, call: ViewBlock | undefined): string {
+	const args = parseOuterCall(call?.text);
+	const rawPath = str(args.path);
+	const pattern = str(args.pattern);
+	const path = rawPath ? compactPath(rawPath) : undefined;
+
+	const text = result.text ?? "";
+	const allLines = text.split("\n");
+	const items = allLines.filter((l) => l.trim().length > 0).length;
+	const tokenEst = Math.ceil(text.length / 4);
+	const code = foldCode(result.id);
+
+	const identParts: string[] = [];
+	if (path) identParts.push(`path="${path}"`);
+	if (pattern) identParts.push(`pattern="${clip(pattern, READ_SIGNAL_LEN)}"`);
+	const identity = identParts.length > 0 ? identParts.join(" ") : "(no path)";
+
+	const output: string[] = [`tool_result:find ${identity}`];
+	const signals = listingSignals(allLines);
+	if (signals.length > 0) output.push(`Contains: ${signals.join(" \u00b7 ")}`);
+	output.push(`Shape: ${items} items \u00b7 ~${tokenEst} tok`);
+	output.push(`Full result preserved. Use recall({"codes":["${code}"]}) before repeating this file discovery.`);
+	return output.join("\n");
+}
+
+function lsSummary(result: ViewBlock, call: ViewBlock | undefined): string {
+	const args = parseOuterCall(call?.text);
+	const rawPath = str(args.path);
+	const path = rawPath ? compactPath(rawPath) : undefined;
+
+	const text = result.text ?? "";
+	const allLines = text.split("\n");
+	const items = allLines.filter((l) => l.trim().length > 0).length;
+	const tokenEst = Math.ceil(text.length / 4);
+	const code = foldCode(result.id);
+
+	const identity = path ? `path="${path}"` : "(no path)";
+
+	const output: string[] = [`tool_result:ls ${identity}`];
+	const signals = listingSignals(allLines);
+	if (signals.length > 0) output.push(`Contains: ${signals.join(" \u00b7 ")}`);
+	output.push(`Shape: ${items} items \u00b7 ~${tokenEst} tok`);
+	output.push(`Full result preserved. Use recall({"codes":["${code}"]}) before repeating this listing.`);
+	return output.join("\n");
+}
+
+/** Extract capped signals from grep output: unique file paths from "file:line:content" lines,
+ *  or plain content lines when no such pattern is present. */
+function grepSignals(text: string): string[] {
+	const signals: string[] = [];
+	const filesSeen = new Set<string>();
+	for (const line of text.split("\n")) {
+		if (signals.length >= READ_SIGNAL_MAX) break;
+		const t = line.trim();
+		if (!t) continue;
+		const fileMatch = t.match(/^([^:\s]+):\d+:/);
+		if (fileMatch) {
+			const file = fileMatch[1];
+			if (!filesSeen.has(file)) {
+				filesSeen.add(file);
+				signals.push(clip(file, READ_SIGNAL_LEN));
+			}
+			continue;
+		}
+		signals.push(clip(t, READ_SIGNAL_LEN));
+	}
+	return signals;
+}
+
+/** Extract capped signals from listing output (find / ls): first non-empty lines. */
+function listingSignals(lines: string[]): string[] {
+	const signals: string[] = [];
+	for (const line of lines) {
+		if (signals.length >= READ_SIGNAL_MAX) break;
+		const t = line.trim();
+		if (!t) continue;
+		signals.push(clip(t, READ_SIGNAL_LEN));
+	}
+	return signals;
 }
 
 function readSignals(text: string): string[] {

@@ -79,6 +79,8 @@ export class MyCustomizeConductor implements Conductor {
 	private lastPlan: Command[] | null = null;
 	private lastSavings = new Map<string, SavedFold>(); // block id → tokens saved
 	private lastSemanticKey: string | null = null;
+	private lastFrozenGroupEpochKey: string | null = null;
+	private lastViewKey: string | null = null;
 
 	conduct(view: ConductorView): Command[] {
 		// Fold toward the REAL available space (budget capped by window − harness − reply reserve,
@@ -88,6 +90,8 @@ export class MyCustomizeConductor implements Conductor {
 			this.lastPlan = null;
 			this.lastSavings.clear();
 			this.lastSemanticKey = null;
+			this.lastFrozenGroupEpochKey = null;
+			this.lastViewKey = null;
 			return [];
 		}
 
@@ -137,10 +141,19 @@ export class MyCustomizeConductor implements Conductor {
 		}
 		const beaconCarrierId = potetoModeActive && newestPotetoBlock && candidateIds.has(newestPotetoBlock.id) ? newestPotetoBlock.id : undefined;
 		const semanticKey = `${potetoModeActive ? "active" : "inactive"}|${newestPotetoBlock?.id ?? "-"}|${beaconCarrierId ?? "-"}`;
+		const viewKey = JSON.stringify([
+			view.liveTokens,
+			view.budget,
+			view.contextWindow,
+			view.frozenFromIndex,
+			...view.blocks.map((b) => [b.id, b.kind, b.order, b.tokens, b.foldedTokens, b.held, b.folded, b.protected, b.grouped, b.toolName, b.callId]),
+		]);
 
 		// Epoch hold: if re-applying the previous plan to the current view still lands within
 		// HOLD_BAND × cap, return it unchanged — keeps the KV prefix stable. Semantic state changes
 		// invalidate the hold so stale beacon text does not survive mode changes or newer poteto blocks.
+		if (this.lastSemanticKey !== null && this.lastSemanticKey !== semanticKey) this.lastFrozenGroupEpochKey = null;
+		if (this.lastPlan !== null && this.lastSemanticKey === semanticKey && this.lastViewKey === viewKey) return this.lastPlan;
 		if (this.lastPlan !== null && this.lastSemanticKey === semanticKey) {
 			let projectedHeld = view.liveTokens;
 			for (const [id, saving] of this.lastSavings) {
@@ -223,34 +236,56 @@ export class MyCustomizeConductor implements Conductor {
 		// Group only the non-frozen suffix, and only after all rich replacements and folds are planned.
 		const groups: Command[] = [];
 		const groupedIds = new Set<string>();
-		if (live > cap) {
+		const groupRuns = (blocks: ViewBlock[], shouldInclude: (block: ViewBlock) => boolean): ViewBlock[][] => {
+			const runs: ViewBlock[][] = [];
 			let run: ViewBlock[] = [];
-			const flushRun = (): void => {
-				if (run.length >= 2) {
-					const residue = run.reduce((total, block) => total + (plannedContribution.get(block.id) ?? block.tokens), 0);
-					const groupCost = estimateDefaultGroupDigestCost(run);
-					const saving = residue - groupCost;
-					if (saving > 0) {
-						groups.push({ kind: "group", ids: run.map((block) => block.id) });
-						for (const block of run) groupedIds.add(block.id);
-						live -= saving;
-					}
-				}
+			const flush = (): void => {
+				if (run.length >= 2) runs.push(run);
 				run = [];
 			};
-
-			for (const block of view.blocks) {
-				if (live <= cap) break;
-				if (
-					block.order < view.frozenFromIndex ||
-					isGroupBoundary(block, pstackByBlockId)
-				) {
-					flushRun();
-					continue;
-				}
-				run.push(block);
+			for (const block of blocks) {
+				if (!shouldInclude(block) || isGroupBoundary(block, pstackByBlockId)) flush();
+				else run.push(block);
 			}
-			flushRun();
+			flush();
+			return runs;
+		};
+		const emitGroup = (run: ViewBlock[]): number => {
+			const residue = run.reduce((total, block) => total + (plannedContribution.get(block.id) ?? block.tokens), 0);
+			const saving = residue - estimateDefaultGroupDigestCost(run);
+			if (saving <= 0) return 0;
+			groups.push({ kind: "group", ids: run.map((block) => block.id) });
+			for (const block of run) groupedIds.add(block.id);
+			live -= saving;
+			return saving;
+		};
+
+		if (live > cap) {
+			for (const run of groupRuns(view.blocks, (block) => block.order >= view.frozenFromIndex)) {
+				if (live <= cap) break;
+				emitGroup(run);
+			}
+		}
+
+		// Frozen grouping is a rare pressure valve. Gather all eligible frozen savings before
+		// emitting any of them so one cache-invalidating rewrite is worth the threshold.
+		if (live > cap) {
+			const frozenRuns = groupRuns(view.blocks, (block) => block.order < view.frozenFromIndex);
+			const savings = frozenRuns.map((run) => ({ run, saving: run.reduce((total, block) => total + (plannedContribution.get(block.id) ?? block.tokens), 0) - estimateDefaultGroupDigestCost(run) }));
+			const frozenEpochKey = savings.map(({ run }) => run.map((block) => `${block.id}:${plannedContribution.get(block.id) ?? block.tokens}`).join(",")).join("|");
+			const totalFrozenSaving = savings.reduce((total, candidate) => total + Math.max(0, candidate.saving), 0);
+			const threshold = Math.max(2_000, 0.05 * cap);
+			if (frozenEpochKey !== this.lastFrozenGroupEpochKey && totalFrozenSaving >= threshold) {
+				const emittedRuns: ViewBlock[][] = [];
+				for (const candidate of savings) {
+					if (live <= cap) break;
+					if (candidate.saving > 0) {
+						emitGroup(candidate.run);
+						emittedRuns.push(candidate.run);
+					}
+				}
+				if (emittedRuns.length > 0) this.lastFrozenGroupEpochKey = frozenEpochKey;
+			}
 		}
 
 		const plannedReplaces = replaces.filter(
@@ -268,8 +303,9 @@ export class MyCustomizeConductor implements Conductor {
 			if (c.kind === "group") {
 				const firstId = c.ids[0];
 				if (firstId) {
-					const residue = c.ids.reduce((total, id) => total + (plannedContribution.get(id) ?? byId.get(id)?.tokens ?? 0), 0);
-					const saving = residue - estimateDefaultGroupDigestCost(c.ids.map((id) => byId.get(id)).filter((b): b is ViewBlock => b !== undefined));
+					const members = c.ids.map((id) => byId.get(id)).filter((b): b is ViewBlock => b !== undefined);
+					const originalResidue = members.reduce((total, block) => total + block.tokens, 0);
+					const saving = originalResidue - estimateDefaultGroupDigestCost(members);
 					savings.set(firstId, { tokens: Math.max(0, saving), breakFrozen: false });
 				}
 			} else if (c.kind === "fold") {
@@ -282,10 +318,11 @@ export class MyCustomizeConductor implements Conductor {
 				if (b && !groupedIds.has(c.id)) savings.set(c.id, { tokens: b.tokens - estSummaryTokens(c.content), breakFrozen: c.breakFrozen ?? false });
 			}
 		}
+		if (live <= cap) this.lastFrozenGroupEpochKey = null;
 		this.lastPlan = cmds;
 		this.lastSavings = savings;
 		this.lastSemanticKey = semanticKey;
-
+		this.lastViewKey = viewKey;
 
 		return cmds;
 	}

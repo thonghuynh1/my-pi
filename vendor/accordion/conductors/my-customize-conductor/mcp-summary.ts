@@ -23,6 +23,11 @@ const SENSITIVE_KEY_RE = /(token|key|password|secret|auth)/i;
 const READ_SIGNAL_MAX = 4;
 const READ_SIGNAL_LEN = 50;
 const COMPACT_PATH_MAX = 60;
+const TASK_CAP = 80;
+const FINDING_CAP = 60;
+const FINDINGS_MAX = 3;
+const BULLET_RE = /^(?:[-*+]|\d+\.?)\s+(.*)/;
+const SEPARATOR_RE = /^[-=*_]{3,}$/;
 const PSTACK_NAME_RE = /skill-pstack\(name="([^"]+)"\)/i;
 const FOLD_TAG_RE = /\{#([0-9a-z]{6}) FOLDED\}/i;
 const POTETO_MODE_NAME = "poteto-mode";
@@ -152,7 +157,59 @@ export function pstackRecallSummary(identity: PstackIdentity, opts: SummaryOptio
 export function toolResultSummary(result: ViewBlock, call: ViewBlock | undefined): string | undefined {
 	const tool = (result.toolName ?? "").trim().toLowerCase();
 	if (tool === "read") return readSummary(result, call);
+	if (tool === "subagent") return subagentSummary(result, call);
 	return undefined;
+}
+
+function subagentSummary(result: ViewBlock, call: ViewBlock | undefined): string {
+	const args = parseOuterCall(call?.text);
+	const type = str(args.type) ?? "explore";
+	const rawCwd = str(args.cwd);
+	const cwd = rawCwd ? compactPath(rawCwd) : undefined;
+	const rawTask = str(args.task);
+	const customAgent = str(args.customAgent);
+	const task = rawTask ? clip(rawTask, TASK_CAP) : "(unknown task)";
+	const code = foldCode(result.id);
+
+	const typePart = type === "custom" && customAgent
+		? `type="custom" customAgent="${customAgent}"`
+		: `type="${type}"`;
+	const cwdPart = cwd ? ` cwd="${cwd}"` : "";
+
+	const lines: string[] = [`tool_result:subagent ${typePart}${cwdPart}`];
+	lines.push(`Task: ${task}`);
+	const findings = extractSubagentFindings(result.text ?? "");
+	if (findings.length > 0) lines.push(`Findings: ${findings.join(" \u00b7 ")}`);
+	lines.push(`Full result preserved. Use recall({"codes":["${code}"]}) before rerunning this investigation.`);
+
+	return lines.join("\n");
+}
+
+function extractSubagentFindings(text: string): string[] {
+	const allLines = text.split("\n");
+
+	// Pass 1: prefer markdown bullet / numbered lines.
+	const bullets: string[] = [];
+	for (const line of allLines) {
+		const t = line.trim();
+		if (!t || t.startsWith("#") || SEPARATOR_RE.test(t)) continue;
+		const m = t.match(BULLET_RE);
+		if (m) {
+			bullets.push(clip(m[1].trim(), FINDING_CAP));
+			if (bullets.length >= FINDINGS_MAX) break;
+		}
+	}
+	if (bullets.length > 0) return bullets;
+
+	// Pass 2: fallback to first useful prose lines.
+	const prose: string[] = [];
+	for (const line of allLines) {
+		const t = line.trim();
+		if (!t || t.startsWith("#") || SEPARATOR_RE.test(t)) continue;
+		prose.push(clip(t, FINDING_CAP));
+		if (prose.length >= FINDINGS_MAX) break;
+	}
+	return prose;
 }
 
 function readSummary(result: ViewBlock, call: ViewBlock | undefined): string {

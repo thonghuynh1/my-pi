@@ -1119,7 +1119,7 @@ describe("MyCustomizeConductor", () => {
 			vb("n:1", "text", 2, 1_000, 200, { text: "new one" }),
 			vb("n:2", "text", 3, 1_000, 200, { text: "new two" }),
 		];
-		const result = new MyCustomizeConductor().conduct(makeView(blocks, 400, 4_000, { frozenFromIndex: 2 }));
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 400, 2_000, { frozenFromIndex: 2 }));
 		expect(result.some((command) => command.kind === "group")).toBe(false);
 	});
 

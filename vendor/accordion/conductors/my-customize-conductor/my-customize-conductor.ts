@@ -284,9 +284,7 @@ export class MyCustomizeConductor implements Conductor {
 						emittedRuns.push(candidate.run);
 					}
 				}
-				if (emittedRuns.length > 0) {
-					this.lastFrozenGroupEpochKey = emittedRuns.map((run) => run.map((block) => `${block.id}:${plannedContribution.get(block.id) ?? block.tokens}`).join(",")).join("|");
-				}
+				if (emittedRuns.length > 0) this.lastFrozenGroupEpochKey = frozenEpochKey;
 			}
 		}
 

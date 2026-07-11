@@ -1,0 +1,12 @@
+{"reqId":1,"harness":{"totalTokens":0,"systemPromptTokens":1513,"actualWireTokens":null,"messagesTokens":null,"toolsTokens":null,"systemPayloadTokens":null,"frozenFromIndex":0},"blocks":1}
+{"reqId":2,"harness":{"totalTokens":42,"systemPromptTokens":2455,"actualWireTokens":null,"messagesTokens":null,"toolsTokens":null,"systemPayloadTokens":null,"frozenFromIndex":0},"blocks":0}
+{"reqId":3,"harness":{"totalTokens":42,"systemPromptTokens":2455,"actualWireTokens":7969,"messagesTokens":58,"toolsTokens":5333,"systemPayloadTokens":0,"frozenFromIndex":0},"blocks":1}
+{"reqId":4,"harness":{"totalTokens":42,"systemPromptTokens":2455,"actualWireTokens":7969,"messagesTokens":58,"toolsTokens":5333,"systemPayloadTokens":0,"frozenFromIndex":0},"blocks":1}
+{"reqId":5,"harness":{"totalTokens":9144,"systemPromptTokens":2455,"actualWireTokens":7969,"messagesTokens":58,"toolsTokens":5333,"systemPayloadTokens":0,"frozenFromIndex":0},"blocks":0}
+{"reqId":6,"harness":{"totalTokens":9144,"systemPromptTokens":2455,"actualWireTokens":11299,"messagesTokens":3388,"toolsTokens":5333,"systemPayloadTokens":0,"frozenFromIndex":0},"blocks":1}
+{"reqId":7,"harness":{"totalTokens":9144,"systemPromptTokens":2455,"actualWireTokens":11299,"messagesTokens":3388,"toolsTokens":5333,"systemPayloadTokens":0,"frozenFromIndex":0},"blocks":1}
+{"reqId":8,"harness":{"totalTokens":8977,"systemPromptTokens":2455,"actualWireTokens":11299,"messagesTokens":3388,"toolsTokens":5333,"systemPayloadTokens":0,"frozenFromIndex":0},"blocks":0}
+{"reqId":9,"harness":{"totalTokens":8977,"systemPromptTokens":2455,"actualWireTokens":11412,"messagesTokens":3501,"toolsTokens":5333,"systemPayloadTokens":0,"frozenFromIndex":2},"blocks":1}
+{"reqId":10,"harness":{"totalTokens":8977,"systemPromptTokens":2455,"actualWireTokens":11412,"messagesTokens":3501,"toolsTokens":5333,"systemPayloadTokens":0,"frozenFromIndex":2},"blocks":1}
+{"reqId":11,"harness":{"totalTokens":9277,"systemPromptTokens":2455,"actualWireTokens":11412,"messagesTokens":3501,"toolsTokens":5333,"systemPayloadTokens":0,"frozenFromIndex":2},"blocks":0}
+{"reqId":12,"harness":{"totalTokens":9277,"systemPromptTokens":2455,"actualWireTokens":11770,"messagesTokens":3858,"toolsTokens":5333,"systemPayloadTokens":0,"frozenFromIndex":4},"blocks":1}

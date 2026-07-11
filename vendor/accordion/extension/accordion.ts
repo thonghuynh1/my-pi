@@ -1156,6 +1156,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 				originalMessageCount: originalMessages.length,
 				originalTokensApprox: diagnosticTokenSize(originalMessages),
 				frozenFromIndex: cacheTracker.getFrozenFromIndex(),
+				cacheTracker: cacheTracker.getDiagnostics(),
 				payloadAudit: payloadAudit.getLatestSizes(),
 			});
 			return; // couldn't deliver → pass through, don't advance
@@ -1168,7 +1169,8 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			const shouldHoldLastPlan =
 				lastNonEmptyPlan !== null &&
 				!plan.steeringOff &&
-				(plan.budgetExceeded || contextWindow === null || originalTokensApprox > Math.max(0, contextWindow - 8_192));
+				contextWindow !== null &&
+				originalTokensApprox > Math.max(0, contextWindow - 8_192);
 			if (shouldHoldLastPlan) {
 				const heldMessagesForModel = applyPlan(originalMessages, lastNonEmptyPlan.ops, lastNonEmptyPlan.groups);
 				if (heldMessagesForModel !== originalMessages) {
@@ -1193,6 +1195,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 						foldMarkersInAppliedPayload: countFoldMarkers(heldMessagesForModel),
 						foldMarkersInOriginalPayload: countFoldMarkers(originalMessages),
 						frozenFromIndex,
+						cacheTracker: cacheTracker.getDiagnostics(),
 						payloadAudit: payloadAudit.getLatestSizes(),
 					});
 					return { messages: heldMessagesForModel as unknown as AgentMessage[] };
@@ -1212,6 +1215,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 				originalMessageCount: originalMessages.length,
 				originalTokensApprox,
 				frozenFromIndex,
+				cacheTracker: cacheTracker.getDiagnostics(),
 				payloadAudit: payloadAudit.getLatestSizes(),
 				hasLastPlan: lastNonEmptyPlan !== null,
 				budgetExceeded: plan.budgetExceeded,
@@ -1243,6 +1247,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			foldMarkersInAppliedPayload: countFoldMarkers(messagesForModel),
 			foldMarkersInOriginalPayload: countFoldMarkers(originalMessages),
 			frozenFromIndex: cacheTracker.getFrozenFromIndex(),
+			cacheTracker: cacheTracker.getDiagnostics(),
 			payloadAudit: payloadAudit.getLatestSizes(),
 		});
 

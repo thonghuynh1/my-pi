@@ -1,0 +1,3 @@
+{"reqId":1,"harness":{"totalTokens":15418,"systemPromptTokens":2455,"actualWireTokens":16940,"messagesTokens":9028,"toolsTokens":5333,"systemPayloadTokens":0,"frozenFromIndex":6},"blocks":10}
+{"reqId":2,"harness":{"totalTokens":15418,"systemPromptTokens":2455,"actualWireTokens":16940,"messagesTokens":9028,"toolsTokens":5333,"systemPayloadTokens":0,"frozenFromIndex":6},"blocks":1}
+{"reqId":3,"harness":{"totalTokens":15312,"systemPromptTokens":2455,"actualWireTokens":16940,"messagesTokens":9028,"toolsTokens":5333,"systemPayloadTokens":0,"frozenFromIndex":6},"blocks":0}

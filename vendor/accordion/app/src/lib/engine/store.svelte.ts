@@ -15,7 +15,7 @@ import type { Block, Actor, SessionMeta, ParsedSession, Group } from "./types";
 import { digest, digestTokens, foldTag, groupDigest, groupDigestTokens, substTokens, wireFoldable } from "./digest";
 import { estTokens, BLOCK_OVERHEAD } from "./tokens";
 import type { Conductor, ConductorView, Command, ClampReport, ClampReason, LockName, ConductorHost, CompletionRequest, CompletionResult, JSONValue } from "$conductors/contract";
-import { hasLock } from "$conductors/contract";
+import { contextWindowCap, hasLock } from "$conductors/contract";
 import { BuiltinConductor } from "$conductors";
 
 /** Classification of a folded group's members for accounting + the wire (ADR 0006 §4/§5). */
@@ -979,12 +979,9 @@ export class AccordionStore {
 	}
 
 	/**
-	 * Clear everything a conductor owns on blocks the human has NOT overridden — returning
-	 * them to full, live content — AND drop every conductor/auto-owned group. Human overrides
-	 * (pin / manual fold / manual unfold) and HUMAN groups (`by:"you"`) are left untouched;
-	 * they are not the conductor's to reset. Conductor groups (`by !== "you"`) are dropped so
-	 * each pass rebuilds its groups from the current `group` command batch — otherwise a group
-	 * the conductor stops asking for (returns `[]`, or is detached) would strand folded forever.
+	 * Clear conductor-owned state from the mutable suffix. Human overrides remain untouched.
+	 * Cached-prefix folds and groups remain unchanged so the next provider payload keeps its
+	 * cacheable prefix. Other conductor groups rebuild from the current command batch.
 	 */
 	private clearConductorState(): void {
 		for (const b of this.blocks) {
@@ -996,13 +993,15 @@ export class AccordionStore {
 				if (b.by === "auto" || b.by === "conductor") b.by = null;
 			}
 		}
-		// Drop conductor/auto groups (by:"auto" or by:"conductor"); keep human and absent-by
-		// groups. Absent `by` means a legacy or test-constructed group literal with no
-		// provenance set — preserve it, same as a human group. Only explicit conductor
-		// provenance is rebuilt from scratch each pass. Reassign only if something changed so
-		// the reactive `groups` (and its derived maps) don't churn on every clean pass.
-		const humanGroups = this.groups.filter((g) => g.by !== "auto" && g.by !== "conductor");
-		if (humanGroups.length !== this.groups.length) this.groups = humanGroups;
+		// Keep human groups and conductor groups that touch the cached prefix. Clearing either
+		// kind would change an already-sent provider payload. Other conductor groups rebuild on
+		// every pass, so a conductor that returns [] still restores the mutable suffix to raw.
+		const preservedGroups = this.groups.filter(
+			(g) =>
+				(g.by !== "auto" && g.by !== "conductor") ||
+				g.memberIds.some((id) => (this.get(id)?.order ?? this.frozenFromIndex) < this.frozenFromIndex),
+		);
+		if (preservedGroups.length !== this.groups.length) this.groups = preservedGroups;
 	}
 
 	/**
@@ -1088,6 +1087,18 @@ export class AccordionStore {
 	 * auto-folder; a non-empty string substitutes that exact content; an empty string `""`
 	 * can't be a wire content part, so it folds to the engine digest too (see the body).
 	 */
+	private hasHardContextPressure(): boolean {
+		return (
+			this.liveTokens >
+			contextWindowCap({
+				contextWindow: this.contextWindow,
+				harnessOverhead: this.harnessOverhead,
+				outputReserve: this.outputReserve,
+				calibration: this.calibration,
+			})
+		);
+	}
+
 	private substOne(id: string, content: string | undefined, by: Actor, kind: "fold" | "replace", reports: ClampReport[], recoverable = false, breakFrozen = false): void {
 		const b = this.get(id);
 		if (!b) return void reports.push(clamp(kind, [id], "unknown-id", `no block ${id}`));
@@ -1096,7 +1107,7 @@ export class AccordionStore {
 		// Protection is ABSOLUTE: a block in the working tail is never folded, by a conductor
 		// OR the user. Refuse and report rather than violate the safety pillar.
 		if (this.isProtected(b)) return void reports.push(clamp(kind, [id], "protected", `${label(b)} is in the protected working tail`));
-		if (b.order < this.frozenFromIndex && !breakFrozen)
+		if (b.order < this.frozenFromIndex && (!breakFrozen || !this.hasHardContextPressure()))
 			return void reports.push(
 				clamp(kind, [id], "frozen", `block ${id} is in the provider's cached prefix (order ${b.order} < frozen ${this.frozenFromIndex})`),
 			);
@@ -1156,6 +1167,9 @@ export class AccordionStore {
 			const held = range.filter((id) => this.get(id)?.override != null);
 			if (held.length)
 				return void reports.push(clamp("group", ids, "human-override", `would collapse ${held.length} human-held block(s)`));
+			const frozen = range.some((id) => (this.get(id)?.order ?? this.frozenFromIndex) < this.frozenFromIndex);
+			if (frozen && !this.hasHardContextPressure())
+				return void reports.push(clamp("group", ids, "frozen", "would rewrite the provider's cached prefix"));
 		}
 		const g = this.createGroup(ids[0], ids[ids.length - 1], by, digest);
 		if (!g) reports.push(clamp("group", ids, "invalid-group", "not a valid contiguous, ungrouped run older than the protected tail"));
@@ -1174,15 +1188,18 @@ export class AccordionStore {
 	private static readonly CALIBRATION_ALPHA = 0.3;
 
 	/**
-	 * Recompute the calibration factor from the latest harness breakdown: real provider tokens
-	 * (`totalTokens`) ÷ our estimate of the same request (`liveTokens + harnessOverhead`). Both
-	 * `totalTokens` and the estimate are LAGGED to the same (previous) request, so they pair up;
+	 * Recompute the calibration factor from the largest observed provider payload total
+	 * (`totalTokens` or `actualWireTokens`) ÷ our estimate of the same request
+	 * (`liveTokens + harnessOverhead`). The measurement and estimate are LAGGED to the same
+	 * previous request, so they pair up;
 	 * and because `k` is really a CONTENT-DENSITY ratio (stable regardless of which blocks are
 	 * folded) the pairing is robust. Clamped to [0.5, 3] against garbage, then EMA-smoothed.
 	 */
 	private updateCalibration(): void {
-		const total = this.harnessBreakdown?.totalTokens ?? null;
-		if (total == null || total <= 0) return;
+		const reported = this.harnessBreakdown?.totalTokens ?? null;
+		const audited = this.harnessBreakdown?.actualWireTokens ?? null;
+		const total = Math.max(reported ?? 0, audited ?? 0);
+		if (total <= 0) return;
 		const est = this.liveTokens + this.harnessOverhead;
 		if (est <= 0) return;
 		const clamped = Math.min(3, Math.max(0.5, total / est));

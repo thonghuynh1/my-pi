@@ -1,6 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { getFrozenFromIndex, install, reset } from "./cache-tracker";
+import { getDiagnostics, getFrozenFromIndex, install, reset } from "./cache-tracker";
 
 class FakePi {
 	private readonly handlers = new Map<string, Array<(event: { payload?: unknown }) => unknown>>();
@@ -69,7 +69,7 @@ describe("cache tracker lifecycle", () => {
 		expect(getFrozenFromIndex()).toBe(4);
 	});
 
-	it("system prompt change", () => {
+	it("reports a system prompt change without exposing message text", () => {
 		pi.emit("before_provider_request", {
 			payload: makePayload({
 				system: "system-a",
@@ -84,6 +84,13 @@ describe("cache tracker lifecycle", () => {
 		});
 
 		expect(getFrozenFromIndex()).toBe(0);
+		expect(getDiagnostics()).toEqual({
+			frozenFromIndex: 0,
+			reason: "system-changed",
+			messageCount: 10,
+			previousMessageCount: 10,
+			matchedPrefix: 0,
+		});
 	});
 
 	it("tools change", () => {

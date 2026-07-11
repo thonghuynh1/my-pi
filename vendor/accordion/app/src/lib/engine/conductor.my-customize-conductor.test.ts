@@ -37,13 +37,13 @@ function vb(
 	};
 }
 
-function makeView(blocks: ViewBlock[], budget: number, liveTokens: number, opts: { frozenFromIndex?: number } = {}): ConductorView {
+function makeView(blocks: ViewBlock[], budget: number, liveTokens: number, opts: { frozenFromIndex?: number; contextWindow?: number | null } = {}): ConductorView {
 	const protectedFromIndex = blocks.findIndex((b) => b.protected);
 	return {
 		blocks,
 		budget,
 		liveTokens,
-		contextWindow: null,
+		contextWindow: opts.contextWindow ?? null,
 		protectedFromIndex: protectedFromIndex < 0 ? blocks.length : protectedFromIndex,
 		protectTokens: 0,
 		frozenFromIndex: opts.frozenFromIndex ?? 0,
@@ -204,20 +204,35 @@ describe("MyCustomizeConductor", () => {
 		expect(second).toBe(first);
 	});
 
-	it("breaks frozen prefix under pressure rather than returning empty", () => {
+	it("does not rewrite a frozen prefix when only the soft budget is exceeded", () => {
 		const blocks = [
 			vb("u:0", "user", 0, 200, 200, { text: "task" }),
 			vb("r:1", "tool_result", 1, 1_500, 40, { toolName: "bash", text: "output 1" }),
 			vb("r:2", "tool_result", 2, 1_500, 40, { toolName: "bash", text: "output 2" }),
 		];
-		const view = makeView(blocks, 500, 3_200, { frozenFromIndex: 3 });
+		const view = makeView(blocks, 500, 3_200, { frozenFromIndex: 3, contextWindow: 200_000 });
 		const result = new MyCustomizeConductor().conduct(view);
-		expect(result.length).toBeGreaterThan(0);
-		const foldCmd = result.find((c) => c.kind === "fold");
-		expect(foldCmd).toBeDefined();
-		expect((foldCmd as any).breakFrozen).toBe(true);
-		expect((foldCmd as any).ids).toContain("r:1");
-		expect((foldCmd as any).ids).toContain("r:2");
+		expect(result).toEqual([]);
+	});
+
+	it("rewrites a frozen prefix only when the real context window overflows", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("r:1", "tool_result", 1, 1_500, 40, { toolName: "bash", text: "output 1" }),
+			vb("r:2", "tool_result", 2, 1_500, 40, { toolName: "bash", text: "output 2" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 10_000, 3_200, { frozenFromIndex: 3, contextWindow: 2_000 }));
+		expect(result.some((command) => (command.kind === "fold" || command.kind === "replace") && command.breakFrozen)).toBe(true);
+	});
+
+	it("does not rewrite a frozen prefix when the context window is unknown", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("r:1", "tool_result", 1, 1_500, 40, { toolName: "bash", text: "output 1" }),
+			vb("r:2", "tool_result", 2, 1_500, 40, { toolName: "bash", text: "output 2" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 500, 3_200, { frozenFromIndex: 3 }));
+		expect(result).toEqual([]);
 	});
 
 	it("is registered as a collaborative in-process conductor", () => {
@@ -1133,10 +1148,10 @@ describe("MyCustomizeConductor", () => {
 		expect(result.some((command) => command.kind === "group")).toBe(false);
 	});
 
-	it("batches significant frozen savings into a recoverable group epoch", () => {
+	it("batches significant frozen savings into a recoverable group epoch at the real context limit", () => {
 		const frozen = Array.from({ length: 30 }, (_, i) => vb(`f:${i}`, "text", i, 3_000, 100, { text: `cached ${i}` }));
 		const tail = vb("tail", "user", 30, 5_000, 5_000, { protected: true, text: "working tail" });
-		const view = makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length });
+		const view = makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length, contextWindow: 5_000 });
 		const conductor = new MyCustomizeConductor();
 		const first = conductor.conduct(view);
 		const group = first.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
@@ -1147,7 +1162,7 @@ describe("MyCustomizeConductor", () => {
 	it("does not emit a second frozen grouping epoch for an identical view", () => {
 		const frozen = Array.from({ length: 30 }, (_, i) => vb(`f:${i}`, "text", i, 3_000, 100, { text: `cached ${i}` }));
 		const tail = vb("tail", "user", 30, 5_000, 5_000, { protected: true, text: "working tail" });
-		const view = makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length });
+		const view = makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length, contextWindow: 5_000 });
 		const conductor = new MyCustomizeConductor();
 		const first = conductor.conduct(view);
 		const second = conductor.conduct(view);
@@ -1162,8 +1177,8 @@ describe("MyCustomizeConductor", () => {
 		const result = pstackResult("r:poteto", 32, "c:poteto", "full pstack leaf");
 		const tail = vb("tail", "user", 33, 5_000, 5_000, { protected: true, text: "working tail" });
 		const conductor = new MyCustomizeConductor();
-		const first = conductor.conduct(makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length }));
-		const changed = conductor.conduct(makeView([...frozen, firstUser, call, result, tail], 5_000, 95_000 + 1_720, { frozenFromIndex: frozen.length + 3 }));
+		const first = conductor.conduct(makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length, contextWindow: 5_000 }));
+		const changed = conductor.conduct(makeView([...frozen, firstUser, call, result, tail], 5_000, 95_000 + 1_720, { frozenFromIndex: frozen.length + 3, contextWindow: 5_000 }));
 		expect(first.some((command) => command.kind === "group")).toBe(true);
 		expect(changed.some((command) => command.kind === "group")).toBe(true);
 	});
@@ -1172,7 +1187,7 @@ describe("MyCustomizeConductor", () => {
 		const frozen = Array.from({ length: 30 }, (_, i) => vb(`f:${i}`, "text", i, 3_000, 100, { text: `cached ${i}` }));
 		const tail = vb("tail", "user", 30, 5_000, 5_000, { protected: true, text: "working tail" });
 		const conductor = new MyCustomizeConductor();
-		const overCap = makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length });
+		const overCap = makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length, contextWindow: 5_000 });
 		const first = conductor.conduct(overCap);
 		const underCap = makeView([...frozen, tail], 5_000, 4_900, { frozenFromIndex: frozen.length });
 		expect(conductor.conduct(underCap)).toEqual([]);
@@ -1184,7 +1199,7 @@ describe("MyCustomizeConductor", () => {
 	it("keeps frozen grouped IDs out of fold and replace commands", () => {
 		const frozen = Array.from({ length: 30 }, (_, i) => vb(`f:${i}`, "text", i, 3_000, 100, { text: `cached ${i}` }));
 		const tail = vb("tail", "user", 30, 5_000, 5_000, { protected: true, text: "working tail" });
-		const result = new MyCustomizeConductor().conduct(makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length }));
+		const result = new MyCustomizeConductor().conduct(makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length, contextWindow: 5_000 }));
 		const grouped = groupedIdsOf(result);
 		for (const command of result) {
 			if (command.kind === "fold") for (const id of command.ids) expect(grouped.has(id)).toBe(false);

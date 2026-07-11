@@ -157,6 +157,19 @@ export function availableCap(view: {
 	return Math.max(0, Math.min(estimateCap, view.budget));
 }
 
+/** Estimate-unit cap imposed by the real provider window. Infinity means the host has no window data. */
+export function contextWindowCap(view: {
+	contextWindow: number | null;
+	harnessOverhead?: number;
+	outputReserve?: number;
+	calibration?: number;
+}): number {
+	if (view.contextWindow === null) return Number.POSITIVE_INFINITY;
+	const k = view.calibration && view.calibration > 0 ? view.calibration : 1;
+	const harnessReal = (view.harnessOverhead ?? 0) * k;
+	return Math.max(0, (view.contextWindow - harnessReal - (view.outputReserve ?? 0)) / k);
+}
+
 /**
  * The command vocabulary. Every command is CONTENT SUBSTITUTION, never structural
  * removal — a block is never spliced out of the conversation, only its content
@@ -185,7 +198,7 @@ export interface FoldCommand {
 	kind: "fold";
 	ids: string[];
 	digest?: string;
-	/** Deliberately rewrite blocks in the provider's cached prefix to escape a raw-context loop. */
+	/** Requests a cached-prefix rewrite. The host permits it only at the real context-window limit. */
 	breakFrozen?: boolean;
 }
 
@@ -214,7 +227,7 @@ export interface ReplaceCommand {
 	id: string;
 	content: string;
 	recoverable?: boolean;
-	/** Deliberately rewrite a block in the provider's cached prefix to escape a raw-context loop. */
+	/** Requests a cached-prefix rewrite. The host permits it only at the real context-window limit. */
 	breakFrozen?: boolean;
 }
 

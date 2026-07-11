@@ -1,0 +1,14 @@
+{
+  "context_records": 60,
+  "changed_records": 41,
+  "frozen_zero_records": 60,
+  "applied_tokens_approx_range": [
+    47943,
+    116749
+  ],
+  "original_tokens_approx_max": 171526,
+  "zero_cache_read_turns": 10,
+  "total_assistant_turns": 62,
+  "cache_miss_classifier_count": 1,
+  "accordion_context_cache_miss_classifier_count": 0
+}

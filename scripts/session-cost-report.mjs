@@ -151,6 +151,7 @@ function compactContextDiagnostic(event) {
     originalTokensApprox: event.originalTokensApprox ?? null,
     appliedTokensApprox: event.appliedTokensApprox ?? null,
     frozenFromIndex: event.frozenFromIndex ?? null,
+    cacheTracker: event.cacheTracker ?? null,
   };
 }
 

@@ -44,6 +44,14 @@ A browser-served Accordion dashboard that can discover and monitor multiple loca
 
 A local HTTP/WebSocket service that makes Accordion's filesystem-backed session registry available to a plain browser dashboard. It owns browser discovery APIs, session list updates, and routing browser connections to per-session Accordion extension servers without requiring the Tauri desktop app.
 
+## Authoritative Accordion Folding Runtime
+
+The browser-independent folding engine hosted by each Pi session extension whose plan and calculation state are authoritative for both model requests and optional dashboard controls.
+
+## Warm Folding Calculation
+
+An incremental Accordion plan update that reuses an active session’s block index, conductor state, and prior plan instead of recomputing the full history.
+
 ## Capability Visibility
 
 A `my-pi` configuration layer that controls which managed custom extension tools are exposed to the agent and which managed commands are registered for human slash-command use.

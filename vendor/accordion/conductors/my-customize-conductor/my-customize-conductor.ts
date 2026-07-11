@@ -19,7 +19,7 @@
  * across passes where nothing meaningful has changed.
  */
 import type { Command, Conductor, ConductorView, ViewBlock } from "../contract";
-import { availableCap } from "../contract";
+import { availableCap, contextWindowCap } from "../contract";
 import { FOLD_RANK } from "../builtin/builtin";
 import { FOLDABLE_KINDS } from "../cold-score/score";
 import { buildGraph, markReachable } from "../garbage-collector/edges";
@@ -86,6 +86,7 @@ export class MyCustomizeConductor implements Conductor {
 		// Fold toward the REAL available space (budget capped by window − harness − reply reserve,
 		// then calibrated to real tokens), not the raw budget — else the true request overflows.
 		const cap = availableCap(view);
+		const hardCap = contextWindowCap(view);
 		if (view.liveTokens <= cap) {
 			this.lastPlan = null;
 			this.lastSavings.clear();
@@ -224,11 +225,10 @@ export class MyCustomizeConductor implements Conductor {
 			if (live <= cap) break;
 			applyCandidate(b, false);
 		}
-		// If the unfrozen suffix cannot meet cap, deliberately break the cached prefix once.
-		// This is cheaper than repeatedly returning an empty plan and sending raw context forever.
-		if (live > cap) {
+		// Only a real context-window overflow may reset the cached prefix.
+		if (live > hardCap) {
 			for (const b of sortCandidates(allCandidates.filter((b) => b.order < view.frozenFromIndex && !alreadyPlanned.has(b.id)))) {
-				if (live <= cap) break;
+				if (live <= hardCap) break;
 				applyCandidate(b, true);
 			}
 		}
@@ -269,7 +269,7 @@ export class MyCustomizeConductor implements Conductor {
 
 		// Frozen grouping is a rare pressure valve. Gather all eligible frozen savings before
 		// emitting any of them so one cache-invalidating rewrite is worth the threshold.
-		if (live > cap) {
+		if (live > hardCap) {
 			const frozenRuns = groupRuns(view.blocks, (block) => block.order < view.frozenFromIndex);
 			const savings = frozenRuns.map((run) => ({ run, saving: run.reduce((total, block) => total + (plannedContribution.get(block.id) ?? block.tokens), 0) - estimateDefaultGroupDigestCost(run) }));
 			const frozenEpochKey = savings.map(({ run }) => run.map((block) => `${block.id}:${plannedContribution.get(block.id) ?? block.tokens}`).join(",")).join("|");
@@ -278,7 +278,7 @@ export class MyCustomizeConductor implements Conductor {
 			if (frozenEpochKey !== this.lastFrozenGroupEpochKey && totalFrozenSaving >= threshold) {
 				const emittedRuns: ViewBlock[][] = [];
 				for (const candidate of savings) {
-					if (live <= cap) break;
+					if (live <= hardCap) break;
 					if (candidate.saving > 0) {
 						emitGroup(candidate.run);
 						emittedRuns.push(candidate.run);
@@ -318,7 +318,7 @@ export class MyCustomizeConductor implements Conductor {
 				if (b && !groupedIds.has(c.id)) savings.set(c.id, { tokens: b.tokens - estSummaryTokens(c.content), breakFrozen: c.breakFrozen ?? false });
 			}
 		}
-		if (live <= cap) this.lastFrozenGroupEpochKey = null;
+		if (live <= hardCap) this.lastFrozenGroupEpochKey = null;
 		this.lastPlan = cmds;
 		this.lastSavings = savings;
 		this.lastSemanticKey = semanticKey;

@@ -1,3 +1,7 @@
+---
+status: closed
+---
+
 Status: ready-for-agent
 
 # Add exact-code recoverable summaries for MCP/pstack and `read`

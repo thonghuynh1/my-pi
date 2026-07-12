@@ -48,6 +48,14 @@ A local HTTP/WebSocket service that makes Accordion's filesystem-backed session 
 
 The estimated input-token total that would be sent to the model if Accordion folding were disabled. It counts the full original conversation/history token weight plus request overhead such as system prompt, tool schema, and harness payload tokens, but excludes output reserve.
 
+## Authoritative Accordion Folding Runtime
+
+The browser-independent folding engine hosted by each Pi session extension whose plan and calculation state are authoritative for both model requests and optional dashboard controls.
+
+## Warm Folding Calculation
+
+An incremental Accordion plan update that reuses an active session’s block index, conductor state, and prior plan instead of recomputing the full history.
+
 ## Capability Visibility
 
 A `my-pi` configuration layer that controls which managed custom extension tools are exposed to the agent and which managed commands are registered for human slash-command use.

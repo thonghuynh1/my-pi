@@ -39,6 +39,14 @@
 	const conductorStatusDetails = $derived(store.conductorStatus.text ? store.conductorStatus.details : conductorStatus.details);
 	// fmt/k formatters must round their input because AnimatedNumber passes a float mid-tween
 	const fmt = (n: number) => Math.round(n).toLocaleString();
+	type Hint = { text: string; rect: DOMRect };
+	let hint = $state<Hint | null>(null);
+	const budgetHint = "The budget is a soft target. Accordion kept older cached context intact instead of shrinking it, because changing that prefix would cause a costly provider cache miss.";
+	const accountingHint = "Pi reports provider usage. Wire is the serialized request. Harness covers system instructions, tools, and message structure. Live content can still fold. Framing cannot.";
+	function showHint(event: MouseEvent | FocusEvent, text: string): void {
+		hint = { text, rect: (event.currentTarget as HTMLElement).getBoundingClientRect() };
+	}
+
 	const k = (n: number) => {
 		const r = Math.round(n);
 		if (r >= 1_000_000) {
@@ -189,6 +197,7 @@
 				{#if store.overBudget}
 					<span class="over-flag mono tnum">
 						over by <AnimatedNumber value={liveReal - store.budget} format={fmtOverBy} />
+						<button class="hint-icon" aria-label="Why this is over budget" onmouseenter={(event) => showHint(event, budgetHint)} onmouseleave={() => (hint = null)} onfocus={(event) => showHint(event, budgetHint)} onblur={() => (hint = null)}>i</button>
 					</span>
 				{/if}
 			</div>
@@ -208,14 +217,15 @@
 					{@const msgsWire = hb.messagesTokens ?? null}
 					{@const framing = msgsWire !== null ? Math.max(0, msgsWire - store.liveTokens) : null}
 					{@const wireHarness = wire !== null ? wire - store.liveTokens : null}
-					<div class="harness-line mono tnum" title="pi: provider-reported usage (includes cached input)  ·  wire: actual serialized request size  ·  messages = live (foldable conversation) + framing (per-message envelopes, irreducible)">
-						pi {fmt(total)}
-						{#if wire !== null}· wire {fmt(wire)}{/if}
-						{#if wireHarness !== null}· harness {fmt(wireHarness)}{:else}· harness {fmt(total - store.liveTokens)}{/if}
+					<div class="harness-line mono tnum">
+						<button class="hint-icon" aria-label="About these token measurements" onmouseenter={(event) => showHint(event, accountingHint)} onmouseleave={() => (hint = null)} onfocus={(event) => showHint(event, accountingHint)} onblur={() => (hint = null)}>i</button>
+						<span class="hint-target" tabindex="0" onmouseenter={(event) => showHint(event, "Pi's provider-reported context usage. It can include cached input, so it may differ from the serialized request size.")} onmouseleave={() => (hint = null)} onfocus={(event) => showHint(event, "Pi's provider-reported context usage. It can include cached input, so it may differ from the serialized request size.")} onblur={() => (hint = null)}>pi {fmt(total)}</span>
+						{#if wire !== null}<span class="hint-target" tabindex="0" onmouseenter={(event) => showHint(event, "Estimated size of the actual request body sent to the model provider.")} onmouseleave={() => (hint = null)} onfocus={(event) => showHint(event, "Estimated size of the actual request body sent to the model provider.")} onblur={() => (hint = null)}>· wire {fmt(wire)}</span>{/if}
+						{#if wireHarness !== null}<span class="hint-target" tabindex="0" onmouseenter={(event) => showHint(event, "Everything in the request besides the currently foldable conversation, such as system instructions, tools, and message framing.")} onmouseleave={() => (hint = null)} onfocus={(event) => showHint(event, "Everything in the request besides the currently foldable conversation, such as system instructions, tools, and message framing.")} onblur={() => (hint = null)}>· harness {fmt(wireHarness)}</span>{:else}<span class="hint-target" tabindex="0" onmouseenter={(event) => showHint(event, "Everything in the request besides the currently foldable conversation, estimated from Pi's reported usage.")} onmouseleave={() => (hint = null)} onfocus={(event) => showHint(event, "Everything in the request besides the currently foldable conversation, estimated from Pi's reported usage.")} onblur={() => (hint = null)}>· harness {fmt(total - store.liveTokens)}</span>{/if}
 						{#if sysWire !== null && toolsWire !== null && msgsWire !== null && framing !== null}
-							(sys {fmt(sysWire)} · tools {fmt(toolsWire)} · messages {fmt(msgsWire)}: {fmt(store.liveTokens)} live + {fmt(framing)} framing)
+							(<span class="hint-target" tabindex="0" onmouseenter={(event) => showHint(event, "System instructions sent with every request.")} onmouseleave={() => (hint = null)} onfocus={(event) => showHint(event, "System instructions sent with every request.")} onblur={() => (hint = null)}>sys {fmt(sysWire)}</span> · <span class="hint-target" tabindex="0" onmouseenter={(event) => showHint(event, "Tool schemas sent with every request.")} onmouseleave={() => (hint = null)} onfocus={(event) => showHint(event, "Tool schemas sent with every request.")} onblur={() => (hint = null)}>tools {fmt(toolsWire)}</span> · <span class="hint-target" tabindex="0" onmouseenter={(event) => showHint(event, "All conversation messages in the serialized request.")} onmouseleave={() => (hint = null)} onfocus={(event) => showHint(event, "All conversation messages in the serialized request.")} onblur={() => (hint = null)}>messages {fmt(msgsWire)}</span>: <span class="hint-target" tabindex="0" onmouseenter={(event) => showHint(event, "Conversation content Accordion can still fold or keep live.")} onmouseleave={() => (hint = null)} onfocus={(event) => showHint(event, "Conversation content Accordion can still fold or keep live.")} onblur={() => (hint = null)}>{fmt(store.liveTokens)} live</span> + <span class="hint-target" tabindex="0" onmouseenter={(event) => showHint(event, "Per-message protocol structure and other irreducible message overhead. It cannot be folded away.")} onmouseleave={() => (hint = null)} onfocus={(event) => showHint(event, "Per-message protocol structure and other irreducible message overhead. It cannot be folded away.")} onblur={() => (hint = null)}>{fmt(framing)} framing</span>)
 						{:else if hb.systemPromptTokens !== null}
-							(sys {fmt(hb.systemPromptTokens)})
+							(<span class="hint-target" tabindex="0" onmouseenter={(event) => showHint(event, "System instructions sent with every request.")} onmouseleave={() => (hint = null)} onfocus={(event) => showHint(event, "System instructions sent with every request.")} onblur={() => (hint = null)}>sys {fmt(hb.systemPromptTokens)}</span>)
 						{/if}
 					</div>
 				{/if}
@@ -429,6 +439,10 @@
 	{/if}
 </div>
 
+{#if hint}
+	<div class="header-tip" style:left="{hint.rect.left + hint.rect.width / 2}px" style:top="{hint.rect.bottom + 8}px">{hint.text}</div>
+{/if}
+
 <style>
 	/* ── Container ── */
 	.hdr {
@@ -492,6 +506,56 @@
 	}
 
 	/* Over-budget flag — danger, no pill chrome */
+	.hint-icon {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 12px;
+		height: 12px;
+		margin-left: 3px;
+		padding: 0;
+		background: transparent;
+		color: inherit;
+		border: 1px solid currentColor;
+		border-radius: 50%;
+		font-family: var(--font-mono);
+		font-size: 8px;
+		font-weight: 700;
+		font-style: normal;
+		line-height: 1;
+		vertical-align: 1px;
+		cursor: help;
+	}
+
+	.hint-target {
+		border-radius: 3px;
+		cursor: help;
+		outline: none;
+	}
+
+	.hint-target:hover,
+	.hint-target:focus-visible {
+		color: var(--text);
+		text-decoration: underline dotted;
+		text-underline-offset: 2px;
+	}
+
+	.header-tip {
+		position: fixed;
+		z-index: 20;
+		max-width: 300px;
+		padding: 8px 10px;
+		border: 1px solid var(--line);
+		border-radius: 6px;
+		background: var(--panel);
+		color: var(--text);
+		box-shadow: 0 8px 24px rgb(0 0 0 / 0.28);
+		font-size: var(--fs-xs);
+		line-height: 1.45;
+		transform: translateX(-50%);
+		pointer-events: none;
+	}
+
 	.over-flag {
 		font-size: var(--fs-xs);
 		font-weight: 600;

@@ -19,7 +19,7 @@ pi install F:/MyWork/my-pi
 
 Restart Pi or run `/reload`.
 
-The `postinstall` script handles Accordion overlay and build automatically.
+The `postinstall` script handles Accordion build automatically.
 
 ## Accordion
 
@@ -66,32 +66,6 @@ npm run accordion:broker
 This starts the broker on a loopback port, prints the dashboard URL, and writes `~/.accordion/browser-broker.json`. The broker stays alive until you press `Ctrl+C`.
 
 In normal use, `/accordion` starts the broker automatically, adds the current Pi session to the watched list, and opens the dashboard in your browser.
-
-### Custom conductor overlay
-
-The overlay in `overlays/accordion/` patches vendor defaults at install time.
-
-Defaults applied by the overlay:
-
-- Conductor: `My Customize`
-- Steering (live folding): ON
-- Budget: min(contextWindow, 100k)
-
-The overlay is idempotent and re-applied on every `npm run accordion:overlay` or `npm run accordion:update`.
-
-To pull upstream Accordion changes without losing the custom conductor:
-
-```bash
-npm run accordion:update
-```
-
-This re-applies the overlay and rebuilds. To incorporate new upstream Accordion code, update the vendored files in `vendor/accordion/` first, then run this command. If an upstream change breaks an anchor, the script fails with the exact missing line.
-
-Notes:
-
-- Keep local customizations in `overlays/accordion/` when possible so they can be re-applied after refreshing the vendored Accordion files.
-- The overlay script handles CRLF/LF differences.
-- You can still switch conductors in the Accordion UI. The overlay only sets the default.
 
 ## Configure engineering-skills MCP
 
@@ -218,8 +192,7 @@ pi install git:github.com/<you>/my-pi
 The `postinstall` script runs automatically and handles:
 
 1. `npm run accordion:install`
-2. `npm run accordion:overlay`
-3. `npm run accordion:build` (if not already built)
+2. `npm run accordion:build` (if not already built)
 
 Then clone/build `hackathon-grill-me` on that PC and run:
 

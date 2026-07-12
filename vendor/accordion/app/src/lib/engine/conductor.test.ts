@@ -308,6 +308,45 @@ describe("conductor seam — clamp reports (provider-validity floor)", () => {
 		expect(s.isFolded(s.get("m3:p0")!)).toBe(false);
 	});
 
+	it("rejects breakFrozen when only the soft budget is exceeded", () => {
+		const s = makeStore(Array.from({ length: 6 }, (_, i) => blk(i)));
+		s.setProtect(0);
+		s.setContextWindow(200_000);
+		s.setBudget(1_000);
+		s.setHarnessBreakdown({ totalTokens: 6000, systemPromptTokens: 100, frozenFromIndex: 5 });
+
+		const wasFolded = s.isFolded(s.get("m3:p0")!);
+		const reports = s.applyCommands([{ kind: "fold", ids: ["m3:p0"], breakFrozen: true }], "auto");
+		expect(reports).toHaveLength(1);
+		expect(reports[0].reason).toBe("frozen");
+		expect(s.isFolded(s.get("m3:p0")!)).toBe(wasFolded);
+	});
+
+	it("rejects a frozen group when only the soft budget is exceeded", () => {
+		const s = makeStore(Array.from({ length: 6 }, (_, i) => blk(i)));
+		s.setProtect(0);
+		s.setContextWindow(200_000);
+		s.setBudget(1_000);
+		s.setHarnessBreakdown({ totalTokens: 6000, systemPromptTokens: 100, frozenFromIndex: 5 });
+
+		const reports = s.applyCommands([{ kind: "group", ids: ["m2:p0", "m3:p0"] }], "auto");
+		expect(reports).toHaveLength(1);
+		expect(reports[0].reason).toBe("frozen");
+		expect(s.groups).toHaveLength(0);
+	});
+
+	it("permits a frozen rewrite at the real context-window limit", () => {
+		const s = makeStore(Array.from({ length: 6 }, (_, i) => blk(i)));
+		s.setProtect(0);
+		s.setContextWindow(1_000);
+		s.setBudget(10_000);
+		s.setHarnessBreakdown({ totalTokens: 6000, systemPromptTokens: 100, frozenFromIndex: 5 });
+
+		const reports = s.applyCommands([{ kind: "fold", ids: ["m3:p0"], breakFrozen: true }], "auto");
+		expect(reports).toEqual([]);
+		expect(s.isFolded(s.get("m3:p0")!)).toBe(true);
+	});
+
 	// (3) MINOR regression: restoring/pinning an already-live block must REPORT a noop, not
 	// silently swallow it — the contract documents the reason as reachable.
 	it("reports 'noop' when restoring an already-live block", () => {
@@ -355,6 +394,19 @@ describe("conductor seam — group command", () => {
 		expect(s.groups.length).toBe(0); // group is gone — not stranded
 		expect(s.isFolded(s.get("m0:p0")!)).toBe(false);
 		expect(s.isFolded(s.get("m1:p0")!)).toBe(false);
+	});
+
+	it("preserves a frozen conductor group when the conductor returns []", () => {
+		const s = makeStore(Array.from({ length: 4 }, (_, i) => blk(i)));
+		s.setProtect(0);
+		const stub = new StubConductor();
+		stub.cmds = [{ kind: "group", ids: ["m0:p0", "m1:p0"] }];
+		s.attach(stub);
+		expect(s.groups.length).toBe(1);
+
+		stub.cmds = [];
+		s.setHarnessBreakdown({ totalTokens: 4000, systemPromptTokens: 100, frozenFromIndex: 2 });
+		expect(s.groups.length).toBe(1);
 	});
 
 	// ADR 0011 §6: detach FREEZES — a folded conductor group is reassigned to the human

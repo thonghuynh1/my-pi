@@ -18,8 +18,6 @@ if (!existsSync(join(root, "packages", "accordion-broker", "node_modules"))) {
 	run("npm install --prefix packages/accordion-broker");
 }
 
-run("npm run accordion:overlay");
-
 if (!existsSync(join(root, "vendor", "accordion", "app", "build", "index.html"))) {
 	run("npm run accordion:build");
 }

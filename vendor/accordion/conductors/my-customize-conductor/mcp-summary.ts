@@ -20,6 +20,14 @@ const SUMMARY_OVERHEAD_TOKENS = 8;
 const REDACTED = "[redacted]";
 const RECALL_HINT = 'recall({"codes":["<code>"]})';
 const SENSITIVE_KEY_RE = /(token|key|password|secret|auth)/i;
+const READ_SIGNAL_MAX = 4;
+const READ_SIGNAL_LEN = 50;
+const COMPACT_PATH_MAX = 60;
+const TASK_CAP = 80;
+const FINDING_CAP = 60;
+const FINDINGS_MAX = 3;
+const BULLET_RE = /^(?:[-*+]|\d+\.?)\s+(.*)/;
+const SEPARATOR_RE = /^[-=*_]{3,}$/;
 const PSTACK_NAME_RE = /skill-pstack\(name="([^"]+)"\)/i;
 const FOLD_TAG_RE = /\{#([0-9a-z]{6}) FOLDED\}/i;
 const POTETO_MODE_NAME = "poteto-mode";
@@ -51,7 +59,7 @@ export function mcpSummary(result: ViewBlock, call: ViewBlock | undefined, opts:
 			[
 				`tool_result:mcp skill-pstack(name="${pstack.name}")`,
 				`Label: ${pstack.label}`,
-				`Full result preserved. Use ${RECALL_HINT}, not unfold, before re-calling this exact MCP tool.`,
+				`Full result preserved. Use recall({"codes":["${foldCode(result.id)}"]}) , not unfold, before re-calling this exact MCP tool.`,
 			],
 			pstack,
 			opts,
@@ -59,7 +67,7 @@ export function mcpSummary(result: ViewBlock, call: ViewBlock | undefined, opts:
 	}
 	return [
 		`tool_result:mcp ${genericIdentity(parsed)}`,
-		`Full result preserved. Use ${RECALL_HINT} if you need this exact prior result.`,
+		`Full result preserved. Use recall({"codes":["${foldCode(result.id)}"]}) if you need this exact prior result.`,
 	].join("\n");
 }
 
@@ -86,6 +94,8 @@ type McpCall = Record<string, unknown>;
 
 type SummaryOptions = {
 	potetoBeacon?: boolean;
+	/** Exact result block id; fold code is embedded rather than the `<code>` placeholder. */
+	resultId?: string;
 };
 
 export type PstackIdentity = {
@@ -126,16 +136,240 @@ export function recallCodes(callText: string | undefined): string[] | undefined 
 }
 
 export function pstackRecallSummary(identity: PstackIdentity, opts: SummaryOptions = {}): string {
+	const code = opts.resultId ? foldCode(opts.resultId) : "<code>";
 	return appendPotetoBeacon(
 		[
 			"tool_result:recall",
 			`Contains: skill-pstack(name="${identity.name}")`,
 			`Label: ${identity.label}`,
-			`Full result preserved. Use ${RECALL_HINT}, not unfold, to re-read this exact pstack leaf.`,
+			`Full result preserved. Use recall({"codes":["${code}"]}) , not unfold, to re-read this exact pstack leaf.`,
 		],
 		identity,
 		opts,
 	).join("\n");
+}
+
+/**
+ * Returns a recoverable summary for a non-MCP, non-recall tool result, or `undefined`
+ * when the tool is not a recognised target (caller falls back to plain fold).
+ * Currently handles: `read`, `grep`, `find`, `ls`.
+ */
+export function toolResultSummary(result: ViewBlock, call: ViewBlock | undefined): string | undefined {
+	const tool = (result.toolName ?? "").trim().toLowerCase();
+	if (tool === "read") return readSummary(result, call);
+	if (tool === "subagent") return subagentSummary(result, call);
+	if (tool === "grep") return grepSummary(result, call);
+	if (tool === "find") return findSummary(result, call);
+	if (tool === "ls") return lsSummary(result, call);
+	return undefined;
+}
+
+function subagentSummary(result: ViewBlock, call: ViewBlock | undefined): string {
+	const args = parseOuterCall(call?.text);
+	const type = str(args.type) ?? "explore";
+	const rawCwd = str(args.cwd);
+	const cwd = rawCwd ? compactPath(rawCwd) : undefined;
+	const rawTask = str(args.task);
+	const customAgent = str(args.customAgent);
+	const task = rawTask ? clip(rawTask, TASK_CAP) : "(unknown task)";
+	const code = foldCode(result.id);
+
+	const typePart = type === "custom" && customAgent
+		? `type="custom" customAgent="${customAgent}"`
+		: `type="${type}"`;
+	const cwdPart = cwd ? ` cwd="${cwd}"` : "";
+
+	const lines: string[] = [`tool_result:subagent ${typePart}${cwdPart}`];
+	lines.push(`Task: ${task}`);
+	const findings = extractSubagentFindings(result.text ?? "");
+	if (findings.length > 0) lines.push(`Findings: ${findings.join(" \u00b7 ")}`);
+	lines.push(`Full result preserved. Use recall({"codes":["${code}"]}) before rerunning this investigation.`);
+
+	return lines.join("\n");
+}
+
+function extractSubagentFindings(text: string): string[] {
+	const allLines = text.split("\n");
+
+	// Pass 1: prefer markdown bullet / numbered lines.
+	const bullets: string[] = [];
+	for (const line of allLines) {
+		const t = line.trim();
+		if (!t || t.startsWith("#") || SEPARATOR_RE.test(t)) continue;
+		const m = t.match(BULLET_RE);
+		if (m) {
+			bullets.push(clip(m[1].trim(), FINDING_CAP));
+			if (bullets.length >= FINDINGS_MAX) break;
+		}
+	}
+	if (bullets.length > 0) return bullets;
+
+	// Pass 2: fallback to first useful prose lines.
+	const prose: string[] = [];
+	for (const line of allLines) {
+		const t = line.trim();
+		if (!t || t.startsWith("#") || SEPARATOR_RE.test(t)) continue;
+		prose.push(clip(t, FINDING_CAP));
+		if (prose.length >= FINDINGS_MAX) break;
+	}
+	return prose;
+}
+
+function readSummary(result: ViewBlock, call: ViewBlock | undefined): string {
+	const args = parseOuterCall(call?.text);
+	const rawPath = str(args.path);
+	const path = rawPath ? compactPath(rawPath) : "(unknown path)";
+	const text = result.text ?? "";
+	const lineCount = text.split("\n").length;
+	const tokenEst = Math.ceil(text.length / 4);
+	const signals = readSignals(text);
+	const code = foldCode(result.id);
+	const lines: string[] = [`tool_result:read path="${path}"`];
+	if (signals.length > 0) lines.push(`Contains: ${signals.join(" · ")}`);
+	lines.push(`Shape: ${lineCount} lines · ~${tokenEst} tok`);
+	lines.push(`Full result preserved. Use recall({"codes":["${code}"]}) for this prior read snapshot; re-read if the file may have changed.`);
+	return lines.join("\n");
+}
+
+/** Compact a path: normalise slashes, abbreviate home prefix as `~`,
+ *  middle-ellipsise if longer than COMPACT_PATH_MAX. */
+export function compactPath(raw: string): string {
+	let p = raw.replace(/\\/g, "/");
+	p = p.replace(/^[A-Za-z]:\/[Uu]sers\/[^\/]+(?=\/)/, "~");
+	p = p.replace(/^\/home\/[^\/]+(?=\/)/, "~");
+	if (p.length <= COMPACT_PATH_MAX) return p;
+	const parts = p.split("/");
+	if (parts.length <= 3) return p;
+	const last = parts[parts.length - 1];
+	let prefix = parts[0];
+	let best = `${prefix}/...${last ? "/" + last : ""}`;
+	for (let i = 1; i < parts.length - 1; i++) {
+		const candidate = `${prefix}/${parts[i]}/...${last ? "/" + last : ""}`;
+		if (candidate.length <= COMPACT_PATH_MAX) { prefix = `${prefix}/${parts[i]}`; best = candidate; }
+		else break;
+	}
+	return best;
+}
+
+function grepSummary(result: ViewBlock, call: ViewBlock | undefined): string {
+	const args = parseOuterCall(call?.text);
+	const pattern = str(args.pattern);
+	const rawPath = str(args.path);
+	const path = rawPath ? compactPath(rawPath) : undefined;
+
+	const text = result.text ?? "";
+	const lineCount = text.split("\n").length;
+	const tokenEst = Math.ceil(text.length / 4);
+	const code = foldCode(result.id);
+
+	const identParts: string[] = [];
+	if (pattern) identParts.push(`pattern="${clip(pattern, READ_SIGNAL_LEN)}"`);
+	if (path) identParts.push(`path="${path}"`);
+	const identity = identParts.length > 0 ? identParts.join(" ") : "(no pattern)";
+
+	const output: string[] = [`tool_result:grep ${identity}`];
+	const signals = grepSignals(text);
+	if (signals.length > 0) output.push(`Contains: ${signals.join(" \u00b7 ")}`);
+	output.push(`Shape: ${lineCount} lines \u00b7 ~${tokenEst} tok`);
+	output.push(`Full result preserved. Use recall({"codes":["${code}"]}) before repeating this search.`);
+	return output.join("\n");
+}
+
+function findSummary(result: ViewBlock, call: ViewBlock | undefined): string {
+	const args = parseOuterCall(call?.text);
+	const rawPath = str(args.path);
+	const pattern = str(args.pattern);
+	const path = rawPath ? compactPath(rawPath) : undefined;
+
+	const text = result.text ?? "";
+	const allLines = text.split("\n");
+	const items = allLines.filter((l) => l.trim().length > 0).length;
+	const tokenEst = Math.ceil(text.length / 4);
+	const code = foldCode(result.id);
+
+	const identParts: string[] = [];
+	if (path) identParts.push(`path="${path}"`);
+	if (pattern) identParts.push(`pattern="${clip(pattern, READ_SIGNAL_LEN)}"`);
+	const identity = identParts.length > 0 ? identParts.join(" ") : "(no path)";
+
+	const output: string[] = [`tool_result:find ${identity}`];
+	const signals = listingSignals(allLines);
+	if (signals.length > 0) output.push(`Contains: ${signals.join(" \u00b7 ")}`);
+	output.push(`Shape: ${items} items \u00b7 ~${tokenEst} tok`);
+	output.push(`Full result preserved. Use recall({"codes":["${code}"]}) before repeating this file discovery.`);
+	return output.join("\n");
+}
+
+function lsSummary(result: ViewBlock, call: ViewBlock | undefined): string {
+	const args = parseOuterCall(call?.text);
+	const rawPath = str(args.path);
+	const path = rawPath ? compactPath(rawPath) : undefined;
+
+	const text = result.text ?? "";
+	const allLines = text.split("\n");
+	const items = allLines.filter((l) => l.trim().length > 0).length;
+	const tokenEst = Math.ceil(text.length / 4);
+	const code = foldCode(result.id);
+
+	const identity = path ? `path="${path}"` : "(no path)";
+
+	const output: string[] = [`tool_result:ls ${identity}`];
+	const signals = listingSignals(allLines);
+	if (signals.length > 0) output.push(`Contains: ${signals.join(" \u00b7 ")}`);
+	output.push(`Shape: ${items} items \u00b7 ~${tokenEst} tok`);
+	output.push(`Full result preserved. Use recall({"codes":["${code}"]}) before repeating this listing.`);
+	return output.join("\n");
+}
+
+/** Extract capped signals from grep output: unique file paths from "file:line:content" lines,
+ *  or plain content lines when no such pattern is present. */
+function grepSignals(text: string): string[] {
+	const signals: string[] = [];
+	const filesSeen = new Set<string>();
+	for (const line of text.split("\n")) {
+		if (signals.length >= READ_SIGNAL_MAX) break;
+		const t = line.trim();
+		if (!t) continue;
+		const fileMatch = t.match(/^([^:\s]+):\d+:/);
+		if (fileMatch) {
+			const file = fileMatch[1];
+			if (!filesSeen.has(file)) {
+				filesSeen.add(file);
+				signals.push(clip(file, READ_SIGNAL_LEN));
+			}
+			continue;
+		}
+		signals.push(clip(t, READ_SIGNAL_LEN));
+	}
+	return signals;
+}
+
+/** Extract capped signals from listing output (find / ls): first non-empty lines. */
+function listingSignals(lines: string[]): string[] {
+	const signals: string[] = [];
+	for (const line of lines) {
+		if (signals.length >= READ_SIGNAL_MAX) break;
+		const t = line.trim();
+		if (!t) continue;
+		signals.push(clip(t, READ_SIGNAL_LEN));
+	}
+	return signals;
+}
+
+function readSignals(text: string): string[] {
+	const signals: string[] = [];
+	for (const line of text.split("\n")) {
+		if (signals.length >= READ_SIGNAL_MAX) break;
+		const t = line.trim();
+		if (!t) continue;
+		const heading = t.match(/^#{1,3}\s+(.+)/);
+		if (heading) { signals.push(clip(heading[1], READ_SIGNAL_LEN)); continue; }
+		const exp = t.match(/^export\s+(?:(?:default|abstract)\s+)?(?:class|function|const|type|interface|enum)\s+\w/);
+		if (exp) { signals.push(clip(t.replace(/[({].*$/, "").trim(), READ_SIGNAL_LEN)); continue; }
+		const decl = t.match(/^(?:(?:abstract\s+)?class|(?:async\s+)?function)\s+\w/);
+		if (decl) { signals.push(clip(t.replace(/[({].*$/, "").trim(), READ_SIGNAL_LEN)); continue; }
+	}
+	return signals;
 }
 
 export function genericRecallSummary(codes: string[] | undefined): string {

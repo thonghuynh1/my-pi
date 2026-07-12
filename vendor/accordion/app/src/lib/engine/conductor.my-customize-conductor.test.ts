@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { IN_PROCESS_CONDUCTORS, MyCustomizeConductor } from "$conductors";
 import type { Command, ConductorView, ViewBlock } from "$conductors/contract";
 import { foldTag } from "./digest";
-import { estSummaryTokens, mcpSummary, normalizePstackName, pstackLabel } from "$conductors/my-customize-conductor/mcp-summary";
+import { compactPath, estSummaryTokens, foldCode, mcpSummary, normalizePstackName, pstackLabel } from "$conductors/my-customize-conductor/mcp-summary";
+import { estimateDefaultGroupDigestCost } from "$conductors/my-customize-conductor/my-customize-conductor";
 
 const POTETO_BEACON_LINES = [
 	"Poteto mode active.",
@@ -36,13 +37,13 @@ function vb(
 	};
 }
 
-function makeView(blocks: ViewBlock[], budget: number, liveTokens: number, opts: { frozenFromIndex?: number } = {}): ConductorView {
+function makeView(blocks: ViewBlock[], budget: number, liveTokens: number, opts: { frozenFromIndex?: number; contextWindow?: number | null } = {}): ConductorView {
 	const protectedFromIndex = blocks.findIndex((b) => b.protected);
 	return {
 		blocks,
 		budget,
 		liveTokens,
-		contextWindow: null,
+		contextWindow: opts.contextWindow ?? null,
 		protectedFromIndex: protectedFromIndex < 0 ? blocks.length : protectedFromIndex,
 		protectTokens: 0,
 		frozenFromIndex: opts.frozenFromIndex ?? 0,
@@ -55,22 +56,43 @@ function foldIdsOf(result: Command[] | null | undefined): Set<string> {
 	return ids;
 }
 
+function groupedIdsOf(result: Command[] | null | undefined): Set<string> {
+	const ids = new Set<string>();
+	for (const c of result ?? []) if (c.kind === "group") for (const id of c.ids) ids.add(id);
+	return ids;
+}
+
 function replaceOf(result: Command[] | null | undefined, id: string): Extract<Command, { kind: "replace" }> | undefined {
 	for (const c of result ?? []) if (c.kind === "replace" && c.id === id) return c;
 	return undefined;
 }
 
-/** Live tokens after applying the conductor's fold + replace commands. */
+/** Live tokens after applying the conductor's fold, replace, and group commands. */
 function projected(view: ConductorView, result: Command[] | null): number {
 	const folded = foldIdsOf(result);
+	const groups = (result ?? []).filter((c): c is Extract<Command, { kind: "group" }> => c.kind === "group");
+	const grouped = new Set(groups.flatMap((group) => group.ids));
 	let live = view.liveTokens;
 	for (const b of view.blocks) {
+		if (grouped.has(b.id)) continue;
 		if (folded.has(b.id)) {
 			live += b.foldedTokens - b.tokens;
 			continue;
 		}
 		const rep = replaceOf(result, b.id);
 		if (rep) live -= b.tokens - estSummaryTokens(rep.content);
+	}
+	for (const group of groups) {
+		const members = group.ids.map((id) => view.blocks.find((b) => b.id === id)).filter((b): b is ViewBlock => b !== undefined);
+		const residue = members.reduce((total, b) => {
+			const replacement = replaceOf(result, b.id);
+			if (replacement) return total + estSummaryTokens(replacement.content);
+			const foldable = b.kind === "text" || b.kind === "thinking" || b.kind === "tool_result";
+			return total + (folded.has(b.id) || (foldable && b.foldedTokens < b.tokens) ? b.foldedTokens : b.tokens);
+		}, 0);
+		const original = members.reduce((total, b) => total + b.tokens, 0);
+		live += residue - original;
+		live += estimateDefaultGroupDigestCost(members) - residue;
 	}
 	return live;
 }
@@ -182,20 +204,35 @@ describe("MyCustomizeConductor", () => {
 		expect(second).toBe(first);
 	});
 
-	it("breaks frozen prefix under pressure rather than returning empty", () => {
+	it("does not rewrite a frozen prefix when only the soft budget is exceeded", () => {
 		const blocks = [
 			vb("u:0", "user", 0, 200, 200, { text: "task" }),
 			vb("r:1", "tool_result", 1, 1_500, 40, { toolName: "bash", text: "output 1" }),
 			vb("r:2", "tool_result", 2, 1_500, 40, { toolName: "bash", text: "output 2" }),
 		];
-		const view = makeView(blocks, 500, 3_200, { frozenFromIndex: 3 });
+		const view = makeView(blocks, 500, 3_200, { frozenFromIndex: 3, contextWindow: 200_000 });
 		const result = new MyCustomizeConductor().conduct(view);
-		expect(result.length).toBeGreaterThan(0);
-		const foldCmd = result.find((c) => c.kind === "fold");
-		expect(foldCmd).toBeDefined();
-		expect((foldCmd as any).breakFrozen).toBe(true);
-		expect((foldCmd as any).ids).toContain("r:1");
-		expect((foldCmd as any).ids).toContain("r:2");
+		expect(result).toEqual([]);
+	});
+
+	it("rewrites a frozen prefix only when the real context window overflows", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("r:1", "tool_result", 1, 1_500, 40, { toolName: "bash", text: "output 1" }),
+			vb("r:2", "tool_result", 2, 1_500, 40, { toolName: "bash", text: "output 2" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 10_000, 3_200, { frozenFromIndex: 3, contextWindow: 2_000 }));
+		expect(result.some((command) => (command.kind === "fold" || command.kind === "replace") && command.breakFrozen)).toBe(true);
+	});
+
+	it("does not rewrite a frozen prefix when the context window is unknown", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("r:1", "tool_result", 1, 1_500, 40, { toolName: "bash", text: "output 1" }),
+			vb("r:2", "tool_result", 2, 1_500, 40, { toolName: "bash", text: "output 2" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 500, 3_200, { frozenFromIndex: 3 }));
+		expect(result).toEqual([]);
 	});
 
 	it("is registered as a collaborative in-process conductor", () => {
@@ -558,7 +595,7 @@ describe("MyCustomizeConductor", () => {
 			vb("r:bash:3", "tool_result", 5, 1_500, 40, { toolName: "bash", text: "newest noisy output" }),
 		];
 		const result = new MyCustomizeConductor().conduct(makeView(blocks, 1_600, 6_170));
-		expect(result.some((c) => c.kind === "group")).toBe(false);
+		expect(result.some((c) => c.kind === "group" && c.ids.includes("r:poteto"))).toBe(false);
 	});
 
 	it("does not drop pstack identity blocks while Poteto mode is active", () => {
@@ -609,5 +646,574 @@ describe("MyCustomizeConductor", () => {
 		expect(result.some((c) => c.kind === "replace" && c.id === "r:poteto")).toBe(false);
 		expect(result.some((c) => c.kind === "fold" && c.ids.includes("r:poteto"))).toBe(false);
 		expect(result.some((c) => c.kind === "group" && c.ids.includes("r:poteto"))).toBe(false);
+	});
+
+
+	it("pstack MCP summary includes exact recall code and not-unfold wording", () => {
+		const resultId = "r:pstack";
+		const expectedCode = foldCode(resultId);
+		const summary = mcpSummary(
+			vb(resultId, "tool_result", 1, 1500, 40, { toolName: "mcp", callId: "c1", text: "result" }),
+			vb("c1", "tool_call", 0, 50, 50, {
+				toolName: "mcp",
+				callId: "c1",
+				text: `mcp ${JSON.stringify({ server: "engineering-skills", tool: "skill-pstack", args: JSON.stringify({ name: "principle-prove-it-works" }) })}`,
+			}),
+		);
+		expect(summary).toContain(`recall({"codes":["${expectedCode}"]})`);
+		expect(summary).toContain("not unfold");
+	});
+
+	it("generic MCP summary includes exact recall code and no not-unfold wording", () => {
+		const resultId = "r:generic";
+		const expectedCode = foldCode(resultId);
+		const summary = mcpSummary(
+			vb(resultId, "tool_result", 1, 1500, 40, { toolName: "mcp", callId: "c2", text: "result" }),
+			vb("c2", "tool_call", 0, 50, 50, {
+				toolName: "mcp",
+				callId: "c2",
+				text: `mcp ${JSON.stringify({ tool: "some_lookup", args: { project: "my-pi" } })}`,
+			}),
+		);
+		expect(summary).toContain(`recall({"codes":["${expectedCode}"]})`);
+		expect(summary).not.toContain("not unfold");
+	});
+
+	it("read tool result is folded via a recoverable replace", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:read", "tool_call", 1, 30, 30, { toolName: "read", callId: "c:read", text: `read ${JSON.stringify({ path: "/some/path/file.ts" })}` }),
+			vb("r:read", "tool_result", 2, 1500, 40, { toolName: "read", callId: "c:read", text: "line one\nline two\nline three" }),
+		];
+		const view = makeView(blocks, 400, 1_730);
+		const result = new MyCustomizeConductor().conduct(view);
+		const rep = replaceOf(result, "r:read");
+		expect(rep, "read result is replaced, not plain-folded").toBeDefined();
+		expect(rep!.recoverable, "replace is recoverable").toBe(true);
+		expect(foldIdsOf(result).has("r:read"), "read result is not in plain fold list").toBe(false);
+		expect(projected(view, result)).toBeLessThanOrEqual(view.budget);
+	});
+
+	it("read summary includes compacted path, signals, Shape, exact recall code, and snapshot wording", () => {
+		const resultId = "r:read2";
+		const expectedCode = foldCode(resultId);
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:read", "tool_call", 1, 30, 30, {
+				toolName: "read", callId: "c:read",
+				text: `read ${JSON.stringify({ path: "/home/user/project/src/service.ts" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, {
+				toolName: "read", callId: "c:read",
+				text: "# Service\nexport class ServiceManager {\n  setup() {}\n}\nexport function start() {}",
+			}),
+		];
+		const view = makeView(blocks, 400, 1_730);
+		const rep = replaceOf(new MyCustomizeConductor().conduct(view), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toMatch(/tool_result:read path="[^"]+"/);
+		expect(rep!.content).toContain("Shape:");
+		expect(rep!.content).toContain(`recall({"codes":["${expectedCode}"]})`);
+		expect(rep!.content).toContain("prior read snapshot");
+		expect(rep!.content).toContain("re-read if the file may have changed");
+	});
+
+	it("subagent result is folded via a recoverable replace", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:sub", "tool_call", 1, 50, 50, {
+				toolName: "subagent",
+				callId: "c:sub",
+				text: `subagent ${JSON.stringify({ type: "explore", task: "Find all TypeScript entry points", cwd: "/home/user/project" })}`,
+			}),
+			vb("r:sub", "tool_result", 2, 1500, 40, {
+				toolName: "subagent",
+				callId: "c:sub",
+				text: "- Found src/index.ts\n- Found src/lib/core.ts\n- Both use strict mode",
+			}),
+		];
+		const view = makeView(blocks, 400, 1_750);
+		const result = new MyCustomizeConductor().conduct(view);
+		const rep = replaceOf(result, "r:sub");
+		expect(rep, "subagent result is replaced, not plain-folded").toBeDefined();
+		expect(rep!.recoverable, "replace is recoverable").toBe(true);
+		expect(foldIdsOf(result).has("r:sub"), "subagent result is not in plain fold list").toBe(false);
+		expect(projected(view, result)).toBeLessThanOrEqual(view.budget);
+	});
+
+	it("subagent summary includes type, capped task, compacted cwd, and exact recall code", () => {
+		const resultId = "r:sub:meta";
+		const expectedCode = foldCode(resultId);
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:sub:meta", "tool_call", 1, 50, 50, {
+				toolName: "subagent",
+				callId: "c:sub:meta",
+				text: `subagent ${JSON.stringify({ type: "shell", task: "Run tests and capture failures", cwd: "C:\\Users\\Admin\\project" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, {
+				toolName: "subagent",
+				callId: "c:sub:meta",
+				text: "All tests pass.",
+			}),
+		];
+		const rep = replaceOf(new MyCustomizeConductor().conduct(makeView(blocks, 400, 1_750)), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain('type="shell"');
+		expect(rep!.content).toContain("Task: Run tests and capture failures");
+		expect(rep!.content).toContain('cwd="~/project"');
+		expect(rep!.content).toContain(`recall({"codes":["${expectedCode}"]})`);
+		expect(rep!.content).not.toContain("unfold");
+	});
+
+	it("subagent summary: bullet-preferred findings skip headings and separators", () => {
+		const resultId = "r:sub:bullets";
+		const text = [
+			"## Investigation Results",
+			"---",
+			"Here is what was found:",
+			"- Entry point is src/index.ts",
+			"- Core logic lives in src/lib/core.ts",
+			"- Tests are under src/__tests__",
+			"- Additional file src/utils.ts",
+		].join("\n");
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:sub:bullets", "tool_call", 1, 50, 50, {
+				toolName: "subagent",
+				callId: "c:sub:bullets",
+				text: `subagent ${JSON.stringify({ type: "explore", task: "Map repo structure" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, { toolName: "subagent", callId: "c:sub:bullets", text }),
+		];
+		const rep = replaceOf(new MyCustomizeConductor().conduct(makeView(blocks, 400, 1_750)), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain("Findings:");
+		// Bullet content (not headings or separators) appears in findings.
+		expect(rep!.content).toContain("Entry point is src/index.ts");
+		expect(rep!.content).not.toContain("Investigation Results");
+		// Findings capped at 3; the 4th bullet does not appear.
+		expect(rep!.content).not.toContain("Additional file src/utils.ts");
+		// Preamble prose line does not appear when bullets exist.
+		expect(rep!.content).not.toContain("Here is what was found");
+	});
+
+	it("subagent summary: prose-only output falls back to first useful prose lines", () => {
+		const resultId = "r:sub:prose";
+		const text = [
+			"## Overview",
+			"---",
+			"The repo uses a monorepo layout with three packages.",
+			"Each package has its own tsconfig and vitest config.",
+			"The root package.json orchestrates builds via turborepo.",
+			"A fourth package was added recently for shared types.",
+		].join("\n");
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:sub:prose", "tool_call", 1, 50, 50, {
+				toolName: "subagent",
+				callId: "c:sub:prose",
+				text: `subagent ${JSON.stringify({ type: "explore", task: "Describe repo layout" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, { toolName: "subagent", callId: "c:sub:prose", text }),
+		];
+		const rep = replaceOf(new MyCustomizeConductor().conduct(makeView(blocks, 400, 1_750)), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain("Findings:");
+		// First prose line (after heading/separator skip) is included.
+		expect(rep!.content).toContain("The repo uses a monorepo layout");
+		// Heading is not included.
+		expect(rep!.content).not.toContain("Overview");
+		// Findings capped at 3; the 4th prose line does not appear.
+		expect(rep!.content).not.toContain("A fourth package");
+	});
+
+	it("subagent custom type includes customAgent identity", () => {
+		const resultId = "r:sub:custom";
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:sub:custom", "tool_call", 1, 50, 50, {
+				toolName: "subagent",
+				callId: "c:sub:custom",
+				text: `subagent ${JSON.stringify({ type: "custom", customAgent: "my-agent", task: "Run specialized analysis" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, { toolName: "subagent", callId: "c:sub:custom", text: "Analysis complete." }),
+		];
+		const rep = replaceOf(new MyCustomizeConductor().conduct(makeView(blocks, 400, 1_750)), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain('type="custom"');
+		expect(rep!.content).toContain('customAgent="my-agent"');
+	});
+
+	it("subagent without cwd omits cwd from summary", () => {
+		const resultId = "r:sub:nocwd";
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:sub:nocwd", "tool_call", 1, 50, 50, {
+				toolName: "subagent",
+				callId: "c:sub:nocwd",
+				text: `subagent ${JSON.stringify({ type: "explore", task: "Check types" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, { toolName: "subagent", callId: "c:sub:nocwd", text: "Types are clean." }),
+		];
+		const rep = replaceOf(new MyCustomizeConductor().conduct(makeView(blocks, 400, 1_750)), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain('type="explore"');
+		expect(rep!.content).not.toContain('cwd=');
+	});
+
+	it("grep result is folded via a recoverable replace", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:grep", "tool_call", 1, 30, 30, { toolName: "grep", callId: "c:grep", text: `grep ${JSON.stringify({ pattern: "foldCode", path: "./src" })}` }),
+			vb("r:grep", "tool_result", 2, 1500, 40, { toolName: "grep", callId: "c:grep", text: "src/lib/engine.ts:10:foldCode('x')\nsrc/lib/store.ts:42:foldCode('y')" }),
+		];
+		const view = makeView(blocks, 400, 1_730);
+		const result = new MyCustomizeConductor().conduct(view);
+		const rep = replaceOf(result, "r:grep");
+		expect(rep, "grep result is replaced, not plain-folded").toBeDefined();
+		expect(rep!.recoverable, "replace is recoverable").toBe(true);
+		expect(foldIdsOf(result).has("r:grep"), "grep result is not in plain fold list").toBe(false);
+		expect(projected(view, result)).toBeLessThanOrEqual(view.budget);
+	});
+
+	it("grep summary includes pattern identity, path, signals, Shape, exact recall code, and search wording", () => {
+		const resultId = "r:grep2";
+		const expectedCode = foldCode(resultId);
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:grep", "tool_call", 1, 30, 30, {
+				toolName: "grep", callId: "c:grep",
+				text: `grep ${JSON.stringify({ pattern: "MyClass", path: "/home/user/project/src" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, {
+				toolName: "grep", callId: "c:grep",
+				text: "src/service.ts:5:class MyClass {\nsrc/service.ts:15:  new MyClass()\nsrc/util.ts:3:export { MyClass }",
+			}),
+		];
+		const view = makeView(blocks, 400, 1_730);
+		const rep = replaceOf(new MyCustomizeConductor().conduct(view), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain('tool_result:grep pattern="MyClass"');
+		expect(rep!.content).toContain('path="~/project/src"');
+		expect(rep!.content).toContain("Contains:");
+		expect(rep!.content).toContain("Shape:");
+		expect(rep!.content).toContain(`recall({"codes":["${expectedCode}"]})`);
+		expect(rep!.content).toContain("before repeating this search");
+		expect(rep!.content).not.toContain("unfold");
+	});
+
+	it("find result is folded via a recoverable replace", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:find", "tool_call", 1, 30, 30, { toolName: "find", callId: "c:find", text: `find ${JSON.stringify({ path: "./src", pattern: "*.ts" })}` }),
+			vb("r:find", "tool_result", 2, 1500, 40, { toolName: "find", callId: "c:find", text: "src/a.ts\nsrc/b.ts\nsrc/c.ts" }),
+		];
+		const view = makeView(blocks, 400, 1_730);
+		const result = new MyCustomizeConductor().conduct(view);
+		const rep = replaceOf(result, "r:find");
+		expect(rep, "find result is replaced, not plain-folded").toBeDefined();
+		expect(rep!.recoverable, "replace is recoverable").toBe(true);
+		expect(foldIdsOf(result).has("r:find"), "find result is not in plain fold list").toBe(false);
+		expect(projected(view, result)).toBeLessThanOrEqual(view.budget);
+	});
+
+	it("find summary includes path, glob pattern, signals, Shape, exact recall code, and file discovery wording", () => {
+		const resultId = "r:find2";
+		const expectedCode = foldCode(resultId);
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:find", "tool_call", 1, 30, 30, {
+				toolName: "find", callId: "c:find",
+				text: `find ${JSON.stringify({ path: "/home/user/project", pattern: "*.ts" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, {
+				toolName: "find", callId: "c:find",
+				text: "src/a.ts\nsrc/b.ts\nlib/c.ts\nlib/d.ts\ntest/e.ts",
+			}),
+		];
+		const view = makeView(blocks, 400, 1_730);
+		const rep = replaceOf(new MyCustomizeConductor().conduct(view), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toMatch(/tool_result:find path="[^"]+"/);
+		expect(rep!.content).toContain('path="~/project"');
+		expect(rep!.content).toContain('pattern="*.ts"');
+		expect(rep!.content).toContain("Contains:");
+		expect(rep!.content).toContain("Shape:");
+		expect(rep!.content).toContain(`recall({"codes":["${expectedCode}"]})`);
+		expect(rep!.content).toContain("before repeating this file discovery");
+		expect(rep!.content).not.toContain("unfold");
+	});
+
+	it("ls result is folded via a recoverable replace", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:ls", "tool_call", 1, 30, 30, { toolName: "ls", callId: "c:ls", text: `ls ${JSON.stringify({ path: "./src" })}` }),
+			vb("r:ls", "tool_result", 2, 1500, 40, { toolName: "ls", callId: "c:ls", text: "index.ts\nutils.ts\nmodels/\ntypes.ts" }),
+		];
+		const view = makeView(blocks, 400, 1_730);
+		const result = new MyCustomizeConductor().conduct(view);
+		const rep = replaceOf(result, "r:ls");
+		expect(rep, "ls result is replaced, not plain-folded").toBeDefined();
+		expect(rep!.recoverable, "replace is recoverable").toBe(true);
+		expect(foldIdsOf(result).has("r:ls"), "ls result is not in plain fold list").toBe(false);
+		expect(projected(view, result)).toBeLessThanOrEqual(view.budget);
+	});
+
+	it("ls summary includes path, signals, Shape, exact recall code, and listing wording", () => {
+		const resultId = "r:ls2";
+		const expectedCode = foldCode(resultId);
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("c:ls", "tool_call", 1, 30, 30, {
+				toolName: "ls", callId: "c:ls",
+				text: `ls ${JSON.stringify({ path: "/home/user/project/src" })}`,
+			}),
+			vb(resultId, "tool_result", 2, 1500, 40, {
+				toolName: "ls", callId: "c:ls",
+				text: "index.ts\nutils.ts\nmodels/\ntypes.ts\nhelpers/",
+			}),
+		];
+		const view = makeView(blocks, 400, 1_730);
+		const rep = replaceOf(new MyCustomizeConductor().conduct(view), resultId);
+		expect(rep).toBeDefined();
+		expect(rep!.content).toMatch(/tool_result:ls path="[^"]+"/);
+		expect(rep!.content).toContain("Contains:");
+		expect(rep!.content).toContain("Shape:");
+		expect(rep!.content).toContain(`recall({"codes":["${expectedCode}"]})`);
+		expect(rep!.content).toContain("before repeating this listing");
+		expect(rep!.content).not.toContain("unfold");
+	});
+
+	it("unknown (bash) tool result falls back to plain fold, not replace", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 200, 200, { text: "task" }),
+			vb("r:bash", "tool_result", 1, 1500, 40, { toolName: "bash", text: "some output" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 400, 1_700));
+		expect(foldIdsOf(result).has("r:bash"), "bash result is plain-folded").toBe(true);
+		expect(replaceOf(result, "r:bash"), "bash result has no replace").toBeUndefined();
+	});
+
+	it("does not group when folds already reach the cap", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("r:1", "text", 1, 1_000, 200, { text: "old one" }),
+			vb("r:2", "text", 2, 1_000, 200, { text: "old two" }),
+			vb("r:3", "text", 3, 1_000, 200, { text: "old three" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 700, 3_100));
+		expect(result.some((command) => command.kind === "group")).toBe(false);
+	});
+
+	it("groups a non-frozen run only after fold residue remains over cap", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("r:1", "text", 1, 1_000, 200, { text: "old one" }),
+			vb("r:2", "text", 2, 1_000, 200, { text: "old two" }),
+			vb("r:3", "text", 3, 1_000, 200, { text: "old three" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 500, 3_100));
+		const view = makeView(blocks, 500, 3_100);
+		const groups = result.filter((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
+		expect(groups.length).toBeGreaterThan(0);
+		const plannedResidue = groups[0].ids.reduce((total, id) => total + view.blocks.find((block) => block.id === id)!.foldedTokens, 0);
+		const estimatedSaving = plannedResidue - estimateDefaultGroupDigestCost(groups[0].ids.map((id) => view.blocks.find((block) => block.id === id)!));
+		const projectedAfterFolds = view.liveTokens - blocks.slice(1).reduce((total, block) => total + (block.tokens - block.foldedTokens), 0);
+		expect(projectedAfterFolds - projected(view, result)).toBe(estimatedSaving);
+		expect(projected(view, result)).toBe(projectedAfterFolds - estimatedSaving);
+		for (const group of groups) expect(group.digest).toBeUndefined();
+	});
+
+	it("uses rich replacement residue instead of original tokens when grouping", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("c:read", "tool_call", 1, 30, 30, { toolName: "read", callId: "c:read", text: 'read {"path":"/src/file.ts"}' }),
+			vb("r:read", "tool_result", 2, 2_000, 1, { toolName: "read", callId: "c:read", text: "compact source snapshot" }),
+			vb("r:text", "text", 3, 1_000, 1, { text: "old context" }),
+		];
+		const view = makeView(blocks, 100, 3_130);
+		const result = new MyCustomizeConductor().conduct(view);
+		const group = result.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
+		expect(group?.ids).toContain("r:read");
+		expect(replaceOf(result, "r:read"), "a grouped member has no replacement residue command").toBeUndefined();
+		const members = group!.ids.map((id) => view.blocks.find((block) => block.id === id)!);
+		const groupCost = estimateDefaultGroupDigestCost(members);
+		const originalResidue = members.reduce((total, block) => total + block.tokens, 0);
+		const foldedResidue = members.reduce((total, block) => total + block.foldedTokens, 0);
+		expect(foldedResidue).toBeLessThanOrEqual(groupCost);
+		expect(originalResidue).toBeGreaterThan(groupCost);
+		expect(projected(view, result)).toBe(view.liveTokens - originalResidue + groupCost);
+	});
+
+	it("does not group a run whose planned residue cannot beat the default digest", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("r:1", "text", 1, 10, 9, { text: "a" }),
+			vb("r:2", "text", 2, 10, 9, { text: "b" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 100, 120));
+		expect(result.some((command) => command.kind === "group")).toBe(false);
+	});
+
+	it("keeps user and MCP blocks out of group runs", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("r:1", "text", 1, 1_000, 200, { text: "old one" }),
+			vb("u:1", "user", 2, 100, 100, { text: "keep intent" }),
+			vb("r:mcp-call", "tool_call", 3, 50, 50, { toolName: "mcp", callId: "mcp-call", text: "mcp call" }),
+			vb("r:mcp", "tool_result", 4, 1_000, 200, { toolName: "mcp", callId: "mcp-call", text: "identity" }),
+			vb("r:2", "text", 5, 1_000, 200, { text: "old two" }),
+			vb("r:3", "text", 6, 1_000, 200, { text: "old three" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 300, 4_250));
+		for (const command of result) {
+			if (command.kind !== "group") continue;
+			expect(command.ids).not.toContain("u:1");
+			expect(command.ids).not.toContain("r:mcp-call");
+			expect(command.ids).not.toContain("r:mcp");
+		}
+		expect(groupedIdsOf(result).has("r:2")).toBe(true);
+		expect(groupedIdsOf(result).has("r:3")).toBe(true);
+	});
+
+	it("keeps recall, pstack provenance, held, protected, and grouped blocks out of groups", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("r:before", "text", 1, 1_000, 200, { text: "before" }),
+			vb("r:recall", "tool_result", 2, 1_000, 200, { toolName: "recall", text: "recalled content" }),
+			vb("r:pstack", "text", 3, 1_000, 200, { text: `${foldTag("r:pstack")} tool_result:mcp skill-pstack(name="architect")` }),
+			vb("r:held", "text", 4, 1_000, 200, { held: true, text: "held" }),
+			vb("r:protected", "text", 5, 1_000, 200, { protected: true, text: "protected" }),
+			vb("r:grouped", "text", 6, 1_000, 200, { grouped: true, text: "already grouped" }),
+			vb("r:after", "text", 7, 1_000, 200, { text: "after" }),
+			vb("r:after2", "text", 8, 1_000, 200, { text: "after two" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 300, 7_100));
+		const grouped = groupedIdsOf(result);
+		for (const id of ["r:recall", "r:pstack", "r:held", "r:protected", "r:grouped"]) expect(grouped.has(id)).toBe(false);
+		expect(grouped.has("r:after")).toBe(true);
+		expect(grouped.has("r:after2")).toBe(true);
+	});
+
+	it("allows non-MCP tool calls and results in a safe group run", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("c:bash", "tool_call", 1, 50, 50, { toolName: "bash", callId: "c:bash", text: "bash command" }),
+			vb("r:bash", "tool_result", 2, 1_500, 40, { toolName: "bash", callId: "c:bash", text: "large output" }),
+			vb("r:text", "text", 3, 1_500, 200, { text: "more context" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 300, 3_150));
+		const group = result.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
+		expect(group).toBeDefined();
+		expect(group!.ids).toEqual(expect.arrayContaining(["c:bash", "r:bash", "r:text"]));
+	});
+
+	it("does not give a block both a group and another structural disposition", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("c:read", "tool_call", 1, 30, 30, { toolName: "read", callId: "c:read", text: 'read {"path":"/src/file.ts"}' }),
+			vb("r:read", "tool_result", 2, 2_000, 40, { toolName: "read", callId: "c:read", text: "source" }),
+			vb("r:text", "text", 3, 1_000, 200, { text: "context" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 300, 3_130));
+		const groupIds = groupedIdsOf(result);
+		for (const command of result) {
+			if (command.kind === "fold") for (const id of command.ids) expect(groupIds.has(id)).toBe(false);
+			if (command.kind === "replace") expect(groupIds.has(command.id)).toBe(false);
+		}
+		for (const command of result) {
+			if (command.kind === "group") expect(command.digest).toBeUndefined();
+		}
+	});
+
+	it("does not group frozen blocks when non-frozen planning reaches the cap", () => {
+		const blocks = [
+			vb("f:1", "text", 0, 1_000, 200, { text: "cached one" }),
+			vb("f:2", "text", 1, 1_000, 200, { text: "cached two" }),
+			vb("n:1", "text", 2, 1_000, 200, { text: "new one" }),
+			vb("n:2", "text", 3, 1_000, 200, { text: "new two" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 400, 2_000, { frozenFromIndex: 2 }));
+		expect(result.some((command) => command.kind === "group")).toBe(false);
+	});
+
+	it("does not emit frozen groups below the significant-savings threshold", () => {
+		const blocks = [
+			vb("f:1", "text", 0, 1_000, 200, { text: "cached one" }),
+			vb("f:2", "text", 1, 1_000, 200, { text: "cached two" }),
+			vb("tail", "user", 2, 5_000, 5_000, { protected: true, text: "working tail" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 5_000, 7_000, { frozenFromIndex: 2 }));
+		expect(result.some((command) => command.kind === "group")).toBe(false);
+	});
+
+	it("batches significant frozen savings into a recoverable group epoch at the real context limit", () => {
+		const frozen = Array.from({ length: 30 }, (_, i) => vb(`f:${i}`, "text", i, 3_000, 100, { text: `cached ${i}` }));
+		const tail = vb("tail", "user", 30, 5_000, 5_000, { protected: true, text: "working tail" });
+		const view = makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length, contextWindow: 5_000 });
+		const conductor = new MyCustomizeConductor();
+		const first = conductor.conduct(view);
+		const group = first.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
+		expect(group?.ids).toEqual(frozen.map((block) => block.id));
+		expect(group?.digest).toBeUndefined();
+	});
+
+	it("does not emit a second frozen grouping epoch for an identical view", () => {
+		const frozen = Array.from({ length: 30 }, (_, i) => vb(`f:${i}`, "text", i, 3_000, 100, { text: `cached ${i}` }));
+		const tail = vb("tail", "user", 30, 5_000, 5_000, { protected: true, text: "working tail" });
+		const view = makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length, contextWindow: 5_000 });
+		const conductor = new MyCustomizeConductor();
+		const first = conductor.conduct(view);
+		const second = conductor.conduct(view);
+		expect(second).toBe(first);
+		expect(second.filter((command) => command.kind === "group")).toEqual(first.filter((command) => command.kind === "group"));
+	});
+
+	it("resets the frozen grouping epoch after a semantic-key change", () => {
+		const frozen = Array.from({ length: 30 }, (_, i) => vb(`f:${i}`, "text", i, 3_000, 100, { text: `cached ${i}` }));
+		const firstUser = vb("u:1", "user", 30, 100, 100, { text: "load poteto" });
+		const call = pstackCall("c:poteto", 31, "poteto-mode");
+		const result = pstackResult("r:poteto", 32, "c:poteto", "full pstack leaf");
+		const tail = vb("tail", "user", 33, 5_000, 5_000, { protected: true, text: "working tail" });
+		const conductor = new MyCustomizeConductor();
+		const first = conductor.conduct(makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length, contextWindow: 5_000 }));
+		const changed = conductor.conduct(makeView([...frozen, firstUser, call, result, tail], 5_000, 95_000 + 1_720, { frozenFromIndex: frozen.length + 3, contextWindow: 5_000 }));
+		expect(first.some((command) => command.kind === "group")).toBe(true);
+		expect(changed.some((command) => command.kind === "group")).toBe(true);
+	});
+
+	it("allows a later frozen grouping epoch after projected tokens return under cap", () => {
+		const frozen = Array.from({ length: 30 }, (_, i) => vb(`f:${i}`, "text", i, 3_000, 100, { text: `cached ${i}` }));
+		const tail = vb("tail", "user", 30, 5_000, 5_000, { protected: true, text: "working tail" });
+		const conductor = new MyCustomizeConductor();
+		const overCap = makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length, contextWindow: 5_000 });
+		const first = conductor.conduct(overCap);
+		const underCap = makeView([...frozen, tail], 5_000, 4_900, { frozenFromIndex: frozen.length });
+		expect(conductor.conduct(underCap)).toEqual([]);
+		const later = conductor.conduct(overCap);
+		expect(later.some((command) => command.kind === "group")).toBe(true);
+		expect(first.some((command) => command.kind === "group")).toBe(true);
+	});
+
+	it("keeps frozen grouped IDs out of fold and replace commands", () => {
+		const frozen = Array.from({ length: 30 }, (_, i) => vb(`f:${i}`, "text", i, 3_000, 100, { text: `cached ${i}` }));
+		const tail = vb("tail", "user", 30, 5_000, 5_000, { protected: true, text: "working tail" });
+		const result = new MyCustomizeConductor().conduct(makeView([...frozen, tail], 5_000, 95_000, { frozenFromIndex: frozen.length, contextWindow: 5_000 }));
+		const grouped = groupedIdsOf(result);
+		for (const command of result) {
+			if (command.kind === "fold") for (const id of command.ids) expect(grouped.has(id)).toBe(false);
+			if (command.kind === "replace") expect(grouped.has(command.id)).toBe(false);
+		}
+	});
+
+	it("compactPath normalises slashes and abbreviates home prefix", () => {
+		expect(compactPath("C:/Users/Admin/project/file.ts")).toBe("~/project/file.ts");
+		expect(compactPath("/home/user/project/file.ts")).toBe("~/project/file.ts");
+		expect(compactPath(String.raw`C:\Users\Admin\project\file.ts`)).toBe("~/project/file.ts");
+		const long = "~/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z/file.ts";
+		const compacted = compactPath(long);
+		expect(compacted.length).toBeLessThanOrEqual(60);
+		expect(compacted).toContain("file.ts");
 	});
 });

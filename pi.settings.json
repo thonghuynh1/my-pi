@@ -62,7 +62,6 @@
     },
     "aiknow": {
       "tools": {
-        "aiknow_context": "agent-visible",
         "aiknow_search": "agent-visible",
         "aiknow_sync": "agent-visible",
         "aiknow_status": "agent-visible",

@@ -3,8 +3,8 @@
 // and injects brief guidance for registered repos.
 //
 // DEC-001 (CLI+MCP+Pi), DEC-012 (shared local server), DEC-021 (playbook intents),
-// DEC-032 (stale marking, no auto-sync), DEC-033 (init confirmation),
-// DEC-035 (status/capabilities), DEC-054 (no installer in v1).
+// DEC-032 (stale marking, no auto-sync), DEC-035 (status/capabilities),
+// DEC-054 (no installer in v1).
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
@@ -183,7 +183,6 @@ async function ensureServer(
 // ── MCP endpoint mapping ──────────────────────────────────────────────────
 
 const toolEndpoints: Record<string, string> = {
-	aiknow_context: "/tools/context",
 	aiknow_search: "/tools/search",
 	aiknow_sync: "/tools/sync",
 	aiknow_status: "/tools/status",
@@ -196,30 +195,22 @@ const toolEndpoints: Record<string, string> = {
 
 // ── Tool parameter schemas ─────────────────────────────────────────────────
 
-const ContextParams = Type.Object({
-	query: Type.Optional(Type.String({ description: "Natural language or code query" })),
-	playbook: Type.Optional(
-		Type.String({ description: "Playbook hint: investigation, bug-fix, refactoring, perf-issue, …" }),
-	),
-	intent: Type.Optional(Type.String({ description: "Intent hint: auto, investigation, bug_fix, feature, refactor, …" })),
-	tier: Type.Optional(Type.String({ description: "Context depth: compact | standard | deep" })),
-});
-
 const SearchParams = Type.Object({
-	query: Type.Optional(Type.String({ description: "Search query" })),
+	query: Type.Optional(Type.String({ description: "Natural language or code query" })),
+	mode: Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("lookup"), Type.Literal("explore")], { description: "Search mode (default: auto)" })),
+	tier: Type.Optional(Type.Union([Type.Literal("compact"), Type.Literal("standard"), Type.Literal("deep")], { description: "Response detail tier (default: compact)" })),
+	tokenBudget: Type.Optional(Type.Integer({ description: "Max token budget for response" })),
+	includeDetails: Type.Optional(Type.Boolean({ description: "Return structured details and metrics (default: false)" })),
+	includeMetrics: Type.Optional(Type.Boolean({ description: "Inline metrics in compact output" })),
+	limit: Type.Optional(Type.Integer({ description: "Max results to return" })),
 	keywords: Type.Optional(Type.Array(Type.String(), { description: "Keyword hints" })),
 	anchors: Type.Optional(Type.Array(Type.String(), { description: "Anchor hints (file:line, symbol names)" })),
 	depth: Type.Optional(Type.Integer({ description: "Graph expansion depth (0 = no expansion)" })),
-});
-
-// `init` is Pi-only: triggers registration confirmation before first sync (DEC-033).
-const SyncParams = Type.Object({
-	init: Type.Optional(
-		Type.Boolean({
-			description:
-				"Set true on the first-ever sync to confirm repo registration before indexing. Has no effect once the repo is registered.",
-		}),
-	),
+	playbook: Type.Optional(Type.String({ description: "Playbook hint" })),
+	intent: Type.Optional(Type.Union([
+		Type.Literal("lookup"), Type.Literal("explore"), Type.Literal("callers"), Type.Literal("callees"),
+		Type.Literal("impact"), Type.Literal("test"), Type.Literal("edit"),
+	], { description: "Intent hint" })),
 });
 
 const EmptyParams = Type.Object({});
@@ -232,9 +223,13 @@ const ImpactParams = Type.Object({
 
 const ReadParams = Type.Object({
 	path: Type.String({ description: "Repo-relative file path" }),
-	mode: Type.Optional(Type.String({ description: "map | signatures | lines | full" })),
+	mode: Type.Optional(Type.Union([Type.Literal("map"), Type.Literal("signatures"), Type.Literal("lines"), Type.Literal("full")], { description: "Read mode" })),
 	startLine: Type.Optional(Type.Integer({ description: "Start line for lines mode (1-based)" })),
 	endLine: Type.Optional(Type.Integer({ description: "End line for lines mode (1-based, inclusive)" })),
+	tier: Type.Optional(Type.Union([Type.Literal("compact"), Type.Literal("standard"), Type.Literal("deep")], { description: "Response detail tier" })),
+	tokenBudget: Type.Optional(Type.Integer({ description: "Max token budget for response" })),
+	includeDetails: Type.Optional(Type.Boolean({ description: "Return structured details and metrics (default: false)" })),
+	includeMetrics: Type.Optional(Type.Boolean({ description: "Inline metrics in compact output" })),
 });
 
 const NeighborsParams = Type.Object({
@@ -246,17 +241,17 @@ const NeighborsParams = Type.Object({
 // ── Guidance ───────────────────────────────────────────────────────────────
 
 const ALWAYS_ON_GUIDELINE =
-	"Use aiKnow only when it will reduce follow-up reads. For most exploration, prefer one focused aiknow_search first; " +
-	"use aiknow_context with tier='compact' only for broad/unclear questions. After aiknow_context returns candidate files, symbols, or keywords, run one targeted aiknow_search before grep/read unless the next file path is already exact. If aiknow_search returns a next aiknow_read suggestion, follow it before grep/read.";
+	"Use aiKnow only when it will reduce follow-up reads. For exploration, use one focused aiknow_search with mode='explore' and tier='compact' before broad grep/read. " +
+	"If aiknow_search returns a next aiknow_read suggestion, follow it before grep/read.";
 
 const CONDITIONAL_GUIDELINES: Array<{ pattern: RegExp; text: string }> = [
 	{
 		pattern: /\b(explore|understand|how does|explain|trace|investigate|where is)\b/i,
-		text: "Token-frugal investigation path: if you have names/keywords, start with aiknow_search; use aiknow_context with tier='compact' and playbook='investigation' only when the question is broad or unclear. After aiknow_context returns candidate files, symbols, or keywords, run one targeted aiknow_search before grep/read unless the next file path is already exact. If aiknow_search returns a next aiknow_read suggestion, follow it before grep/read.",
+		text: "Token-frugal investigation path: use aiknow_search with mode='explore', tier='compact', and playbook='investigation' before broad grep/read. If aiknow_search returns a next aiknow_read suggestion, follow it before grep/read.",
 	},
 	{
 		pattern: /\b(bug|debug|error|failure|broken|crash|exception|fix)\b/i,
-		text: "Token-frugal debug path: start with aiknow_search for the error text/suspected symbol; use aiknow_context with tier='compact' and playbook='bug-fix' only if search does not identify the flow.",
+		text: "Token-frugal debug path: start with aiknow_search for the error text or suspected symbol, using mode='lookup', tier='compact', and playbook='bug-fix'.",
 	},
 	{
 		pattern: /\b(refactor|rename|move|extract|reorganize|restructure)\b/i,
@@ -264,14 +259,14 @@ const CONDITIONAL_GUIDELINES: Array<{ pattern: RegExp; text: string }> = [
 	},
 	{
 		pattern: /\b(perf|performance|slow|latency|throughput|optimize)\b/i,
-		text: "Token-frugal perf path: use aiknow_search for known hot functions/files first; use aiknow_context with tier='compact' and playbook='perf-issue' only for unknown call paths.",
+		text: "Token-frugal perf path: use aiknow_search with mode='explore', tier='compact', and playbook='perf-issue' for the hot path.",
 	},
 ];
 
 const PSTACK_PATTERN = /\b(poteto|poteto-mode|pstack|skill-pstack|playbook|principle|why skill|how skill)\b/i;
 
 const PSTACK_MERGED_HINT =
-	"Poteto/pstack owns reasoning and playbook choice. If aiKnow tools are available and this repo is indexed, use one focused aiknow_search for concrete code lookup before broad grep/read; if unsure, use aiknow_status once for larger exploration or normal tools for small tasks. Use aiknow_context with tier='compact' only when the code area or flow is unclear.";
+	"Poteto/pstack owns reasoning and playbook choice. If aiKnow tools are available and this repo is indexed, use one focused aiknow_search with tier='compact' before broad grep/read. If unsure, use aiknow_status once for larger exploration or normal tools for small tasks.";
 
 function buildConditionalGuidance(prompt: string): string | null {
 	if (PSTACK_PATTERN.test(prompt)) {
@@ -339,28 +334,13 @@ export default function aiknowExtension(pi: ExtensionAPI): void {
 	// ── Tool registrations ─────────────────────────────────────────────────
 
 	managed.registerTool({
-		name: "aiknow_context",
-		defaultVisibility: "agent-visible",
-		label: "aiKnow Context",
-		description: "Adaptive compact context for broad/unclear codebase questions. Prefer aiknow_search first when you already have names, symbols, or keywords.",
-		promptSnippet:
-			"Use sparingly for broad/unclear questions; pass tier='compact' by default, then follow with targeted aiknow_search.",
-		promptGuidelines: [ALWAYS_ON_GUIDELINE],
-		parameters: ContextParams,
-		async execute(_id: string, params: Static<typeof ContextParams>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
-			return forward("aiknow_context", params, pi, ctx.cwd);
-		},
-	});
-
-	managed.registerTool({
 		name: "aiknow_search",
 		defaultVisibility: "agent-visible",
 		label: "aiKnow Search",
-		description: "Deterministic symbol, file, and keyword search with optional graph expansion. Prefer this first when you have names, symbols, files, or error text.",
-		promptSnippet: "Token-frugal first choice for targeted symbol/file/keyword/error lookups, with optional graph expansion.",
+		description: "Deterministic symbol, file, and keyword search with optional graph expansion.",
+		promptSnippet: "Token-frugal first choice for symbol, file, keyword, and error lookups, with optional graph expansion.",
 		promptGuidelines: [
-			"Prefer aiknow_search before aiknow_context when the prompt contains concrete symbols, filenames, keywords, or error text; use small depth first.",
-			"After aiknow_context identifies likely entrypoints, use aiknow_search for exact follow-ups before broad grep/read.",
+			ALWAYS_ON_GUIDELINE,
 			"When aiknow_search returns a next aiknow_read suggestion, call aiknow_read before grep/read.",
 		],
 		parameters: SearchParams,
@@ -373,44 +353,11 @@ export default function aiknowExtension(pi: ExtensionAPI): void {
 		name: "aiknow_sync",
 		defaultVisibility: "agent-visible",
 		label: "aiKnow Sync",
-		description:
-			"Incrementally update the index for the current repo+branch. " +
-			"Pass init:true on the first call to confirm repo registration before indexing (DEC-033).",
+		description: "Incrementally update the index for the current repo+branch.",
 		promptSnippet: "Incrementally update the aiKnow index.",
-		parameters: SyncParams,
-		async execute(_id: string, params: Static<typeof SyncParams>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
-			// Confirm first-time registration (DEC-033).
-			if (params.init === true) {
-				if (ctx.hasUI) {
-					const confirmed = await ctx.ui.confirm(
-						"Register repo with aiKnow?",
-						`aiknow_sync with init:true will register and index the current repo.\n\nThis is a one-time setup step. Continue?`,
-					);
-					if (!confirmed) {
-						return {
-							content: [{ type: "text" as const, text: "Registration cancelled by user." }],
-						};
-					}
-				} else {
-					console.warn("[aiknow] init:true — proceeding without interactive confirmation (non-UI mode).");
-				}
-			}
-			if (params.init === true) {
-				const cli = resolveAiknowCliCommand();
-				const result = await pi.exec(cli.command, [...cli.argsPrefix, "init", resolve(ctx.cwd)], { cwd: ctx.cwd });
-				if (result.code !== 0) {
-					return {
-						content: [{
-							type: "text" as const,
-							text: `aiKnow init failed via ${cli.display}:\n${result.stderr || result.stdout || `exit ${result.code}`}`,
-						}],
-					};
-				}
-			}
-
-			// Strip the Pi-only `init` flag before forwarding (server doesn't accept it).
-			const { init: _init, ...serverArgs } = params;
-			const result = await forward("aiknow_sync", serverArgs, pi, ctx.cwd);
+		parameters: EmptyParams,
+		async execute(_id: string, _params: Static<typeof EmptyParams>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+			const result = await forward("aiknow_sync", {}, pi, ctx.cwd);
 			// Clear stale tracking after a successful sync.
 			staleFiles.clear();
 			ctx.ui.setStatus("aiknow", "");

@@ -71,7 +71,6 @@ test("extension registers all current aiKnow tools", () => {
 	aiknowExtension(pi as any);
 
 	const expected = [
-		"aiknow_context",
 		"aiknow_search",
 		"aiknow_sync",
 		"aiknow_status",
@@ -87,22 +86,28 @@ test("extension registers all current aiKnow tools", () => {
 	assert.equal(getRegisteredToolNames(pi).length, expected.length);
 });
 
-test("aiknow_context has always-on promptGuidelines", () => {
+test("aiknow_search exposes the current aiKnow query schema", () => {
 	const pi = createFakePi();
 	aiknowExtension(pi as any);
 
-	const tool = getToolDef(pi, "aiknow_context");
-	assert.ok(tool, "aiknow_context must be registered");
-	assert.ok(Array.isArray(tool.promptGuidelines), "must have promptGuidelines array");
-	assert.ok(tool.promptGuidelines!.length > 0, "promptGuidelines must be non-empty");
+	assert.ok(!pi.tools.has("aiknow_context"), "removed aiKnow tools must not be registered");
+	const tool = getToolDef(pi, "aiknow_search");
+	assert.ok(tool, "aiknow_search must be registered");
+	const schema = tool.parameters as { properties?: Record<string, unknown> };
+	for (const name of ["query", "mode", "tier", "tokenBudget", "includeDetails", "includeMetrics", "limit", "keywords", "anchors", "depth", "playbook", "intent"]) {
+		assert.ok(schema.properties?.[name], `search schema must include '${name}'`);
+	}
 	assert.ok(
-		tool.promptGuidelines!.some((g) => g.includes("aiknow_context") && g.includes("aiknow_search")),
-		"guideline must mention aiknow_context followed by aiknow_search",
+		tool.promptGuidelines?.some((g) => g.includes("aiknow_read") && g.includes("before grep/read")),
+		"guidance must say to follow aiknow_read suggestions before grep/read",
 	);
-	assert.ok(
-		tool.promptGuidelines!.some((g) => g.includes("aiknow_read") && g.includes("before grep/read")),
-		"guideline must say to follow aiknow_read suggestions before grep/read",
-	);
+
+	const readTool = getToolDef(pi, "aiknow_read");
+	assert.ok(readTool, "aiknow_read must be registered");
+	const readSchema = readTool.parameters as { properties?: Record<string, unknown> };
+	for (const name of ["path", "mode", "startLine", "endLine", "tier", "tokenBudget", "includeDetails", "includeMetrics"]) {
+		assert.ok(readSchema.properties?.[name], `read schema must include '${name}'`);
+	}
 });
 
 
@@ -155,15 +160,14 @@ test("resolveAiknowCliCommand uses AIKNOW_BIN as an installed command override",
 	}
 });
 
-test("aiknow_sync has an 'init' parameter in its schema", () => {
+test("aiknow_sync matches aiKnow's empty input schema", () => {
 	const pi = createFakePi();
 	aiknowExtension(pi as any);
 
 	const tool = getToolDef(pi, "aiknow_sync");
 	assert.ok(tool, "aiknow_sync must be registered");
-	// The TypeBox schema object has a 'properties' map.
 	const schema = tool.parameters as { properties?: Record<string, unknown> };
-	assert.ok(schema.properties?.init, "aiknow_sync schema must include 'init' property");
+	assert.deepEqual(schema.properties, {});
 });
 
 // ── Tests: stale-file tracking (DEC-032) ─────────────────────────────────
@@ -357,10 +361,7 @@ test("before_agent_start injects exploration guidance for explore prompts", () =
 	const sp = (result as { systemPrompt?: string }).systemPrompt ?? "";
 	assert.ok(sp.includes("investigation"), "guidance should mention 'investigation' playbook");
 	assert.ok(sp.includes("aiknow_search"), "exploration guidance should encourage aiknow_search follow-ups");
-	assert.ok(
-		sp.includes("After aiknow_context returns candidate files, symbols, or keywords"),
-		"exploration guidance should require an aiknow_search follow-up after broad context",
-	);
+	assert.ok(!sp.includes("aiknow_context"), "guidance must not reference a removed tool");
 	assert.ok(
 		sp.includes("If aiknow_search returns a next aiknow_read suggestion"),
 		"exploration guidance should require following aiknow_read next suggestions",
@@ -459,6 +460,6 @@ test("before_agent_start injects pstack aiKnow guidance for poteto explore promp
 	assert.ok(sp.includes("Poteto/pstack owns reasoning"), "guidance must contain merged pstack hint");
 	assert.ok(sp.includes("aiknow_search"), "guidance must mention aiknow_search");
 	assert.ok(sp.includes("aiknow_status"), "guidance must mention aiknow_status");
-	assert.ok(sp.includes("tier='compact'"), "guidance must mention tier='compact'");
+	assert.ok(!sp.includes("aiknow_context"), "guidance must not reference a removed tool");
 	assert.ok(!sp.includes("Token-frugal investigation path"), "guidance must not duplicate normal investigation wording");
 });

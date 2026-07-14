@@ -186,6 +186,20 @@ describe("MyCustomizeConductor", () => {
 		for (let i = 5; i < 10; i++) expect(folded.has(`m${i}`)).toBe(true);
 	});
 
+	it("skips proactively-compressed tool results as fold candidates", () => {
+		const proactiveMarker = '[120 lines, ~900 tokens. Full output: recall("a1b2c3d4")]';
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("r:proactive", "tool_result", 1, 1_000, 40, { toolName: "bash", text: proactiveMarker }),
+			vb("u:1", "user", 2, 100, 100, { text: "continue" }),
+			vb("r:normal", "tool_result", 3, 1_000, 40, { toolName: "bash", text: "uncompressed output" }),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 1_100, 2_200));
+
+		expect(foldIdsOf(result).has("r:proactive")).toBe(false);
+		expect(foldIdsOf(result).has("r:normal")).toBe(true);
+	});
+
 	it("holds the plan even when a previously folded block becomes frozen (breakFrozen applies it)", () => {
 		const blocks = [
 			vb("u:0", "user", 0, 200, 200, { text: "task" }),

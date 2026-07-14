@@ -71,3 +71,15 @@ The coordinator-owned canonical state for a pair-programming run. It records the
 ## TDD Skill
 
 The test-driven development workflow exposed by Engineering Skills MCP as `skill-tdd`. In TDD mode, Driver Agent and Navigator Agent are expected to use this skill for red-green-refactor behavior and evidence reporting.
+
+## Proactive Content Compression
+
+A transport-layer pass in the Accordion extension's `before_provider_request` hook that structurally shrinks tool_result blocks above a token threshold to a fixed compact representation plus a recall marker. The original is stored in the recall store. The conductor does not fold these blocks. Distinct from conductor folding, which handles conversation and MCP/pstack blocks. Resolves the frozen-prefix deadlock where blocks are untouchable by the time the budget is exceeded.
+
+## A1 Exemption List
+
+Tool_result blocks that Proactive Content Compression never compresses because their full content carries operational meaning, not just data. Includes MCP tool results (pstack/skill content such as poteto-mode) and recall tool results. Analogous to Headroom's `DEFAULT_EXCLUDE_TOOLS`.
+
+## Frozen-Prefix Deadlock
+
+The failure mode where Accordion's cache-aware folding guard prevents any folding because the frozen prefix has grown to cover most blocks by the time the budget is exceeded. Proactive Content Compression resolves this by ensuring frozen blocks are already small.

@@ -1549,11 +1549,9 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			if (!codes.length) {
 				return { content: [{ type: "text", text: 'No fold codes given. Pass the code(s) from a {#<code> FOLDED} tag, e.g. recall({codes:["3f9a2c"]}).' }] };
 			}
-			const proactive = codes.flatMap((code) => {
-				const text = proactiveCompress.getOriginal(code);
-				return text === undefined ? [] : [{ code, label: "tool result", text }];
-			});
-			const remainingCodes = codes.filter((code) => proactiveCompress.getOriginal(code) === undefined);
+			const proactive = proactiveCompress.resolveOriginals(codes);
+			const proactiveCodes = new Set(proactive.map(({ code }) => code));
+			const remainingCodes = codes.filter((code) => !proactiveCodes.has(code));
 			if (proactive.length === 0 && !attached()) {
 				return { content: [{ type: "text", text: "Accordion isn't attached, so nothing in your context is folded right now — it is already full." }] };
 			}

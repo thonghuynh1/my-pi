@@ -5,6 +5,7 @@ import {
 	handleBeforeProviderRequest,
 	getOriginal,
 	install,
+	resolveOriginals,
 	reset,
 	shouldCompress,
 } from "./proactive-compress";
@@ -47,6 +48,7 @@ describe("proactive compression", () => {
 		const code = compressed.match(/recall\("([0-9a-f]{6})"\)/)?.[1];
 		expect(code).toBeDefined();
 		expect(getOriginal(code ?? "")).toBe(longContent);
+		expect(resolveOriginals([code ?? ""])).toEqual([{ code, label: "tool result", text: longContent }]);
 	});
 
 	it.each(["mcp", "recall"])("does not compress %s tool results", (toolName) => {

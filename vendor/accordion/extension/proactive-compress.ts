@@ -24,8 +24,21 @@ type ProviderPayload = {
 	[key: string]: unknown;
 };
 
+export type ProactiveRecall = {
+	code: string;
+	label: "tool result";
+	text: string;
+};
+
 export function getOriginal(code: string): string | undefined {
 	return originals.get(code);
+}
+
+export function resolveOriginals(codes: readonly string[]): ProactiveRecall[] {
+	return codes.flatMap((code) => {
+		const text = getOriginal(code);
+		return text === undefined ? [] : [{ code, label: "tool result", text }];
+	});
 }
 
 export function reset(): void {

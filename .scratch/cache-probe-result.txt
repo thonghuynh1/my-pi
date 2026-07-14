@@ -1,4 +1,0 @@
-Command: pi -p "Reply with exactly OK."
-Result: OK
-Broker observation: no new my-pi Accordion session was advertised at http://127.0.0.1:64953/__accordion/sessions.
-Conclusion: the isolated Pi command did not load this project's Accordion extension. It is not an end-to-end verification.

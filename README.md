@@ -7,7 +7,6 @@ Personal Pi package that bundles:
 - `engineering-skills` helper/footer extension
 - `usage-footer.ts` footer/status extension showing model and context usage
 - `subagents.ts` in-process subagent tool with `explore`, `shell`, and `custom` modes
-- `opensource-cache-instructions.ts` system prompt guidance to use global `opensrc` (`~/.opensrc/`) for npm dependency source lookups
 
 ## Install locally
 

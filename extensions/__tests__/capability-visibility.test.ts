@@ -22,7 +22,6 @@ import { piExtension as engineeringSkillsExtension } from "../engineering-skills
 import { piExtension as usageFooterExtension } from "../usage-footer.ts";
 import { piExtension as herdrAgentReportExtension } from "../herdr-agent-report.ts";
 import { piExtension as toolPanelExtension } from "../tool-panel.ts";
-import { piExtension as grillWithScoutsExtension } from "../grill-with-scouts.ts";
 
 function warningCodes(warnings: ReadonlyArray<CapabilityVisibilityWarning>): string[] {
 	return warnings.map((warning) => warning.code);
@@ -517,10 +516,6 @@ test("all remaining active extensions have stable piExtension.id values", () => 
 	assert.equal(toolPanelExtension.id, "tool-panel");
 });
 
-test("grill-with-scouts has piExtension.id but is inactive (REGISTER_GRILL_WITH_SCOUTS=false)", () => {
-	assert.equal(grillWithScoutsExtension.id, "grill-with-scouts");
-	// Stays inactive by design; this assertion documents that deliberately.
-});
 
 test("pair_program resolves agent-hidden from package settings", () => {
 	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));

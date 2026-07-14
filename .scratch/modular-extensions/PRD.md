@@ -11,7 +11,7 @@ Restructure `my-pi` as a selectable extension package where users pick which ext
 ## User Stories
 
 1. As a power user, I want only engineering-skills, lavish-axi, usage-footer, tool-panel, and run-tests so that I get core functionality without bloat
-2. As a planner, I want to add grill-with-scouts and herdr-agent-report so that I can do planning workflows
+2. As a planner, I want to add herdr-agent-report so that I can do planning workflows
 3. As a frontend developer, I want to include frontend-coach so that I get browser automation tools
 4. As a minimal install user, I want the smallest possible extension set so that pi loads faster and uses fewer tokens
 5. As a user, I want lib/ helpers always available so that all extensions share utilities without redeclaring dependencies
@@ -61,9 +61,7 @@ Restructure `my-pi` as a selectable extension package where users pick which ext
       "./extensions/tool-panel.ts",
       "./extensions/run-tests.ts",
       "./extensions/accordion.ts",
-      "./extensions/grill-with-scouts.ts",
       "./extensions/herdr-agent-report.ts",
-      "./extensions/opensource-cache-instructions.ts",
       "./extensions/pair-program.ts",
       "./extensions/subagents.ts",
       "./extensions/frontend-coach"
@@ -143,5 +141,4 @@ None
 ## Further Notes
 
 - This PRD is meant for documentation and issue generation via `to-issues`
-- The grill session established all decisions; no further interviews needed
 - Implementation is purely configuration/documentation; no code edits required

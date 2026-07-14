@@ -261,7 +261,5 @@ None.
 
 ## Further Notes
 
-- Grill ledger: `.scratch/grills/a7c4e91d2b6f/ledger.md`
-- Grounding evidence: `.scratch/grills/a7c4e91d2b6f/grounding.md`
 - Governing ADR: `docs/adr/0002-authoritative-accordion-folding-runtime.md`
 - Related cache/budget evidence: `C:/Users/Admin/AppData/Local/Temp/accordion-budget-policy-handoff.md`

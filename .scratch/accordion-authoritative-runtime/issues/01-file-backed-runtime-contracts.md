@@ -20,7 +20,6 @@ The initial default conductor is `my-customize-conductor`. Do not import or migr
 - Extend `vendor/accordion/app/src/lib/live/registry.ts` → `SessionEntry` with complete effective settings and runtime snapshot fields. Extend `vendor/accordion/extension/accordion.ts` → `buildEntry()`/`writeEntry()` so each active `~/.accordion/sessions/<sessionId>.json` is independently understandable.
 - Saving defaults changes only `defaults.json`; it must not mutate any active session snapshot. Session shutdown still removes only that session file.
 - Keep `HEARTBEAT_INTERVAL_MS`, `STALE_AFTER_MS`, and existing discovery fields compatible. Bump/mirror `REGISTRY_PROTOCOL` only if the chosen shape is intentionally reader-breaking.
-- Grounding: `GROUND-012`, `GROUND-013` in `.scratch/grills/a7c4e91d2b6f/grounding.md`.
 
 ## Acceptance criteria
 

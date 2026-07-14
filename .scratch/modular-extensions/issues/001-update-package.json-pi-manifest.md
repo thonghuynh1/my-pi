@@ -42,9 +42,7 @@ Restructure `package.json`'s `pi.extensions` array to list all 12 extensions ind
       "./extensions/tool-panel.ts",
       "./extensions/run-tests.ts",
       "./extensions/accordion.ts",
-      "./extensions/grill-with-scouts.ts",
       "./extensions/herdr-agent-report.ts",
-      "./extensions/opensource-cache-instructions.ts",
       "./extensions/pair-program.ts",
       "./extensions/subagents.ts",
       "./extensions/frontend-coach"

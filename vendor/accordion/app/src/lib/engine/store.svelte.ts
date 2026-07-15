@@ -1105,6 +1105,8 @@ export class AccordionStore {
 		if (!b) return void reports.push(clamp(kind, [id], "unknown-id", `no block ${id}`));
 		if (b.override !== null) return void reports.push(clamp(kind, [id], "human-override", `${label(b)} is held by the human`));
 		if (this.groupWire.has(id)) return void reports.push(clamp(kind, [id], "grouped", `${label(b)} is inside a folded group`));
+		if (b.proactivelyCompressed)
+			return void reports.push(clamp(kind, [id], "proactively-compressed", `${label(b)} was proactively compressed — recall-only`));
 		// Protection is ABSOLUTE: a block in the working tail is never folded, by a conductor
 		// OR the user. Refuse and report rather than violate the safety pillar.
 		if (this.isProtected(b)) return void reports.push(clamp(kind, [id], "protected", `${label(b)} is in the protected working tail`));

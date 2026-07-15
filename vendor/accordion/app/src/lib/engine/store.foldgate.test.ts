@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { AccordionStore } from "./store.svelte";
 import { digest, digestTokens } from "./digest";
 import { computeFoldOps } from "../live/plan";
+import { linearize, wireToBlock } from "../live/mapping";
+import { MyCustomizeConductor } from "$conductors/my-customize-conductor/my-customize-conductor";
 import type { Conductor, ConductorView, Command } from "$conductors/contract";
 import type { Block, ParsedSession } from "./types";
 
@@ -279,6 +281,36 @@ describe("end-to-end — the gate kills the lie on BOTH the view and the wire", 
 		expect(reports).toHaveLength(0); // foldable kind → no clamp
 		expect(s.isFolded(s.get("r:c1")!)).toBe(true); // folded in the view
 		expect(computeFoldOps(s).map((o) => o.id)).toContain("r:c1"); // AND emitted to the wire
+	});
+});
+
+describe("walking skeleton — PCC block is not double-folded end-to-end", () => {
+	it("a PCC-compressed message flows through linearize → buildView, and my-customize-conductor's fold is clamped by the store", () => {
+		const [user, call, result] = linearize([
+			{ role: "user", timestamp: 1, content: "inspect the output" },
+			{
+				role: "assistant",
+				responseId: "r1",
+				content: [{ type: "toolCall", id: "c1", name: "read", arguments: { path: "output.txt" } }],
+			},
+			{
+				role: "toolResult",
+				toolCallId: "c1",
+				toolName: "read",
+				content: "compressed output\n" + "x".repeat(20_000),
+				_pccCompressed: true,
+			},
+		]);
+		const s = makeStore([wireToBlock(user), wireToBlock(call), wireToBlock(result)]);
+		s.setProtect(0);
+		s.setBudget(1_000);
+		s.attach(new MyCustomizeConductor());
+
+		const block = s.get(result.id)!;
+		expect(block.proactivelyCompressed).toBe(true);
+		expect(s.lastReports.some((report) => report.reason === "proactively-compressed")).toBe(true);
+		expect(block.autoFolded).toBe(false);
+		expect(block.subst).toBeUndefined();
 	});
 });
 

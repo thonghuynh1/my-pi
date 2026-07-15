@@ -16,10 +16,12 @@ const __dirname = fileURLToPath(new URL(".", import.meta.url));
 // built-in). Both the bare barrel (`$conductors` → conductors/index.ts) and subpaths
 // (`$conductors/contract`) must resolve.
 const conductorsDir = path.resolve(__dirname, "../conductors");
+const libDir = path.resolve(__dirname, "src/lib");
 export default defineConfig({
-	plugins: [svelte({ compilerOptions: { runes: true } }), svelteTesting()],
+	plugins: [svelte({ configFile: false, compilerOptions: { runes: true } }), svelteTesting()],
 	resolve: {
 		alias: [
+			{ find: /^\$lib\//, replacement: `${libDir}/` },
 			{ find: /^\$conductors$/, replacement: conductorsDir },
 			{ find: /^\$conductors\//, replacement: `${conductorsDir}/` },
 		],

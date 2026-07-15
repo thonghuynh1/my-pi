@@ -218,6 +218,19 @@
 					<pre class="digest-text mono">{gDigest}</pre>
 				</div>
 			{/if}
+
+			<div class="member-list" data-testid="group-member-list">
+				<span class="eyebrow section-eyebrow">Members</span>
+				{#each gMembers as member (member.id)}
+					<div class="member-row">
+						<span class="member-kind">{KIND_LABEL[member.kind]}</span>
+						<span class="member-id mono">{member.id}</span>
+						{#if member.proactivelyCompressed}
+							<span class="pill pill-info" data-testid="pcc-pill" title="Proactively compressed — original available via agent recall">PCC</span>
+						{/if}
+					</div>
+				{/each}
+			</div>
 		</div>
 	</aside>
 {:else if block}
@@ -265,6 +278,9 @@
 							protected
 						</span>
 					{/if}
+					{#if block.proactivelyCompressed}
+						<span class="pill pill-info" data-testid="pcc-pill" title="Proactively compressed — original available via agent recall">PCC</span>
+					{/if}
 				</div>
 				<!-- Token data: tabular mono -->
 				<div class="tok-table mono">
@@ -293,11 +309,13 @@
 					class="action-btn"
 					class:action-primary={folded}
 					class:action-outline={!folded && canFoldBlock}
-					class:action-disabled={steerLocked || (!folded && !canFoldBlock)}
-					disabled={steerLocked || (!folded && !canFoldBlock)}
-					aria-disabled={steerLocked}
+					class:action-disabled={steerLocked || block.proactivelyCompressed || (!folded && !canFoldBlock)}
+					disabled={steerLocked || block.proactivelyCompressed || (!folded && !canFoldBlock)}
+					aria-disabled={steerLocked || block.proactivelyCompressed}
 					title={steerLocked
 						? lockTip
+						: block.proactivelyCompressed
+							? "Proactively compressed — original available via agent recall"
 						: folded
 							? "Unfold block"
 							: canFoldBlock
@@ -568,6 +586,11 @@
 		gap: 5px;
 	}
 
+	.pill-info {
+		color: var(--accent);
+		background: var(--accent-soft);
+	}
+
 	/* Token table: tabular mono data display */
 	.tok-table {
 		display: flex;
@@ -715,6 +738,34 @@
 	.section-eyebrow {
 		display: block;
 		margin-bottom: var(--sp-1);
+	}
+
+	.member-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-2);
+	}
+
+	.member-row {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
+		min-width: 0;
+	}
+
+	.member-kind {
+		color: var(--muted);
+		font-size: var(--fs-xs);
+	}
+
+	.member-id {
+		color: var(--faint);
+		font-size: var(--fs-xs);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+		flex: 1;
 	}
 
 	/* Folded digest callout */

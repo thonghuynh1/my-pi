@@ -17,7 +17,15 @@ import type { Block, ParsedSession } from "./types";
 
 // Durable, message-anchored ids so the fixtures mirror the live id shapes. Big budget +
 // no protection by default so the only thing under test is the kind gate.
-function blk(id: string, kind: Block["kind"], turn: number, order: number, tokens = 1000, callId?: string): Block {
+function blk(
+	id: string,
+	kind: Block["kind"],
+	turn: number,
+	order: number,
+	tokens = 1000,
+	callId?: string,
+	extra: Partial<Block> = {},
+): Block {
 	return {
 		id,
 		kind,
@@ -29,6 +37,8 @@ function blk(id: string, kind: Block["kind"], turn: number, order: number, token
 		override: null,
 		autoFolded: false,
 		by: null,
+		proactivelyCompressed: false,
+		...extra,
 	};
 }
 
@@ -269,6 +279,18 @@ describe("end-to-end — the gate kills the lie on BOTH the view and the wire", 
 		expect(reports).toHaveLength(0); // foldable kind → no clamp
 		expect(s.isFolded(s.get("r:c1")!)).toBe(true); // folded in the view
 		expect(computeFoldOps(s).map((o) => o.id)).toContain("r:c1"); // AND emitted to the wire
+	});
+});
+
+describe("ViewBlock proactive compression", () => {
+	it("ViewBlock.proactivelyCompressed reflects Block", () => {
+		const pcc = new CapturingConductor();
+		makeStore([blk("r:pcc", "tool_result", 1, 0, 1000, undefined, { proactivelyCompressed: true })]).attach(pcc);
+		expect(pcc.lastView?.blocks[0].proactivelyCompressed).toBe(true);
+
+		const normal = new CapturingConductor();
+		makeStore([blk("r:normal", "tool_result", 1, 0)]).attach(normal);
+		expect(normal.lastView?.blocks[0].proactivelyCompressed).toBe(false);
 	});
 });
 

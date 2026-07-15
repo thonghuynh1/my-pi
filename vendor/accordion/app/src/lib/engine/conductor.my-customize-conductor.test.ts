@@ -29,7 +29,7 @@ function vb(
 		held: opts.held ?? false,
 		folded: opts.folded ?? false,
 		protected: opts.protected ?? false,
-		grouped: opts.grouped ?? false,
+		grouped: opts.grouped ?? false, proactivelyCompressed: false,
 		callId: opts.callId,
 		toolName: opts.toolName,
 		text: opts.text,

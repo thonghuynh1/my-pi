@@ -15,7 +15,7 @@ function blk(i: number, tokens: number): Block {
 		tokens,
 		override: null,
 		autoFolded: false,
-		by: null,
+		by: null, proactivelyCompressed: false,
 	};
 }
 function makeStore(n: number, tokens?: number): AccordionStore;

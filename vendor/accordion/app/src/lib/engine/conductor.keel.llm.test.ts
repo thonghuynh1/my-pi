@@ -108,7 +108,7 @@ function makeView(n: number, budget: number): ConductorView {
 			held: false,
 			folded: false,
 			protected: false,
-			grouped: false,
+			grouped: false, proactivelyCompressed: false,
 			// text is intentionally omitted: tryTrim returns null for text===undefined,
 			// so these blocks fall through to digestLevel (deep-zone candidates). This is
 			// the test pattern to exercise the Phase-2 LLM async path directly.

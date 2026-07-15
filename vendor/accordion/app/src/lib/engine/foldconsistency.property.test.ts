@@ -100,7 +100,7 @@ function genSession(rnd: () => number, len: number, shape: IdShape): Block[] {
 			callId,
 			override: null,
 			autoFolded: false,
-			by: null,
+			by: null, proactivelyCompressed: false,
 		});
 	}
 	return blocks;

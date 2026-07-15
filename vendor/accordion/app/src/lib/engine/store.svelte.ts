@@ -1027,6 +1027,7 @@ export class AccordionStore {
 			toolName: b.toolName,
 			callId: b.callId,
 			isError: b.isError,
+			proactivelyCompressed: b.proactivelyCompressed,
 			held: b.override !== null,
 			folded: this.isFolded(b),
 			protected: i >= protectedFrom,

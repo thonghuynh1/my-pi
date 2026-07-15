@@ -65,6 +65,7 @@ export interface WireBlock {
 	callId?: string;
 	model?: string;
 	isError?: boolean;
+	proactivelyCompressed: boolean;
 }
 
 /**

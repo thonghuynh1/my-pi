@@ -69,7 +69,7 @@ export function handleBeforeProviderRequest(event: { payload?: unknown }): unkno
 
 		const code = recallCode(message.content);
 		originals.set(code, message.content);
-		return { ...message, content: compress(message.content, code) };
+		return { ...message, content: compress(message.content, code), _pccCompressed: true };
 	});
 
 	return { ...payload, [field]: messages };

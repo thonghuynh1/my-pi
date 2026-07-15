@@ -63,6 +63,7 @@ export interface ViewBlock {
 	toolName?: string;
 	callId?: string;
 	isError?: boolean;
+	proactivelyCompressed: boolean;
 	held: boolean; // a human override (pin / manual fold / manual unfold) owns this block
 	folded: boolean; // currently rendered folded in the view
 	protected: boolean; // inside the protected working tail
@@ -309,6 +310,8 @@ export type ClampReason =
 	 * (which would let the view show a fold the agent never actually receives).
 	 */
 	| "not-foldable"
+	/** The block was already shortened by Proactive Content Compression. */
+	| "proactively-compressed"
 	/** The op was a no-op (e.g. restoring an already-live block). */
 	| "noop";
 

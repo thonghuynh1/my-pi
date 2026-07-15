@@ -33,7 +33,7 @@ function vblk(
 		held: false,
 		folded: false,
 		protected: false,
-		grouped: false,
+		grouped: false, proactivelyCompressed: false,
 		text: `block ${id}`,
 		...extra,
 	};

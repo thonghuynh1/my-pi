@@ -50,6 +50,8 @@ export interface PiMessage {
 	timestamp?: number;
 	/** Provider-assigned response id; preferred anchor for assistant-message part ids. */
 	responseId?: string;
+	/** Set by Proactive Content Compression when a tool result was shortened on the wire. */
+	_pccCompressed?: boolean;
 }
 
 /**
@@ -160,12 +162,12 @@ export function linearize(messages: PiMessage[]): WireBlock[] {
 		id: string,
 		kind: WireBlock["kind"],
 		text: string,
-		extra: Partial<Pick<WireBlock, "toolName" | "callId" | "model" | "isError">> = {},
+		extra: Partial<Pick<WireBlock, "toolName" | "callId" | "model" | "isError" | "proactivelyCompressed">> = {},
 		imageTokens = 0,
 	) => {
 		// Keep the block if it has text, is a tool_result, OR carries image tokens.
 		if (!text && kind !== "tool_result" && imageTokens === 0) return; // drop empty non-results (parity with parse.ts)
-		out.push({ id, kind, turn, order: order++, text, tokens: tokensFor(text) + imageTokens, ...extra });
+		out.push({ id, kind, turn, order: order++, text, tokens: tokensFor(text) + imageTokens, proactivelyCompressed: false, ...extra });
 	};
 
 	messages.forEach((m, i) => {
@@ -202,6 +204,7 @@ export function linearize(messages: PiMessage[]): WireBlock[] {
 						toolName: m.toolName || "tool",
 						callId: m.toolCallId,
 						isError: !!m.isError,
+						proactivelyCompressed: !!m._pccCompressed,
 					},
 					rc.imageTokens,
 				);
@@ -230,6 +233,7 @@ export function wireToBlock(w: WireBlock): Block {
 		callId: w.callId,
 		model: w.model,
 		isError: w.isError,
+		proactivelyCompressed: !!w.proactivelyCompressed,
 		override: null,
 		autoFolded: false,
 		by: null,

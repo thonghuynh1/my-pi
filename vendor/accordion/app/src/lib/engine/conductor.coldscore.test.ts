@@ -41,7 +41,7 @@ function blk(
 		tokens,
 		override: null,
 		autoFolded: false,
-		by: null,
+		by: null, proactivelyCompressed: false,
 		...extra,
 	};
 }
@@ -482,7 +482,7 @@ describe("ColdScoreConductor — two-pass hysteresis: re-folded blocks must not 
 			held: false,
 			folded: false,
 			protected: opts.protected ?? false,
-			grouped: false,
+			grouped: false, proactivelyCompressed: false,
 			text: opts.text,
 		};
 	}

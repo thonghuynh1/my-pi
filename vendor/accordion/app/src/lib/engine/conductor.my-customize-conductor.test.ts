@@ -17,7 +17,7 @@ function vb(
 	order: number,
 	tokens: number,
 	foldedTokens: number,
-	opts: { held?: boolean; folded?: boolean; protected?: boolean; grouped?: boolean; callId?: string; toolName?: string; text?: string; isError?: boolean } = {},
+	opts: { held?: boolean; folded?: boolean; protected?: boolean; grouped?: boolean; proactivelyCompressed?: boolean; callId?: string; toolName?: string; text?: string; isError?: boolean } = {},
 ): ViewBlock {
 	return {
 		id,
@@ -29,7 +29,8 @@ function vb(
 		held: opts.held ?? false,
 		folded: opts.folded ?? false,
 		protected: opts.protected ?? false,
-		grouped: opts.grouped ?? false, proactivelyCompressed: false,
+		grouped: opts.grouped ?? false,
+		proactivelyCompressed: opts.proactivelyCompressed ?? false,
 		callId: opts.callId,
 		toolName: opts.toolName,
 		text: opts.text,
@@ -187,10 +188,9 @@ describe("MyCustomizeConductor", () => {
 	});
 
 	it("skips proactively-compressed tool results as fold candidates", () => {
-		const proactiveMarker = '[120 lines, ~900 tokens. Full output: recall("a1b2c3d4")]';
 		const blocks = [
 			vb("u:0", "user", 0, 100, 100, { text: "task" }),
-			vb("r:proactive", "tool_result", 1, 1_000, 40, { toolName: "bash", text: proactiveMarker }),
+			vb("r:proactive", "tool_result", 1, 1_000, 40, { toolName: "bash", text: "compressed output", proactivelyCompressed: true }),
 			vb("u:1", "user", 2, 100, 100, { text: "continue" }),
 			vb("r:normal", "tool_result", 3, 1_000, 40, { toolName: "bash", text: "uncompressed output" }),
 		];

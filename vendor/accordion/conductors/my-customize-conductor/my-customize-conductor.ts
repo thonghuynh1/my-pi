@@ -42,7 +42,6 @@ import { riskFlags } from "../keel/ledger";
 const HOLD_BAND = 0.9;
 const POTETO_MODE_NAME = "poteto-mode";
 const POTETO_OFF_PHRASES = ["exit poteto mode", "stop using poteto", "disable pstack mode"];
-const PROACTIVE_COMPRESS_MARKER = /\[\d+ lines, ~\d+ tokens\. Full output: recall\("[a-f0-9]+"\)\]$/;
 
 type SavedFold = { tokens: number; breakFrozen: boolean };
 
@@ -132,7 +131,7 @@ export class MyCustomizeConductor implements Conductor {
 			(b) => !b.held && !b.protected && !b.grouped && b.foldedTokens < b.tokens && FOLDABLE_KINDS.has(b.kind),
 		);
 		const candidates = allCandidates.filter(
-			(b) => b.order >= view.frozenFromIndex && !isProactivelyCompressed(b),
+			(b) => b.order >= view.frozenFromIndex && !b.proactivelyCompressed,
 		);
 		const candidateIds = new Set(candidates.map((b) => b.id));
 		let potetoModeActive = false;
@@ -329,10 +328,6 @@ export class MyCustomizeConductor implements Conductor {
 
 		return cmds;
 	}
-}
-
-function isProactivelyCompressed(b: ViewBlock): boolean {
-	return b.kind === "tool_result" && PROACTIVE_COMPRESS_MARKER.test(b.text ?? "");
 }
 
 function isRecallResult(b: ViewBlock): boolean {

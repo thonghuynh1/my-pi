@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { svelteTesting } from "@testing-library/svelte/vite";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -16,7 +17,7 @@ const __dirname = fileURLToPath(new URL(".", import.meta.url));
 // (`$conductors/contract`) must resolve.
 const conductorsDir = path.resolve(__dirname, "../conductors");
 export default defineConfig({
-	plugins: [svelte({ compilerOptions: { runes: true } })],
+	plugins: [svelte({ compilerOptions: { runes: true } }), svelteTesting()],
 	resolve: {
 		alias: [
 			{ find: /^\$conductors$/, replacement: conductorsDir },
@@ -26,5 +27,12 @@ export default defineConfig({
 	test: {
 		environment: "node",
 		include: ["src/lib/**/*.test.ts"],
+		// Component tests (Inspector.test.ts and friends under `ui/`) need a DOM.
+		// Everything else stays on the fast `node` environment.
+		environmentMatchGlobs: [
+			["src/lib/ui/**/*.test.ts", "jsdom"],
+			["src/lib/**/*.svelte.test.ts", "jsdom"],
+		],
+		setupFiles: ["./src/lib/test/setup-component.ts"],
 	},
 });

@@ -25,8 +25,6 @@ import type {
 	ExtensionContext,
 	Theme,
 } from "@earendil-works/pi-coding-agent";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import {
 	createManagedExtension,
 	loadCapabilityVisibilitySettings,
@@ -619,7 +617,7 @@ function registerQuietBuiltins(pi: ExtensionAPI) {
 					ctx.cwd === cwd
 						? builtin
 						: createToolByName(name, ctx.cwd);
-				return tool.execute(toolCallId, params as any, signal, onUpdate);
+				return tool.execute(toolCallId, params as any, signal, onUpdate, ctx);
 			},
 			renderCall: tinyCall(label),
 			renderResult: empty,

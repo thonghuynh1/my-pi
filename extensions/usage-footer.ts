@@ -1,6 +1,4 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import {
   createManagedExtension,
   loadCapabilityVisibilitySettings,

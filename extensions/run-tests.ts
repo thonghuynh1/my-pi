@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { readFileSync, existsSync, appendFileSync, mkdirSync } from "fs";
+import { readFileSync, existsSync, appendFileSync, mkdirSync, readdirSync } from "fs";
 import { join, basename } from "path";
 import { homedir } from "os";
 import {
@@ -171,15 +171,13 @@ function detectTestCommand(cwd: string): string | null {
 		} catch {}
 	}
 
-	const slnFiles = ["*.sln"].some(() => {
-		try {
-			const entries = require("fs").readdirSync(cwd);
-			return entries.some((e: string) => e.endsWith(".sln"));
-		} catch {
-			return false;
-		}
-	});
-	if (slnFiles) return "dotnet test";
+	let hasSolutionFile = false;
+	try {
+		hasSolutionFile = readdirSync(cwd).some((entry) => entry.endsWith(".sln"));
+	} catch {
+		// An unreadable directory cannot contain a discoverable solution file.
+	}
+	if (hasSolutionFile) return "dotnet test";
 
 	if (existsSync(join(cwd, "go.mod"))) return "go test ./...";
 

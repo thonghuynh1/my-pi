@@ -62,7 +62,6 @@ Restructure `my-pi` as a selectable extension package where users pick which ext
       "./extensions/run-tests.ts",
       "./extensions/accordion.ts",
       "./extensions/herdr-agent-report.ts",
-      "./extensions/pair-program.ts",
       "./extensions/subagents.ts",
       "./extensions/frontend-coach"
     ],

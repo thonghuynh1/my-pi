@@ -1,8 +1,8 @@
-# Issue: Update package.json pi manifest to list all 12 extensions individually
+# Issue: Update package.json pi manifest to list all 11 extensions individually
 
 ## What to build
 
-Restructure `package.json`'s `pi.extensions` array to list all 12 extensions individually instead of the flat `./extensions` glob. This enables users to pick specific extensions via `settings.json` filtering.
+Restructure `package.json`'s `pi.extensions` array to list all 11 extensions individually instead of the flat `./extensions` glob. This enables users to pick specific extensions via `settings.json` filtering.
 
 **PRD Decision IDs**: DEC-001, DEC-003, DEC-004, DEC-005, DEC-006
 
@@ -43,7 +43,6 @@ Restructure `package.json`'s `pi.extensions` array to list all 12 extensions ind
       "./extensions/run-tests.ts",
       "./extensions/accordion.ts",
       "./extensions/herdr-agent-report.ts",
-      "./extensions/pair-program.ts",
       "./extensions/subagents.ts",
       "./extensions/frontend-coach"
     ],
@@ -56,7 +55,7 @@ Restructure `package.json`'s `pi.extensions` array to list all 12 extensions ind
 
 ## Acceptance criteria
 
-- [ ] `package.json` `pi.extensions` array lists all 12 extensions individually
+- [ ] `package.json` `pi.extensions` array lists all 11 extensions individually
 - [ ] `pi.prompts` and `pi.settings` remain unchanged
 - [ ] No other files modified
 - [ ] `pi install npm:my-pi@1.0.0` still works without filtering

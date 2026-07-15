@@ -15,7 +15,7 @@ import {
 	type ManagedExtensionPiApi,
 } from "../lib/capability-visibility.ts";
 import { piExtension } from "../frontend-coach/index.ts";
-import { piExtension as pairProgramExtension } from "../pair-program.ts";
+
 import { piExtension as subagentsExtension } from "../subagents.ts";
 import { piExtension as lavishAxiExtension } from "../lavish-axi.ts";
 import { piExtension as engineeringSkillsExtension } from "../engineering-skills.ts";
@@ -75,21 +75,21 @@ test("loadCapabilityVisibilitySettings merges project and global settings with g
 	const projectSettingsPath = path.join(projectDir, "pi.settings.json");
 	writeFileSync(projectSettingsPath, JSON.stringify({
 		capabilityVisibility: {
-			"pair-program": {
+			"example-ext": {
 				tools: {
-					pair_program: "agent-visible",
+					example_tool: "agent-visible",
 				},
 			},
 		},
 	}));
 	writeFileSync(globalSettingsPath, JSON.stringify({
 		capabilityVisibility: {
-			"pair-program": {
+			"example-ext": {
 				tools: {
-					pair_program: "agent-hidden",
+					example_tool: "agent-hidden",
 				},
 				commands: {
-					"pair-program": "disabled",
+					"example-cmd": "disabled",
 				},
 			},
 		},
@@ -103,11 +103,11 @@ test("loadCapabilityVisibilitySettings merges project and global settings with g
 		});
 
 		assert.equal(
-			result.settings.capabilityVisibility?.["pair-program"]?.tools?.pair_program,
+			result.settings.capabilityVisibility?.["example-ext"]?.tools?.example_tool,
 			"agent-hidden",
 		);
 		assert.equal(
-			result.settings.capabilityVisibility?.["pair-program"]?.commands?.["pair-program"],
+			result.settings.capabilityVisibility?.["example-ext"]?.commands?.["example-cmd"],
 			"disabled",
 		);
 		assert.deepEqual(result.warnings, []);
@@ -507,7 +507,6 @@ test("frontend-coach unsafe override attempt for browser_eval without allowUnsaf
 // ── Issue 05: remaining active extensions migration tests ─────────────────
 
 test("all remaining active extensions have stable piExtension.id values", () => {
-	assert.equal(pairProgramExtension.id, "pair-program");
 	assert.equal(subagentsExtension.id, "subagents");
 	assert.equal(lavishAxiExtension.id, "lavish-axi");
 	assert.equal(engineeringSkillsExtension.id, "engineering-skills");
@@ -517,19 +516,7 @@ test("all remaining active extensions have stable piExtension.id values", () => 
 });
 
 
-test("pair_program resolves agent-hidden from package settings", () => {
-	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
-	const { settings } = parseCapabilityVisibilitySettings(raw);
-	const result = resolveToolVisibility({
-		extensionId: "pair-program",
-		toolName: "pair_program",
-		managed: true,
-		defaultVisibility: "agent-visible",
-		configuredOverride: settings.capabilityVisibility?.["pair-program"]?.tools?.pair_program,
-	});
-	assert.equal(result.visibility, "agent-hidden");
-	assert.deepEqual(result.warnings, []);
-});
+
 
 test("subagent resolves agent-visible from package defaults", () => {
 	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));

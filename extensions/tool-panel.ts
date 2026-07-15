@@ -279,10 +279,10 @@ function sessionTotals(): { tokens: number; costUsd: number } {
 		}
 	}
 
-	// Child sessions (subagents, pair_program) live in their own sessions;
+	// Child sessions (subagents) live in their own sessions;
 	// add their real cost on top.
 	for (const r of records) {
-		if (r.name !== "subagent" && r.name !== "pair_program") continue;
+		if (r.name !== "subagent") continue;
 		tokens += (r.inputTokens ?? 0) + (r.outputTokens ?? 0);
 		costUsd += r.costUsd ?? 0;
 	}
@@ -485,28 +485,6 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("tool_execution_end", (event, ctx) => {
 		currentCtx = ctx;
-		if (event.toolName === "pair_program") {
-			// pair_program has its own child sessions (driver + navigator) with
-			// real usage reported via details.usage (PairUsageSummary shape).
-			const rec = recordById.get(event.toolCallId);
-			if (!rec) return;
-			rec.status = event.isError ? "error" : "done";
-			rec.endedAt = Date.now();
-			const fullResult = extractResultText(event.result);
-			rec.resultText = clip(fullResult, 8_000);
-			rec.fullResultLen = fullResult.length;
-			const pairUsage = event.result?.details?.usage;
-			const totalCost = pairUsage?.totalUsage?.costUsd ?? 0;
-			const inputTok = (pairUsage?.driverUsage?.inputTokens ?? 0) + (pairUsage?.navigatorUsage?.inputTokens ?? 0);
-			const outputTok = (pairUsage?.driverUsage?.outputTokens ?? 0) + (pairUsage?.navigatorUsage?.outputTokens ?? 0);
-			rec.inputTokens = inputTok;
-			rec.outputTokens = outputTok;
-			rec.costUsd = totalCost;
-			rec.modelId = pairUsage?.driverUsage?.modelId;
-			rec.costAttributed = true;
-			refreshWidget(ctx);
-			return;
-		}
 		if (event.toolName === "subagent") {
 			activeSubagentCount = Math.max(0, activeSubagentCount - 1);
 			// Record the subagent call now (so its row appears once it's done

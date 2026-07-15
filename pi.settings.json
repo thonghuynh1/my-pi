@@ -15,14 +15,7 @@
         "coach-stop-edge": "enabled"
       }
     },
-    "pair-program": {
-      "tools": {
-        "pair_program": "agent-hidden"
-      },
-      "commands": {
-        "pair-program": "disabled"
-      }
-    },
+
     "subagents": {
       "tools": {
         "subagent": "agent-visible"

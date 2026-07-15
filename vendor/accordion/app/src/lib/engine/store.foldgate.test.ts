@@ -285,7 +285,7 @@ describe("end-to-end — the gate kills the lie on BOTH the view and the wire", 
 });
 
 describe("walking skeleton — PCC block is not double-folded end-to-end", () => {
-	it("a PCC-compressed message flows through linearize → buildView, and my-customize-conductor's fold is clamped by the store", () => {
+	it("a PCC-compressed message flows through linearize → buildView, and my-customize-conductor skips it", () => {
 		const [user, call, result] = linearize([
 			{ role: "user", timestamp: 1, content: "inspect the output" },
 			{
@@ -308,9 +308,54 @@ describe("walking skeleton — PCC block is not double-folded end-to-end", () =>
 
 		const block = s.get(result.id)!;
 		expect(block.proactivelyCompressed).toBe(true);
-		expect(s.lastReports.some((report) => report.reason === "proactively-compressed")).toBe(true);
+		expect(s.lastReports.some((report) => report.reason === "proactively-compressed")).toBe(false);
 		expect(block.autoFolded).toBe(false);
 		expect(block.subst).toBeUndefined();
+	});
+});
+
+describe("PCC guard — edge cases", () => {
+	it("a conductor 'fold' with breakFrozen of a PCC block is still clamped (no bypass)", () => {
+		const pcc = blk("r:pcc", "tool_result", 1, 0, 1000, undefined, { proactivelyCompressed: true });
+		const normal = blk("r:normal", "text", 1, 1, 1000);
+		const s = makeStore([pcc, normal]);
+		s.setProtect(0);
+		s.frozenFromIndex = 1;
+
+		const reports = s.applyCommands([{ kind: "fold", ids: [pcc.id], breakFrozen: true }], "auto");
+
+		expect(reports).toHaveLength(1);
+		expect(reports[0].reason).toBe("proactively-compressed");
+		expect(s.isFolded(pcc)).toBe(false);
+		expect(pcc.subst).toBeUndefined();
+	});
+
+	it("a PCC block inside a group collapses normally (no clamp)", () => {
+		const pcc = blk("r:pcc", "tool_result", 1, 0, 1000, undefined, { proactivelyCompressed: true });
+		const text = blk("a:text", "text", 1, 1, 1000);
+		const s = makeStore([pcc, text]);
+		s.setProtect(0);
+		const conductor = new StubConductor();
+		conductor.cmds = [{ kind: "group", ids: [pcc.id, text.id] }];
+		s.attach(conductor);
+
+		expect(s.lastReports).toEqual([]);
+		expect(s.groups).toHaveLength(1);
+		expect(s.groups[0].memberIds).toEqual([pcc.id, text.id]);
+		expect(s.isFolded(pcc)).toBe(true);
+	});
+
+	it("a conductor 'replace' of a PCC block is clamped 'proactively-compressed' and not folded", () => {
+		const pcc = blk("r:pcc", "tool_result", 1, 0, 1000, undefined, { proactivelyCompressed: true });
+		const s = makeStore([pcc]);
+		s.setProtect(0);
+
+		const reports = s.applyCommands([{ kind: "replace", id: pcc.id, content: "summary" }], "auto");
+
+		expect(reports).toHaveLength(1);
+		expect(reports[0].reason).toBe("proactively-compressed");
+		expect(s.isFolded(pcc)).toBe(false);
+		expect(pcc.subst).toBeUndefined();
 	});
 });
 

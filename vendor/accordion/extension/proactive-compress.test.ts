@@ -56,6 +56,20 @@ describe("proactive compression", () => {
 		expect((handleBeforeProviderRequest({ payload }) as typeof payload).messages[0].content).toBe(longContent);
 	});
 
+	it("sets _pccCompressed on compressed messages", () => {
+		const compressedPayload = { messages: [{ role: "tool", toolName: "bash", content: longContent }] };
+		const compressed = handleBeforeProviderRequest({ payload: compressedPayload }) as typeof compressedPayload & {
+			messages: Array<{ _pccCompressed?: boolean; content: string }>;
+		};
+		expect(compressed.messages[0]._pccCompressed).toBe(true);
+
+		const skippedPayload = { messages: [{ role: "tool", toolName: "bash", content: "small content" }] };
+		const skipped = handleBeforeProviderRequest({ payload: skippedPayload }) as typeof skippedPayload & {
+			messages: Array<{ _pccCompressed?: boolean; content: string }>;
+		};
+		expect(skipped.messages[0]._pccCompressed).toBeFalsy();
+	});
+
 	it("does not compress below the threshold", () => {
 		const content = "small content";
 		const payload = { messages: [{ role: "tool", toolName: "bash", content }] };

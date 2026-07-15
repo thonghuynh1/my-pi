@@ -72,7 +72,7 @@ function vb(
 		held: opts.held ?? false,
 		folded: false,
 		protected: opts.protected ?? false,
-		grouped: opts.grouped ?? false,
+		grouped: opts.grouped ?? false, proactivelyCompressed: false,
 		text: opts.text ?? `content of ${id}`,
 		toolName: opts.toolName,
 	};
@@ -121,7 +121,7 @@ function blk(
 		tokens,
 		override: null,
 		autoFolded: false,
-		by: null,
+		by: null, proactivelyCompressed: false,
 		...extra,
 	};
 }

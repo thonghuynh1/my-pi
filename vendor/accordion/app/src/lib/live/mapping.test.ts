@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { linearize, applyPlan, blockId, isDurableId, type PiMessage } from "./mapping";
+import { linearize, wireToBlock, applyPlan, blockId, isDurableId, type PiMessage } from "./mapping";
 import type { FoldOp } from "./protocol";
 
 // A small but representative pi context: a user turn, an assistant turn that
@@ -41,6 +41,16 @@ describe("linearize", () => {
 		const result = blocks.find((b) => b.kind === "tool_result")!;
 		expect(call.callId).toBe("call_1");
 		expect(result.callId).toBe("call_1");
+	});
+
+	it("propagates proactive compression from tool results into blocks", () => {
+		const [compressed] = linearize([
+			{ role: "toolResult", toolCallId: "compressed", content: "compressed", _pccCompressed: true },
+		]);
+		const [normal] = linearize([{ role: "toolResult", toolCallId: "normal", content: "normal" }]);
+
+		expect(wireToBlock(compressed).proactivelyCompressed).toBe(true);
+		expect(wireToBlock(normal).proactivelyCompressed).toBe(false);
 	});
 
 	it("increments turn on user messages and assigns dense order", () => {

@@ -140,7 +140,7 @@ function makeStoreWithCodeRead(budget: number): AccordionStore {
 		tokens: 30,
 		override: null,
 		autoFolded: false,
-		by: null,
+		by: null, proactivelyCompressed: false,
 		toolName: "Read",
 		callId: "call-1",
 	};
@@ -154,7 +154,7 @@ function makeStoreWithCodeRead(budget: number): AccordionStore {
 		tokens: Math.ceil(docstringHeavySrc.length / 4),
 		override: null,
 		autoFolded: false,
-		by: null,
+		by: null, proactivelyCompressed: false,
 		callId: "call-1",
 	};
 
@@ -167,7 +167,7 @@ function makeStoreWithCodeRead(budget: number): AccordionStore {
 		tokens: 10,
 		override: null,
 		autoFolded: false,
-		by: null,
+		by: null, proactivelyCompressed: false,
 	};
 
 	const parsed: ParsedSession = {
@@ -197,7 +197,7 @@ function makeProseView(n: number, budget: number): ConductorView {
 			held: false,
 			folded: false,
 			protected: false,
-			grouped: false,
+			grouped: false, proactivelyCompressed: false,
 		});
 	}
 	const liveTokens = blocks.reduce((s, b) => s + b.tokens, 0);

@@ -41,7 +41,7 @@ function blk(
 		tokens,
 		override: null,
 		autoFolded: false,
-		by: null,
+		by: null, proactivelyCompressed: false,
 		...extra,
 	};
 }

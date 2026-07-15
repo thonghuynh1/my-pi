@@ -13,7 +13,7 @@ import type { Block, ParsedSession } from "./types";
 //   6 a:r2:p0        text      turn2  5000
 //   7 u:3            user      turn3  100   (newest)
 function b(id: string, kind: Block["kind"], turn: number, order: number, tokens: number, callId?: string): Block {
-	return { id, kind, turn, order, text: id + " " + "x".repeat(40), tokens, callId, override: null, autoFolded: false, by: null };
+	return { id, kind, turn, order, text: id + " " + "x".repeat(40), tokens, callId, override: null, autoFolded: false, by: null, proactivelyCompressed: false };
 }
 function session(): Block[] {
 	return [

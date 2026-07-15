@@ -35,7 +35,7 @@ function call(toolName: string, args: Record<string, unknown>): ViewBlock {
 		held: false,
 		folded: false,
 		protected: false,
-		grouped: false,
+		grouped: false, proactivelyCompressed: false,
 		text: `${toolName} ${JSON.stringify(args)}`,
 	};
 }
@@ -59,7 +59,7 @@ function result(
 		held: false,
 		folded: false,
 		protected: false,
-		grouped: false,
+		grouped: false, proactivelyCompressed: false,
 		text: output,
 	};
 }
@@ -371,7 +371,7 @@ describe("classifyCodeRead — rejects non-code reads", () => {
 			held: false,
 			folded: false,
 			protected: false,
-			grouped: false,
+			grouped: false, proactivelyCompressed: false,
 			text: TS_BODY,
 		};
 		expect(classifyCodeRead(block, new Map())).toBeNull();

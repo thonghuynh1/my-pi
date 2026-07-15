@@ -39,7 +39,7 @@ function blk(i: number, kind: Block["kind"] = "text", tokens = 1000, extra: Part
 		tokens,
 		override: null,
 		autoFolded: false,
-		by: null,
+		by: null, proactivelyCompressed: false,
 		...extra,
 	};
 }
@@ -252,7 +252,7 @@ function vblk(i: number, tokens: number, extra: Partial<ConductorView["blocks"][
 		held: false,
 		folded: false,
 		protected: false,
-		grouped: false,
+		grouped: false, proactivelyCompressed: false,
 		text: `block ${i} content describing topic ${i} at some length`,
 		...extra,
 	};
@@ -457,7 +457,7 @@ describe("Keel — pass determinism", () => {
 			held: false,
 			folded: false,
 			protected: false,
-			grouped: false,
+			grouped: false, proactivelyCompressed: false,
 			text: `block ${i} content with some words about topic ${i}`,
 		}));
 		const view: ConductorView = {

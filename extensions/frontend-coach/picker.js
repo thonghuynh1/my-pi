@@ -3,14 +3,29 @@
  * type an instruction → sends it to pi.
  */
 (() => {
-	if (window.__piCoach) {
-		console.log("[frontend-coach] already loaded");
+	// Remove previous handlers if re-injecting (e.g. stale addInitScript + fresh script tag).
+	if (window.__piCoachCleanup) {
+		try { window.__piCoachCleanup(); } catch {}
+	}
+	if (window.__piCoach && window.__piCoachBanner) {
+		// Fully initialized already (DOM elements exist).
 		return;
 	}
+	// Either first load, or the flag was set by a prior init that crashed
+	// before DOM was ready. Re-run the full setup.
 	window.__piCoach = true;
 
 	const PORT = 7777;
 	const WS_URL = `ws://localhost:${PORT}`;
+
+	// addInitScript may fire before <body> exists. Defer DOM work until ready.
+	function whenBodyReady(fn) {
+		if (document.body) return fn();
+		const observer = new MutationObserver(() => {
+			if (document.body) { observer.disconnect(); fn(); }
+		});
+		observer.observe(document.documentElement, { childList: true });
+	}
 
 	// ---------- WebSocket ----------
 	let ws;
@@ -46,12 +61,6 @@
 		color: "#fff", background: "#333", borderRadius: "4px",
 		zIndex: 2147483647, pointerEvents: "none", opacity: "0.85",
 	});
-	document.body.appendChild(banner_);
-	function banner(text, bg) {
-		banner_.textContent = text;
-		if (bg) banner_.style.background = bg;
-	}
-
 	const box = document.createElement("div");
 	Object.assign(box.style, {
 		position: "fixed", pointerEvents: "none", display: "none",
@@ -59,13 +68,21 @@
 		background: "rgba(255,0,255,0.08)",
 		zIndex: 2147483646, transition: "all 60ms",
 	});
-	document.body.appendChild(box);
+	whenBodyReady(() => {
+		document.body.appendChild(banner_);
+		document.body.appendChild(box);
+		window.__piCoachBanner = banner_;
+	});
+	function banner(text, bg) {
+		banner_.textContent = text;
+		if (bg) banner_.style.background = bg;
+	}
 
 	// ---------- Pick mode ----------
 	let armed = false;
 	let hovered = null;
 
-	addEventListener("keydown", (e) => {
+	function onKeydown(e) {
 		// Alt+P toggles picker
 		if (e.altKey && (e.key === "p" || e.key === "P")) {
 			armed = !armed;
@@ -77,9 +94,9 @@
 			armed = false; box.style.display = "none";
 			banner("frontend-coach idle · Alt+P to pick", "#333");
 		}
-	});
+	}
 
-	addEventListener("mousemove", (e) => {
+	function onMousemove(e) {
 		if (!armed) return;
 		const el = document.elementFromPoint(e.clientX, e.clientY);
 		if (!el || el === box || el === banner_) return;
@@ -90,36 +107,121 @@
 			top: r.top + "px", left: r.left + "px",
 			width: r.width + "px", height: r.height + "px",
 		});
-	}, true);
+	}
 
-	addEventListener("click", (e) => {
+	addEventListener("keydown", onKeydown);
+	addEventListener("mousemove", onMousemove, true);
+
+	// ---------- Custom input overlay (replaces window.prompt for CDP compat) ----------
+	let inputOverlay = null;
+	let inputResolve = null;
+
+	function createInputOverlay() {
+		const overlay = document.createElement("div");
+		Object.assign(overlay.style, {
+			position: "fixed", top: "0", left: "0", width: "100%", height: "100%",
+			background: "rgba(0,0,0,0.5)", zIndex: 2147483647,
+			display: "flex", alignItems: "center", justifyContent: "center",
+		});
+		const card = document.createElement("div");
+		Object.assign(card.style, {
+			background: "#1a1a1a", color: "#eee", borderRadius: "8px", padding: "16px",
+			width: "420px", maxWidth: "90vw", font: "13px/1.5 system-ui, sans-serif",
+			boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+		});
+		const label = document.createElement("div");
+		Object.assign(label.style, { marginBottom: "8px", color: "#aaa", fontSize: "11px", fontFamily: "monospace" });
+		const input = document.createElement("input");
+		Object.assign(input.style, {
+			width: "100%", padding: "8px", border: "1px solid #444", borderRadius: "4px",
+			background: "#111", color: "#fff", fontSize: "13px", outline: "none",
+			boxSizing: "border-box",
+		});
+		input.placeholder = "What should the agent do with this element?";
+		const btnRow = document.createElement("div");
+		Object.assign(btnRow.style, { marginTop: "10px", display: "flex", gap: "8px", justifyContent: "flex-end" });
+		const btnCancel = document.createElement("button");
+		btnCancel.textContent = "Cancel";
+		Object.assign(btnCancel.style, { padding: "5px 12px", borderRadius: "4px", border: "1px solid #555", background: "#333", color: "#ccc", cursor: "pointer" });
+		const btnSend = document.createElement("button");
+		btnSend.textContent = "Send to pi";
+		Object.assign(btnSend.style, { padding: "5px 12px", borderRadius: "4px", border: "none", background: "#0a0", color: "#fff", cursor: "pointer", fontWeight: "bold" });
+		btnRow.appendChild(btnCancel);
+		btnRow.appendChild(btnSend);
+		card.appendChild(label);
+		card.appendChild(input);
+		card.appendChild(btnRow);
+		overlay.appendChild(card);
+
+		function resolve(value) {
+			overlay.style.display = "none";
+			if (inputResolve) { inputResolve(value); inputResolve = null; }
+		}
+		btnSend.onclick = () => resolve(input.value.trim() || null);
+		btnCancel.onclick = () => resolve(null);
+		input.onkeydown = (e) => {
+			if (e.key === "Enter") resolve(input.value.trim() || null);
+			if (e.key === "Escape") resolve(null);
+		};
+		overlay.onclick = (e) => { if (e.target === overlay) resolve(null); };
+
+		overlay._label = label;
+		overlay._input = input;
+		overlay.style.display = "none";
+		return overlay;
+	}
+
+	function showInput(selectorText) {
+		if (!inputOverlay) {
+			inputOverlay = createInputOverlay();
+			whenBodyReady(() => document.body.appendChild(inputOverlay));
+		}
+		inputOverlay._label.textContent = selectorText;
+		inputOverlay._input.value = "";
+		inputOverlay.style.display = "flex";
+		setTimeout(() => inputOverlay._input.focus(), 50);
+		return new Promise((res) => { inputResolve = res; });
+	}
+
+	function onClick(e) {
 		if (!armed || !hovered) return;
 		e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
 		const el = hovered;
 		armed = false; box.style.display = "none";
 		banner("frontend-coach idle · Alt+P to pick", "#333");
 
-		const instruction = window.prompt(
-			"What should the agent do with this element?\n\n" + cssPath(el),
-			""
-		);
-		if (!instruction) return;
+		showInput(cssPath(el)).then((instruction) => {
+			if (!instruction) return;
 
-		const payload = {
-			kind: "user_click",
-			url: location.href,
-			selector: cssPath(el),
-			outerHTML: (el.outerHTML || "").slice(0, 2000),
-			sourceFile: el.dataset && (el.dataset.source || el.dataset.locator) || null,
-			rect: rectOf(el),
-			styles: pickStyles(el),
-			componentChain: fiberBreadcrumb(el),
-			scriptHosts: scriptHosts(),
-			instruction,
-		};
-		try { ws.send(JSON.stringify(payload)); banner("sent to pi ✓", "#0a0"); }
-		catch (err) { banner("send failed: " + err.message, "#a00"); }
-	}, true);
+			const payload = {
+				kind: "user_click",
+				url: location.href,
+				selector: cssPath(el),
+				outerHTML: (el.outerHTML || "").slice(0, 2000),
+				sourceFile: el.dataset && (el.dataset.source || el.dataset.locator) || null,
+				rect: rectOf(el),
+				styles: pickStyles(el),
+				componentChain: fiberBreadcrumb(el),
+				scriptHosts: scriptHosts(),
+				instruction,
+			};
+			try { ws.send(JSON.stringify(payload)); banner("sent to pi ✓", "#0a0"); }
+			catch (err) { banner("send failed: " + err.message, "#a00"); }
+		});
+	}
+	addEventListener("click", onClick, true);
+
+	// Cleanup function so re-injection can remove stale listeners.
+	window.__piCoachCleanup = () => {
+		removeEventListener("keydown", onKeydown);
+		removeEventListener("mousemove", onMousemove, true);
+		removeEventListener("click", onClick, true);
+		if (banner_?.parentNode) banner_.parentNode.removeChild(banner_);
+		if (box?.parentNode) box.parentNode.removeChild(box);
+		if (inputOverlay?.parentNode) inputOverlay.parentNode.removeChild(inputOverlay);
+		window.__piCoach = false;
+		window.__piCoachBanner = null;
+	};
 
 	// ---------- Tool implementations ----------
 	function inspect(selector) {

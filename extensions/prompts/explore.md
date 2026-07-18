@@ -12,4 +12,4 @@ Return a concise report with:
 - Evidence, paths, and line references when possible
 - Suggested next steps for the parent agent
 
-If aiKnow tools are available and this repo is indexed, use one focused aiknow_search before grep/read for concrete symbols, files, keywords, or error text; if unsure, use aiknow_status once for larger exploration or normal tools for small tasks. Use aiknow_context with tier='compact' only for broad/unclear orientation.
+If aiKnow tools are available and this repo is indexed, use one focused aiknow_search with mode='explore' and tier='compact' before grep/read for concrete symbols, files, keywords, or error text. Follow any suggested aiknow_read call before using normal read/grep. If unsure, use aiknow_status once for larger exploration or normal tools for small tasks.

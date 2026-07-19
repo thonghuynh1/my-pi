@@ -28,7 +28,7 @@ export default defineConfig({
 	},
 	test: {
 		environment: "node",
-		include: ["src/lib/**/*.test.ts"],
+		include: ["src/lib/**/*.test.ts", "../extension/**/*.test.ts"],
 		// Component tests (Inspector.test.ts and friends under `ui/`) need a DOM.
 		// Everything else stays on the fast `node` environment.
 		environmentMatchGlobs: [

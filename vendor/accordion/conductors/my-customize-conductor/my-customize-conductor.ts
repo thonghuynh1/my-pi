@@ -37,6 +37,40 @@ import {
 	type PstackIdentity,
 } from "./mcp-summary";
 import { riskFlags } from "../keel/ledger";
+import * as chunkedCompaction from "./chunked-compaction";
+import {
+	composeDigest,
+	computePreGroupFromIndex,
+	corpusContentHash,
+	digestBody,
+	digestHeader,
+	digestMembersFooter,
+	effectivePreGroupTokens,
+	noOpenToolPairAcrossPreGroupTail,
+	trimOpenToolPairs,
+	type MyCustomizeConductorOpts,
+} from "./chunked-compaction";
+import { DEFAULT_PRE_GROUP_TOKENS, PRE_GROUP_OVERFLOW_CAP } from "./constants";
+
+export {
+	composeDigest,
+	computePreGroupFromIndex,
+	corpusContentHash,
+	digestBody,
+	digestHeader,
+	digestMembersFooter,
+	effectivePreGroupTokens,
+	isGroupBoundary,
+	noOpenToolPairAcrossPreGroupTail,
+	trimOpenToolPairs,
+};
+export type { MyCustomizeConductorOpts } from "./chunked-compaction";
+
+function isGroupBoundary(block: ViewBlock, pstackByBlockId: Map<string, PstackIdentity>): boolean {
+	if (block.kind === "user" || block.held || block.protected || block.grouped || block.proactivelyCompressed) return true;
+	const tool = (block.toolName ?? "").trim().toLowerCase();
+	return tool === "mcp" || tool === "recall" || pstackByBlockId.has(block.id);
+}
 
 /** Fraction of cap below which the current fold plan is held stable (epoch hold band). */
 const HOLD_BAND = 0.9;
@@ -45,30 +79,7 @@ const POTETO_OFF_PHRASES = ["exit poteto mode", "stop using poteto", "disable ps
 
 type SavedFold = { tokens: number; breakFrozen: boolean };
 
-/** Conservative estimate of the host's default recoverable group digest. */
-export function estimateDefaultGroupDigestCost(run: ViewBlock[]): number {
-	let totalTokens = 0;
-	let lowestTurn = Infinity;
-	let highestTurn = -Infinity;
-	const kinds = new Set<string>();
-	for (const block of run) {
-		totalTokens += block.tokens;
-		lowestTurn = Math.min(lowestTurn, block.turn);
-		highestTurn = Math.max(highestTurn, block.turn);
-		kinds.add(block.kind);
-	}
-	let chars = 64 + String(run.length).length + String(Math.max(0, totalTokens)).length;
-	chars += String(Math.max(0, lowestTurn === Infinity ? 0 : lowestTurn)).length;
-	chars += String(Math.max(0, highestTurn === -Infinity ? 0 : highestTurn)).length;
-	chars += kinds.size * 24;
-	return Math.ceil(chars / 4) + 8;
-}
-
-function isGroupBoundary(block: ViewBlock, pstackByBlockId: Map<string, PstackIdentity>): boolean {
-	if (block.kind === "user" || block.held || block.protected || block.grouped) return true;
-	const tool = (block.toolName ?? "").trim().toLowerCase();
-	return tool === "mcp" || tool === "recall" || pstackByBlockId.has(block.id);
-}
+export const estimateDefaultGroupDigestCost = chunkedCompaction.estimateDefaultGroupDigestCost;
 
 export class MyCustomizeConductor implements Conductor {
 	readonly id = "my-customize-conductor";
@@ -81,21 +92,21 @@ export class MyCustomizeConductor implements Conductor {
 	private lastSemanticKey: string | null = null;
 	private lastFrozenGroupEpochKey: string | null = null;
 	private lastViewKey: string | null = null;
+	private readonly opts: Required<MyCustomizeConductorOpts>;
+	private rolloverCount = 0;
+	private tokensSavedByRollover = 0;
+	private lastEstimatedGroupSaving = 0;
+	private breakFrozenCount = 0;
+
+	constructor(opts: MyCustomizeConductorOpts = {}) {
+		this.opts = { preGroupTokens: opts.preGroupTokens ?? DEFAULT_PRE_GROUP_TOKENS };
+	}
 
 	conduct(view: ConductorView): Command[] {
 		// Fold toward the REAL available space (budget capped by window − harness − reply reserve,
 		// then calibrated to real tokens), not the raw budget — else the true request overflows.
 		const cap = availableCap(view);
 		const hardCap = contextWindowCap(view);
-		if (view.liveTokens <= cap) {
-			this.lastPlan = null;
-			this.lastSavings.clear();
-			this.lastSemanticKey = null;
-			this.lastFrozenGroupEpochKey = null;
-			this.lastViewKey = null;
-			return [];
-		}
-
 		// Build lookups used for semantic state, the epoch hold check, and savings recording.
 		const byId = new Map(view.blocks.map((b) => [b.id, b]));
 		const callById = new Map<string, ViewBlock>();
@@ -125,6 +136,58 @@ export class MyCustomizeConductor implements Conductor {
 			const codes = b.callId ? recallCodes(callById.get(b.callId)?.text) : undefined;
 			const identity = codes?.length === 1 ? pstackByFoldCode.get(codes[0]) : undefined;
 			if (identity) pstackByBlockId.set(b.id, identity);
+		}
+
+		const preGroupTarget = effectivePreGroupTokens(view, this.opts);
+		if (preGroupTarget > 0) {
+			const preGroupFromIndex = computePreGroupFromIndex(view, preGroupTarget, (block) => isGroupBoundary(block, pstackByBlockId));
+			const preGroupBlocks = view.blocks.slice(preGroupFromIndex, view.protectedFromIndex);
+			const preGroupTokens = preGroupBlocks.reduce((sum, block) => sum + block.tokens, 0);
+			const nextBlock = view.blocks[view.protectedFromIndex];
+			const preGroupEndsOnTurnBoundary = nextBlock?.kind === "user" || view.protectedFromIndex === view.blocks.length;
+			const noOpen = noOpenToolPairAcrossPreGroupTail(view, preGroupFromIndex);
+			const fastPathFires = preGroupTokens >= preGroupTarget && preGroupEndsOnTurnBoundary && noOpen;
+			// A boundary that straddles a tool pair cannot use the fast path, but it is still
+			// eligible once the target is reached. Trimming the in-group half below keeps that
+			// pair live while allowing the rest of the safe pre-group to roll over.
+			const trimmedPairPathFires = preGroupTokens >= preGroupTarget && nextBlock?.kind === "tool_result" && !noOpen;
+			const escapeValveFires = preGroupTokens > preGroupTarget * PRE_GROUP_OVERFLOW_CAP;
+
+			if (fastPathFires || trimmedPairPathFires || escapeValveFires) {
+				const ids = trimOpenToolPairs(preGroupBlocks.map((block) => block.id), view.blocks);
+				if (ids.length >= 2) {
+					const members = view.blocks.filter((block) => ids.includes(block.id));
+					const digestCost = chunkedCompaction.estimateDefaultGroupDigestCost(members);
+					const trimmedTokens = members.reduce((sum, block) => sum + block.tokens, 0);
+					const estimatedGroupSaving = trimmedTokens - digestCost;
+					const minSaving = Math.max(2_000, 0.05 * cap);
+					if (estimatedGroupSaving >= minSaving) {
+						const turnRange: [number, number] = [
+							Math.min(...members.map((block) => block.turn)),
+							Math.max(...members.map((block) => block.turn)),
+						];
+						const digest = composeDigest(
+							digestHeader(corpusContentHash(members), ids.length, turnRange),
+							digestBody(members),
+							digestMembersFooter(ids.map(foldCode)),
+						);
+						this.rolloverCount += 1;
+						this.tokensSavedByRollover += estimatedGroupSaving;
+						this.lastEstimatedGroupSaving = estimatedGroupSaving;
+						this.breakFrozenCount += 1;
+						return [{ kind: "group", ids, digest }];
+					}
+				}
+			}
+		}
+
+		if (view.liveTokens <= cap) {
+			this.lastPlan = null;
+			this.lastSavings.clear();
+			this.lastSemanticKey = null;
+			this.lastFrozenGroupEpochKey = null;
+			this.lastViewKey = null;
+			return [];
 		}
 
 		const allCandidates = view.blocks.filter(
@@ -254,7 +317,7 @@ export class MyCustomizeConductor implements Conductor {
 		};
 		const emitGroup = (run: ViewBlock[]): number => {
 			const residue = run.reduce((total, block) => total + (plannedContribution.get(block.id) ?? block.tokens), 0);
-			const saving = residue - estimateDefaultGroupDigestCost(run);
+			const saving = residue - chunkedCompaction.estimateDefaultGroupDigestCost(run);
 			if (saving <= 0) return 0;
 			groups.push({ kind: "group", ids: run.map((block) => block.id) });
 			for (const block of run) groupedIds.add(block.id);
@@ -273,7 +336,7 @@ export class MyCustomizeConductor implements Conductor {
 		// emitting any of them so one cache-invalidating rewrite is worth the threshold.
 		if (live > hardCap) {
 			const frozenRuns = groupRuns(view.blocks, (block) => block.order < view.frozenFromIndex);
-			const savings = frozenRuns.map((run) => ({ run, saving: run.reduce((total, block) => total + (plannedContribution.get(block.id) ?? block.tokens), 0) - estimateDefaultGroupDigestCost(run) }));
+			const savings = frozenRuns.map((run) => ({ run, saving: run.reduce((total, block) => total + (plannedContribution.get(block.id) ?? block.tokens), 0) - chunkedCompaction.estimateDefaultGroupDigestCost(run) }));
 			const frozenEpochKey = savings.map(({ run }) => run.map((block) => `${block.id}:${plannedContribution.get(block.id) ?? block.tokens}`).join(",")).join("|");
 			const totalFrozenSaving = savings.reduce((total, candidate) => total + Math.max(0, candidate.saving), 0);
 			const threshold = Math.max(2_000, 0.05 * cap);

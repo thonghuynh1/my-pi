@@ -21,7 +21,7 @@ Constants: `preGroupTokens_soft = 15_000`, `overflow = 18_750`, `min_savings = 2
 | 5 | 3 800 | no | no | pre-group reset after rollover |
 | 6 | 7 100 | no | no | rebuilding |
 
-Cache-tracker sees `frozenFromIndex` drop from N to 0 exactly once — between turns 4 and 5. `matchedPrefix` reason at turn 5 = `prefix-mismatch`. All other turns = `prefix-match`.
+Cache-tracker sees `matchedPrefix < previousMessageCount` on the rollover turn. The reason may still be `prefix-match` when an earlier immutable summary remains unchanged; `prefix-mismatch` is reserved for `matchedPrefix == 0`.
 
 ---
 
@@ -75,17 +75,17 @@ Cache-tracker sees `frozenFromIndex` drop from N to 0 exactly once — between t
     "frozenFromIndexBefore": 22,
     "frozenFromIndexAfter": 68,
     "cacheTrackerReasonBefore": "prefix-match",
-    "cacheTrackerReasonAfter": "prefix-mismatch",
+    "cacheTrackerReasonAfter": "prefix-match",
     "digestContentHash": "sha256:abcd1234..."
   }
 }
 ```
 
-**Turn 5:** no `chunkedCompaction` field (nothing fired). Cache-tracker's normal per-turn record still shows `reason: "prefix-mismatch"` (the tail rebuilt around the new digest).
+**Turn 5:** no `chunkedCompaction` field because nothing fired. Cache-tracker shows a full prefix match against the prior provider-visible payload.
 
 **What a live human sees in the extension badge:** nothing — the badge is still the pre-existing static `🪗 accordion`. Postmortem is rich; live view is invisible.
 
-**Invariant verification:** `jq '.chunkedCompaction.event' session.jsonl | grep rollover | wc -l` vs `jq '.cacheDiagnostics.reason' session.jsonl | grep prefix-mismatch | wc -l` — the difference must be ≤ session's cold-start count (typically 1). Testable via a one-line grep on a session log.
+**Invariant verification:** count records where `matchedPrefix < previousMessageCount` and `previousMessageCount > 0`. In a stable-provider scripted session, that prefix-rewrite count must equal the rollover count. Add the one cold-start record only when reporting total cache breaks.
 
 ---
 
@@ -124,8 +124,8 @@ That's a clean layering: conductor emits a `GroupCommand` (already legal), exten
 
 ---
 
-## Verdict slot (fill in on human reaction)
+## Verdict
 
-- Chosen option: _____
-- Rationale: _____
+- Chosen option: C, live status plus per-turn JSONL.
+- Rationale: live status supports operators while JSONL supports deterministic replay. Verification counts numeric prefix rewrites rather than the narrower `prefix-mismatch` reason.
 - Downstream: this pins D5 (verification surface) — grep on JSONL is the natural test if B or C wins; unit test on `conduct()` emission shape is the natural test if A wins.

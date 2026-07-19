@@ -1,5 +1,5 @@
 ---
-status: ready-for-agent
+status: closed
 labels: ready-for-agent
 prd: ../PRD.md
 adr: ../../../docs/adr/0004-accordion-chunked-compaction.md

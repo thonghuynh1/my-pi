@@ -63,6 +63,28 @@ function makeStore(blocks: Block[]): AccordionStore {
 	return new AccordionStore(parsed);
 }
 
+function makeChunkedMemberStore(): { store: AccordionStore; memberId: string; groupId: string } {
+	const memberId = "a:chunked-member:p0";
+	const secondMemberId = "a:chunked-second:p0";
+	const tailId = "u:chunked-tail";
+	const store = makeStore([
+		blk({ id: memberId, kind: "text", tokens: 8000, text: "original chunked member content" }),
+		blk({ id: secondMemberId, kind: "text", tokens: 8000, text: "second original member content" }),
+		blk({ id: tailId, kind: "user", tokens: 50, text: "current tail" }),
+	]);
+	store.setProtect(40);
+	store.setBudget(1_000_000);
+	const group = store.createGroup(
+		memberId,
+		secondMemberId,
+		"you",
+		"⟨chunked-compaction · 2 blocks · turns 1–2 · content-hash sha256:test⟩\n\nsummary\n\nMembers: {#abc123} {#def456}",
+	);
+	expect(group).not.toBeNull();
+	store.frozenFromIndex = 2;
+	return { store, memberId, groupId: group!.id };
+}
+
 describe("computeFoldOps", () => {
 	it("emits ops for folded text/thinking/tool_result blocks with durable ids", () => {
 		order = 0;
@@ -373,6 +395,108 @@ describe("resolveUnfold", () => {
 		expect(restored).toEqual([]);
 		expect(missing).toEqual([code]);
 		expect(s.groupById(g.id)!.folded).toBe(true); // group never unfolded through the lock
+	});
+
+	it("resolveUnfold appends tail entry for chunked-compaction group member", () => {
+		const { store, memberId, groupId } = makeChunkedMemberStore();
+		const code = foldCode(memberId);
+		const beforeLength = store.blocks.length;
+		const beforeMaxOrder = Math.max(...store.blocks.map((b) => b.order));
+		const beforeDigest = store.groupById(groupId)!.digest;
+		const beforeFrozen = store.frozenFromIndex;
+
+		const { restored, missing } = resolveUnfold(store, [code]);
+		const appended = store.blocks.slice(beforeLength);
+
+		expect(appended).toHaveLength(2);
+		expect(appended.map((b) => b.kind)).toEqual(["tool_call", "tool_result"]);
+		expect(appended.every((b) => b.order > beforeMaxOrder)).toBe(true);
+		expect(appended[0].callId).toBe(appended[1].callId);
+		expect(appended[0].text).toBe(`recall(${code})`);
+		expect(appended[1].text).toBe(store.get(memberId)!.text);
+		expect(store.groupById(groupId)!.digest).toBe(beforeDigest);
+		expect(store.frozenFromIndex).toBe(beforeFrozen);
+		expect(restored).toEqual([{ code, kind: "text", label: `recall(${code}) → tail`, ids: [memberId] }]);
+		expect(missing).toEqual([]);
+	});
+
+	it("tail append preserves an auto-owned rollover group in the mutable suffix", () => {
+		const { store, memberId, groupId } = makeChunkedMemberStore();
+		const group = store.groupById(groupId)!;
+		group.by = "auto";
+		store.groups = [...store.groups];
+		store.frozenFromIndex = 0;
+		const digest = group.digest;
+
+		const result = resolveUnfold(store, [foldCode(memberId)]);
+
+		expect(result.missing).toEqual([]);
+		expect(store.groupById(groupId)).toBe(group);
+		expect(store.groupById(groupId)!.digest).toBe(digest);
+	});
+
+	it("resolveUnfold still restores non-group-member fold codes in place", () => {
+		const id = "a:normal:p0";
+		const store = makeStore([
+			blk({ id, kind: "text", tokens: 8000 }),
+			blk({ id: "u:normal-tail", kind: "user", tokens: 50, text: "hi" }),
+		]);
+		store.setProtect(40);
+		store.setBudget(1000);
+		const beforeLength = store.blocks.length;
+
+		const { restored, missing } = resolveUnfold(store, [foldCode(id)]);
+
+		expect(store.blocks.length).toBe(beforeLength);
+		expect(store.isFolded(store.get(id)!)).toBe(false);
+		expect(restored[0].ids).toEqual([id]);
+		expect(missing).toEqual([]);
+	});
+
+	it("repeated recall of a group-member code appends repeated tail entries", () => {
+		const { store, memberId, groupId } = makeChunkedMemberStore();
+		const code = foldCode(memberId);
+		const beforeLength = store.blocks.length;
+		const beforeDigest = store.groupById(groupId)!.digest;
+		const beforeFrozen = store.frozenFromIndex;
+
+		resolveUnfold(store, [code]);
+		resolveUnfold(store, [code]);
+		const appended = store.blocks.slice(beforeLength);
+
+		expect(appended).toHaveLength(4);
+		expect(new Set(appended.filter((b) => b.kind === "tool_call").map((b) => b.callId)).size).toBe(2);
+		expect(new Set(appended.map((b) => b.order)).size).toBe(4);
+		expect(store.groupById(groupId)!.digest).toBe(beforeDigest);
+		expect(store.frozenFromIndex).toBe(beforeFrozen);
+	});
+
+	it("human GUI unfold of a chunked-compaction group member appends to tail (same as agent recall)", () => {
+		const { store, memberId, groupId } = makeChunkedMemberStore();
+		const code = foldCode(memberId);
+		const beforeLength = store.blocks.length;
+		const beforeDigest = store.groupById(groupId)!.digest;
+		const beforeFrozen = store.frozenFromIndex;
+
+		const result = resolveUnfold(store, [code]);
+		const appended = store.blocks.slice(beforeLength);
+
+		expect(result.missing).toEqual([]);
+		expect(appended.map((b) => b.kind)).toEqual(["tool_call", "tool_result"]);
+		expect(result.restored[0].label).toBe(`recall(${code}) → tail`);
+		expect(store.groupById(groupId)!.digest).toBe(beforeDigest);
+		expect(store.frozenFromIndex).toBe(beforeFrozen);
+	});
+
+	it("tail-appended recall blocks count against liveTokens", () => {
+		const { store, memberId } = makeChunkedMemberStore();
+		const before = store.liveTokens;
+		const beforeLength = store.blocks.length;
+
+		resolveUnfold(store, [foldCode(memberId)]);
+		const appended = store.blocks.slice(beforeLength);
+
+		expect(store.liveTokens - before).toBe(appended[0].tokens + appended[1].tokens);
 	});
 });
 

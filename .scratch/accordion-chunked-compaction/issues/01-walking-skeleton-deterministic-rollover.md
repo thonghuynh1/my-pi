@@ -1,5 +1,5 @@
 ---
-status: ready-for-agent
+status: closed
 labels: ready-for-agent
 prd: ../PRD.md
 adr: ../../../docs/adr/0004-accordion-chunked-compaction.md
@@ -44,6 +44,7 @@ All helpers are **pure functions** (no I/O, no clock, no PRNG) so replay is byte
 export const DEFAULT_PRE_GROUP_TOKENS = 15_000;
 export const PRE_GROUP_OVERFLOW_CAP = 1.25;              // hard ceiling = 15_000 * 1.25 = 18_750
 export const MIN_CONTEXT_WINDOW_FOR_CHUNKED_COMPACTION = 128_000;
+export const CHUNKED_COMPACTION_PREFIX = "⟨chunked-compaction ·";
 ```
 
 ```ts
@@ -202,7 +203,7 @@ At `F:/MyWork/my-pi/vendor/accordion/extension/accordion.ts:~1227` (the `applyPl
         "frozenFromIndexBefore": 22,        // integer: cacheTracker.getFrozenFromIndex() BEFORE apply
         "frozenFromIndexAfter": 68,         // integer: cacheTracker.getFrozenFromIndex() AFTER apply
         "cacheTrackerReasonBefore": "prefix-match",   // string from CacheTrackerReason union
-        "cacheTrackerReasonAfter":  "prefix-mismatch",
+        "cacheTrackerReasonAfter":  "prefix-match",    // may remain match when an earlier prefix survives
         "digestContentHash": "sha256:..."    // string: parsed out of the digest header
     }
 }

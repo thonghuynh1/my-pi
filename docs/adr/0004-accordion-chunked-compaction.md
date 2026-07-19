@@ -199,24 +199,31 @@ On the pass that emits a rollover, the `text` transitions to `"chunked · rollov
     "frozenFromIndexBefore": 22,
     "frozenFromIndexAfter": 68,
     "cacheTrackerReasonBefore": "prefix-match",
-    "cacheTrackerReasonAfter": "prefix-mismatch",
+    "cacheTrackerReasonAfter": "prefix-match",
     "digestContentHash": "sha256:..."
   }
 }
 ```
 
-The extension owns the JSONL record (it already observes `GroupCommand`s and holds `cacheTracker.getDiagnostics()` in scope). The conductor stays JSONL-oblivious; no new upward channel exists.
+The extension owns the JSONL record (it already observes `GroupCommand`s and holds `cacheTracker.getDiagnostics()` in scope). It tracks which chunked-compaction group ids have already authored a rollover record, because `computeGroupOps()` includes older folded groups in later plans. The conductor stays JSONL-oblivious; no new upward channel exists. `cacheTrackerReasonAfter` may remain `prefix-match` when a rollover preserves one or more leading immutable summaries.
 
 **d. Provider-agnostic v1.** Same policy for all providers. All cache-cost math is delegated to the Pi SDK. Per-provider tuning is out of scope for this map.
 
-**e. Verification invariant (normative).** Over any session's JSONL:
+**e. Verification invariant (normative).** In a stable-provider verification session where chunked compaction is the only operation that rewrites messages already sent to the provider:
 
 ```text
+prefixRewrite(record)
+  = record.cacheTracker.previousMessageCount > 0
+    && record.cacheTracker.matchedPrefix < record.cacheTracker.previousMessageCount
+
+cacheBreak(record)
+  = record.cacheTracker.reason == "cold-start" || prefixRewrite(record)
+
 count(chunkedCompaction.event == "rollover")
-  == count(cacheDiagnostics.reason == "prefix-mismatch") − coldStartCount
+  == count(cacheBreak(record)) − coldStartCount
 ```
 
-where `coldStartCount ≤ 1` per session. **The cold-start break is explicitly excluded** — every session has at most one first-turn prefix-mismatch that is not attributable to chunked compaction. Any deviation is a bug in either the conductor's single-emission guarantee (§2) or the extension's JSONL author path.
+`coldStartCount` is the count of records whose reason is `cold-start` and is at most one in the scripted session. The numeric prefix comparison is load-bearing. The tracker reports `prefix-mismatch` only when `matchedPrefix == 0`; a later rollover after an immutable summary usually reports `prefix-match` while still rewriting the cached suffix. The invariant is scoped to a controlled session because provider changes, system changes, and unrelated folding can also rewrite a prefix in a general log. Any deviation in the controlled session is a bug in the extension's rollover JSONL author path or the scripted rollover flow.
 
 ## Considered Options
 
@@ -238,14 +245,15 @@ where `coldStartCount ≤ 1` per session. **The cold-start break is explicitly e
 
 - One engine change: `substOne` frozen-region clamp bypass for `group` with non-null digest (§5). This is the sole load-bearing engine tweak.
 - One conductor change: `MyCustomizeConductor` gains `attach(host)` and emits `conductor/status` metrics (§7.c).
-- One extension change: `accordion.ts` appends a `chunkedCompaction` block to the per-turn JSONL on rollover turns (§7.c).
+- One extension change: `accordion.ts` appends a `chunkedCompaction` block once per new group id and suppresses older groups repeated in later full plans (§7.c).
+- One engine lifecycle change: `clearConductorState()` preserves chunked-compaction groups by their deterministic digest prefix, including when the first member sits exactly at `frozenFromIndex`.
 - One engine change: the fold-code resolver gains a policy branch for group-member codes → tail-append (§3.b). Specified in the PRD; not in the conductor contract.
 
 **No change to.** `docs/conductor-protocol.md`, `ConductorView`, `ContextUpdateMessage`, `CONDUCTOR_PROTOCOL_VERSION`, `Command` union, any wire type. No cross-session shared cache. No user-facing setting.
 
 **Immutability and irreversibility.** Group summaries emitted by chunked compaction are immutable once written — no re-summarising a prior group, no re-computing an existing digest under a new corpus. `GroupCommand` with `digest: null` (irreversible DROP) is not used by chunked compaction under any code path; the frozen-region clamp bypass (§5) applies only to `digest !== null`. DROP remains available to the pre-existing hard-pressure fallback, gated on `hasHardContextPressure()`.
 
-**KV-cache invariant (verification claim).** At most one KV-cache-prefix break per rollover event, and the total count of such events matches the JSONL rollover count minus the ≤1 cold-start break, per §7.e. This invariant is the ADR's contract with the provider cache.
+**KV-cache invariant (verification claim).** In the controlled verification session, each rollover produces one numeric prefix rewrite. Total cache breaks equal rollover records plus the at-most-one cold start, per §7.e. This invariant is the ADR's contract with the provider cache.
 
 **Non-goals (currently listed under Not yet specified on the map).**
 

@@ -49,7 +49,7 @@ Two write-sites, structurally distinct:
     rolloverCount,            // cumulative since session start
     tokensSavedByRollover,    // cumulative sum of estimatedGroupSaving across successful rollovers
     lastEstimatedGroupSaving, // most recent rollover's saving
-    breakFrozenCount          // cumulative count of emitted breakFrozen:true GroupCommands
+    breakFrozenCount          // cumulative count of emitted GroupCommands with a non-empty digest
   }
 }
 ```
@@ -72,7 +72,7 @@ On a rollover turn, `text` transitions to `"chunked · rollover · ${rolloverCou
     "frozenFromIndexBefore": 22,
     "frozenFromIndexAfter": 68,
     "cacheTrackerReasonBefore": "prefix-match",
-    "cacheTrackerReasonAfter": "prefix-mismatch",
+    "cacheTrackerReasonAfter": "prefix-match",
     "digestContentHash": "sha256:..."
   }
 }
@@ -86,19 +86,21 @@ Same policy for all providers. All cache-cost math continues to be delegated to 
 
 Per-provider tuning (different `preGroupTokens_soft` for OpenAI's larger auto-cache or Gemini's explicit context caching) is **out of scope for this map** and would spawn a future map if ever motivated.
 
-### D5 — Verification surface (B: JSONL-grep static replay)
+### D5 — Verification surface (B: JSONL static replay)
 
-The ADR names as its testable invariant:
+The ADR names this invariant for a stable-provider scripted session where chunked compaction is the only operation that rewrites provider-visible messages:
 
-> Over any session's JSONL:
-> `count(chunkedCompaction.event == "rollover") == count(cacheDiagnostics.reason == "prefix-mismatch") − coldStartCount`
-> where `coldStartCount ≤ 1` per session.
+> `prefixRewrite = previousMessageCount > 0 && matchedPrefix < previousMessageCount`
 >
-> Any deviation is a bug in either the conductor's single-emission guarantee (T03 α) or the extension's JSONL author path.
+> `cacheBreak = reason == "cold-start" || prefixRewrite`
+>
+> `count(chunkedCompaction.event == "rollover") == count(cacheBreak) − coldStartCount`
 
-**Cold-start caveat, normative:** the invariant excludes the initial cold-start break (a legitimate session-start break, not caused by a rollover). The ADR must state this explicitly so the grep test is unambiguous.
+The numeric comparison is required because `prefix-mismatch` means `matchedPrefix == 0`. A later rollover after an immutable group can report `prefix-match` while still rewriting the cached suffix. Cold start is a separate reason and contributes one cache break in the scripted session.
 
-Unit tests on the conductor's emission shape (assert `conduct()` emits at most one `breakFrozen:true GroupCommand` per pass) are an implementer choice — not prescribed at ADR level, since single-pass emission is already guaranteed by T03 α by construction.
+The extension tracks group ids whose rollover diagnostics have already been authored. Full plans repeat older folded groups, but those repeats are not new rollover events.
+
+The integration test drives zero, one, and two rollovers through the real conductor, store, plan mapping, and tracker. A corrupted copy with one rollover block removed must fail the equality.
 
 ### Consequences on the map
 

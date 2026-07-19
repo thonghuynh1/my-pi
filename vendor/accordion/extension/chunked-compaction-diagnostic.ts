@@ -1,8 +1,8 @@
+import { estTokens } from "../app/src/lib/engine/tokens";
 import type { GroupOp, WireBlock } from "../app/src/lib/live/protocol";
 import type { CacheTrackerReason } from "./cache-tracker";
 
 const PREFIX = "⟨chunked-compaction ·";
-const DIAGNOSTIC_CHARS_PER_TOKEN = 4;
 
 export interface ChunkedCompactionDiagnostic {
 	event: "rollover";
@@ -29,7 +29,7 @@ export function buildChunkedCompactionDiagnostic(
 	const members = blocks.filter((block) => group.memberIds.includes(block.id));
 	const turns = members.map((block) => block.turn);
 	const digestContentHash = /^⟨chunked-compaction ·[^⟩]*content-hash\s+([^\s⟩]+)⟩/.exec(digest)?.[1] ?? "sha256:";
-	const digestTokens = Math.ceil(digest.length / DIAGNOSTIC_CHARS_PER_TOKEN);
+	const digestTokens = estTokens(digest);
 	const preGroupTokensBefore = members.reduce((sum, block) => sum + block.tokens, 0);
 	return {
 		event: "rollover",

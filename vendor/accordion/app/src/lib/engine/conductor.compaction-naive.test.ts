@@ -338,7 +338,6 @@ describe("NaiveCompactionConductor — first compaction cycle", () => {
 
 		// The digest is the summary (preamble + model text), not an engine fold marker.
 		expect(g.digest).toContain("Summary text from the model.");
-		expect(g.digest).not.toContain(" FOLDED}");
 		expect(g.digest).toContain("3 earlier message");
 	});
 

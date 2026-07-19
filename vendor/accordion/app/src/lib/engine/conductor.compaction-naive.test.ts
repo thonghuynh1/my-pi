@@ -34,10 +34,11 @@
  *      swallowed into the group (not left live); tool_call/result pair-balanced.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { NaiveCompactionConductor } from "$conductors/compaction-naive/compaction-naive";
 import { MyCustomizeConductor } from "$conductors/my-customize-conductor/my-customize-conductor";
-import { corpusContentHash, trimOpenToolPairs } from "$conductors/my-customize-conductor/chunked-compaction";
+import * as chunkedCompaction from "$conductors/my-customize-conductor/chunked-compaction";
+import { corpusContentHash } from "$conductors/my-customize-conductor/chunked-compaction";
 import { AccordionStore } from "./store.svelte";
 import type { Block, ParsedSession } from "./types";
 import type {
@@ -335,9 +336,9 @@ describe("NaiveCompactionConductor — first compaction cycle", () => {
 		const g = group as { ids: string[]; digest: string };
 		expect(g.ids).toEqual(["a0", "a2"]);
 
-		// The digest is the summary (preamble + model text). No {# FOLDED} tag.
+		// The digest is the summary (preamble + model text), not an engine fold marker.
 		expect(g.digest).toContain("Summary text from the model.");
-		expect(g.digest).not.toMatch(/\{#\w+\s+FOLDED\}/);
+		expect(g.digest).not.toContain(" FOLDED}");
 		expect(g.digest).toContain("3 earlier message");
 	});
 
@@ -1643,13 +1644,85 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		}
 	});
 
-	it("chunked-compaction trims open tool pairs before emission", () => {
+	it("chunked-compaction trims open tool pairs before cost estimation", () => {
 		const preGroup = Array.from({ length: 8 }, (_, i) => chunkedBlock(`p${i}`, i));
 		preGroup.push(chunkedBlock("call", 8, 2_000, { kind: "tool_call", callId: "pair", toolName: "bash" }));
 		const tail = chunkedBlock("result", 9, 100, { kind: "tool_result", callId: "pair", toolName: "bash", protected: true });
-		const ids = ["p0", "call"];
-		const trimmed = trimOpenToolPairs(ids, [...preGroup, tail]);
-		expect(trimmed).toEqual([]);
+		const blocks = [...preGroup, tail];
+		const observedCostIds: string[][] = [];
+		const originalEstimator = chunkedCompaction.estimateDefaultGroupDigestCost;
+		const estimator = vi.spyOn(chunkedCompaction, "estimateDefaultGroupDigestCost").mockImplementation((members) => {
+			observedCostIds.push(members.map((block) => block.id));
+			return originalEstimator(members);
+		});
+
+		const plan = new MyCustomizeConductor().conduct(rolloverView(blocks));
+		expect(plan).toHaveLength(1);
+		const first = plan[0];
+		expect(first.kind).toBe("group");
+		if (first.kind !== "group") return;
+		expect(first.ids).toEqual(preGroup.slice(1, 8).map((block) => block.id));
+		expect(first.ids).not.toContain("call");
+		expect(observedCostIds).toContainEqual(first.ids);
+		estimator.mockRestore();
+
+		const followUp = blocks.map((block) => first.ids.includes(block.id) ? { ...block, grouped: true } : block);
+		const nextPlan = new MyCustomizeConductor().conduct(rolloverView(followUp));
+		expect(nextPlan.flatMap((command) => command.kind === "group" ? command.ids : [])).not.toContain("call");
+		expect(followUp.find((block) => block.id === "call")?.grouped).toBe(false);
+	});
+
+	it("pre-existing frozen-grouping pressure valve is unaffected", () => {
+		const frozen = [
+			chunkedBlock("f0", 0, 5_000, { foldedTokens: 5_000 }),
+			chunkedBlock("f1", 1, 5_000, { foldedTokens: 5_000 }),
+		];
+		const protectedTail = Array.from({ length: 19 }, (_, i) => chunkedBlock(`tail${i}`, i + 2, 10_000, { protected: true }));
+		const view = rolloverView([...frozen, ...protectedTail]);
+		view.liveTokens = 250_000;
+		view.frozenFromIndex = 2;
+		view.budget = 100_000;
+		const plan = new MyCustomizeConductor({ preGroupTokens: 200_000 }).conduct(view);
+		const groups = plan.filter((command): command is Extract<typeof command, { kind: "group" }> => command.kind === "group");
+		expect(groups.length).toBeGreaterThan(0);
+		expect(groups.some((group) => !(group.digest ?? "").startsWith("⟨chunked-compaction ·"))).toBe(true);
+	});
+
+	it("chunked-compaction group.ids has balanced tool pairs (property)", () => {
+		let seed = 0x01_02_03_04;
+		const random = (): number => {
+			seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+			return seed / 0x1_0000_0000;
+		};
+		let emitted = 0;
+		for (let sample = 0; sample < 100; sample++) {
+			const blocks = Array.from({ length: 12 }, (_, i) => chunkedBlock(`r${sample}-${i}`, i, 1_500 + Math.floor(random() * 1_000)));
+			if (random() < 0.5) {
+				blocks[2] = { ...blocks[2], kind: "tool_call", callId: `inside-${sample}`, toolName: "bash" };
+				blocks[3] = { ...blocks[3], kind: "tool_result", callId: `inside-${sample}`, toolName: "bash" };
+			}
+			if (random() < 0.5) {
+				blocks[11] = { ...blocks[11], kind: "tool_call", callId: `cross-${sample}`, toolName: "bash" };
+			}
+			blocks.push(chunkedBlock(`r${sample}-tail`, 12, 100, {
+				kind: blocks[11].kind === "tool_call" ? "tool_result" : "user",
+				callId: blocks[11].kind === "tool_call" ? blocks[11].callId : undefined,
+				toolName: blocks[11].kind === "tool_call" ? "bash" : undefined,
+				protected: true,
+			}));
+			const plan = new MyCustomizeConductor({ preGroupTokens: 10_000 }).conduct(rolloverView(blocks));
+			for (const command of plan) {
+				if (command.kind !== "group" || !(command.digest ?? "").startsWith("⟨chunked-compaction ·")) continue;
+				emitted += 1;
+				const ids = new Set(command.ids);
+				for (const callId of new Set(blocks.flatMap((block) => block.callId ? [block.callId] : []))) {
+					const halves = blocks.filter((block) => block.callId === callId);
+					const selected = halves.filter((block) => ids.has(block.id));
+					expect(selected.length === 0 || selected.length === halves.length, `sample ${sample}, callId ${callId}`).toBe(true);
+				}
+			}
+		}
+		expect(emitted).toBeGreaterThan(0);
 	});
 
 	it("walking skeleton group is applied by the engine across the frozen boundary", () => {

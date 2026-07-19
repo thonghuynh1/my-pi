@@ -10,6 +10,25 @@ export interface MyCustomizeConductorOpts {
 	preGroupTokens?: number;
 }
 
+/** Conservative estimate of the host's default recoverable group digest. */
+export function estimateDefaultGroupDigestCost(run: ViewBlock[]): number {
+	let totalTokens = 0;
+	let lowestTurn = Infinity;
+	let highestTurn = -Infinity;
+	const kinds = new Set<string>();
+	for (const block of run) {
+		totalTokens += block.tokens;
+		lowestTurn = Math.min(lowestTurn, block.turn);
+		highestTurn = Math.max(highestTurn, block.turn);
+		kinds.add(block.kind);
+	}
+	let chars = 64 + String(run.length).length + String(Math.max(0, totalTokens)).length;
+	chars += String(Math.max(0, lowestTurn === Infinity ? 0 : lowestTurn)).length;
+	chars += String(Math.max(0, highestTurn === -Infinity ? 0 : highestTurn)).length;
+	chars += kinds.size * 24;
+	return Math.ceil(chars / 4) + 8;
+}
+
 export function effectivePreGroupTokens(view: ConductorView, opts: MyCustomizeConductorOpts): number {
 	if (view.contextWindow === null || view.contextWindow < MIN_CONTEXT_WINDOW_FOR_CHUNKED_COMPACTION) return 0;
 	return opts.preGroupTokens ?? DEFAULT_PRE_GROUP_TOKENS;

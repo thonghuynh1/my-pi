@@ -47,6 +47,7 @@ import { runToolsAudit } from "./tools-audit";
 import * as payloadAudit from "./payload-audit";
 import * as cacheTracker from "./cache-tracker";
 import * as proactiveCompress from "./proactive-compress";
+import { buildChunkedCompactionDiagnostic, formatContextDiagnostic } from "./chunked-compaction-diagnostic";
 
 import { linearize, applyPlan, type PiMessage } from "../app/src/lib/live/mapping";
 import { DEFAULT_PORT, PROTOCOL_VERSION, type FoldOp, type GroupOp, type ServerMessage, type StreamMessage, type UnfoldRequestMessage, type UnfoldResultMessage, type RecallRequestMessage, type RecallContent, type CompleteRequestMessage, type CompleteResultMessage } from "../app/src/lib/live/protocol";
@@ -437,7 +438,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		if (!sessionId) return;
 		try {
 			fs.mkdirSync(DIAGNOSTICS_DIR, { recursive: true });
-			fs.appendFileSync(path.join(DIAGNOSTICS_DIR, `${sessionId}.context.jsonl`), `${JSON.stringify(entry)}\n`);
+			fs.appendFileSync(path.join(DIAGNOSTICS_DIR, `${sessionId}.context.jsonl`), formatContextDiagnostic(entry));
 		} catch {
 			/* diagnostics must never break the model-call path */
 		}
@@ -1228,31 +1229,17 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		const frozenFromIndexBefore = cacheTracker.getFrozenFromIndex();
 		const cacheTrackerReasonBefore = cacheTracker.getDiagnostics().reason;
 		const messagesForModel = applyPlan(originalMessages, plan.ops, plan.groups);
+		cacheTracker.observeMessages(messagesForModel, latestModel?.provider);
 		const frozenFromIndexAfter = cacheTracker.getFrozenFromIndex();
 		const cacheTrackerReasonAfter = cacheTracker.getDiagnostics().reason;
 		const rolloverGroup = plan.groups.find((group) => (group.summaryText ?? "").startsWith("⟨chunked-compaction ·"));
 		const chunkedCompaction = rolloverGroup
-			? (() => {
-					const members = all.filter((block) => rolloverGroup.memberIds.includes(block.id));
-					const digest = rolloverGroup.summaryText ?? "";
-					const turns = members.map((block) => block.turn);
-					const digestContentHash = /^⟨chunked-compaction ·[^⟩]*content-hash\s+([^\s⟩]+)⟩/.exec(digest)?.[1] ?? "sha256:";
-					const digestTokens = Math.ceil(digest.length / DIAGNOSTIC_CHARS_PER_TOKEN);
-					const preGroupTokensBefore = members.reduce((sum, block) => sum + block.tokens, 0);
-					return {
-						event: "rollover",
-						preGroupTokensBefore,
-						preGroupBlockCount: rolloverGroup.memberIds.length,
-						preGroupTurnRange: turns.length ? [Math.min(...turns), Math.max(...turns)] : [0, 0],
-						digestTokens,
-						estimatedGroupSaving: preGroupTokensBefore - digestTokens,
-						frozenFromIndexBefore,
-						frozenFromIndexAfter,
-						cacheTrackerReasonBefore,
-						cacheTrackerReasonAfter,
-						digestContentHash,
-					};
-				})()
+			? buildChunkedCompactionDiagnostic(
+					rolloverGroup,
+					all,
+					{ frozenFromIndex: frozenFromIndexBefore, reason: cacheTrackerReasonBefore },
+					{ frozenFromIndex: frozenFromIndexAfter, reason: cacheTrackerReasonAfter },
+				)
 			: undefined;
 		lastNonEmptyPlan = plan;
 		writeContextDiagnostic({

@@ -1225,7 +1225,35 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			return; // empty plan → pass through
 		}
 
+		const frozenFromIndexBefore = cacheTracker.getFrozenFromIndex();
+		const cacheTrackerReasonBefore = cacheTracker.getDiagnostics().reason;
 		const messagesForModel = applyPlan(originalMessages, plan.ops, plan.groups);
+		const frozenFromIndexAfter = cacheTracker.getFrozenFromIndex();
+		const cacheTrackerReasonAfter = cacheTracker.getDiagnostics().reason;
+		const rolloverGroup = plan.groups.find((group) => (group.summaryText ?? "").startsWith("⟨chunked-compaction ·"));
+		const chunkedCompaction = rolloverGroup
+			? (() => {
+					const members = all.filter((block) => rolloverGroup.memberIds.includes(block.id));
+					const digest = rolloverGroup.summaryText ?? "";
+					const turns = members.map((block) => block.turn);
+					const digestContentHash = /^⟨chunked-compaction ·[^⟩]*content-hash\s+([^\s⟩]+)⟩/.exec(digest)?.[1] ?? "sha256:";
+					const digestTokens = Math.ceil(digest.length / DIAGNOSTIC_CHARS_PER_TOKEN);
+					const preGroupTokensBefore = members.reduce((sum, block) => sum + block.tokens, 0);
+					return {
+						event: "rollover",
+						preGroupTokensBefore,
+						preGroupBlockCount: rolloverGroup.memberIds.length,
+						preGroupTurnRange: turns.length ? [Math.min(...turns), Math.max(...turns)] : [0, 0],
+						digestTokens,
+						estimatedGroupSaving: preGroupTokensBefore - digestTokens,
+						frozenFromIndexBefore,
+						frozenFromIndexAfter,
+						cacheTrackerReasonBefore,
+						cacheTrackerReasonAfter,
+						digestContentHash,
+					};
+				})()
+			: undefined;
 		lastNonEmptyPlan = plan;
 		writeContextDiagnostic({
 			event: "accordion_context_apply_plan",
@@ -1250,6 +1278,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			frozenFromIndex: cacheTracker.getFrozenFromIndex(),
 			cacheTracker: cacheTracker.getDiagnostics(),
 			payloadAudit: payloadAudit.getLatestSizes(),
+			...(chunkedCompaction ? { chunkedCompaction } : {}),
 		});
 
 		return { messages: messagesForModel as unknown as AgentMessage[] };

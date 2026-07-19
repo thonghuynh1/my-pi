@@ -1171,8 +1171,11 @@ export class AccordionStore {
 			if (held.length)
 				return void reports.push(clamp("group", ids, "human-override", `would collapse ${held.length} human-held block(s)`));
 			const frozen = range.some((id) => (this.get(id)?.order ?? this.frozenFromIndex) < this.frozenFromIndex);
-			if (frozen && !this.hasHardContextPressure())
-				return void reports.push(clamp("group", ids, "frozen", "would rewrite the provider's cached prefix"));
+			if (frozen) {
+				const isChunkedCompactionSubst = digest !== null && digest !== undefined && digest !== "";
+				if (!isChunkedCompactionSubst && !this.hasHardContextPressure())
+					return void reports.push(clamp("group", ids, "frozen", "would rewrite the provider's cached prefix"));
+			}
 		}
 		const g = this.createGroup(ids[0], ids[ids.length - 1], by, digest);
 		if (!g) reports.push(clamp("group", ids, "invalid-group", "not a valid contiguous, ungrouped run older than the protected tail"));

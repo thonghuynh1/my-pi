@@ -18,7 +18,7 @@
  * tokens to ≤ 0.9 × cap, the plan is returned unchanged. This keeps the KV prefix stable
  * across passes where nothing meaningful has changed.
  */
-import type { Command, Conductor, ConductorView, ViewBlock } from "../contract";
+import type { Command, Conductor, ConductorHost, ConductorView, ViewBlock } from "../contract";
 import { availableCap, contextWindowCap } from "../contract";
 import { FOLD_RANK } from "../builtin/builtin";
 import { FOLDABLE_KINDS } from "../cold-score/score";
@@ -50,7 +50,7 @@ import {
 	trimOpenToolPairs,
 	type MyCustomizeConductorOpts,
 } from "./chunked-compaction";
-import { DEFAULT_PRE_GROUP_TOKENS, PRE_GROUP_OVERFLOW_CAP } from "./constants";
+import { DEFAULT_PRE_GROUP_TOKENS, humanTokens, PRE_GROUP_OVERFLOW_CAP } from "./constants";
 
 export {
 	composeDigest,
@@ -79,6 +79,15 @@ const POTETO_OFF_PHRASES = ["exit poteto mode", "stop using poteto", "disable ps
 
 type SavedFold = { tokens: number; breakFrozen: boolean };
 
+type ChunkedStatusMetrics = {
+	preGroupTokens: number;
+	preGroupFillPct: number;
+	rolloverCount: number;
+	tokensSavedByRollover: number;
+	lastEstimatedGroupSaving: number;
+	breakFrozenCount: number;
+};
+
 export const estimateDefaultGroupDigestCost = chunkedCompaction.estimateDefaultGroupDigestCost;
 
 export class MyCustomizeConductor implements Conductor {
@@ -93,6 +102,7 @@ export class MyCustomizeConductor implements Conductor {
 	private lastFrozenGroupEpochKey: string | null = null;
 	private lastViewKey: string | null = null;
 	private readonly opts: Required<MyCustomizeConductorOpts>;
+	private host: ConductorHost | null = null;
 	private rolloverCount = 0;
 	private tokensSavedByRollover = 0;
 	private lastEstimatedGroupSaving = 0;
@@ -100,6 +110,34 @@ export class MyCustomizeConductor implements Conductor {
 
 	constructor(opts: MyCustomizeConductorOpts = {}) {
 		this.opts = { preGroupTokens: opts.preGroupTokens ?? DEFAULT_PRE_GROUP_TOKENS };
+	}
+
+	attach(host: ConductorHost): void {
+		this.host = host;
+	}
+
+	private finishConduct(
+		plan: Command[],
+		preGroupTokens: number,
+		preGroupTarget: number,
+		rolloverJustFired: boolean,
+	): Command[] {
+		if (this.host) {
+			const preGroupFillPct = preGroupTarget === 0 ? 0 : Math.round((preGroupTokens / preGroupTarget) * 100);
+			const metrics: ChunkedStatusMetrics = {
+				preGroupTokens,
+				preGroupFillPct,
+				rolloverCount: this.rolloverCount,
+				tokensSavedByRollover: this.tokensSavedByRollover,
+				lastEstimatedGroupSaving: this.lastEstimatedGroupSaving,
+				breakFrozenCount: this.breakFrozenCount,
+			};
+			const text = rolloverJustFired
+				? `chunked · rollover · ${this.rolloverCount} rollover(s) · ${humanTokens(this.tokensSavedByRollover)} saved · pregroup ${preGroupTokens} → 0`
+				: `chunked · ${preGroupFillPct}% pregroup · ${this.rolloverCount} rollovers · ${humanTokens(this.tokensSavedByRollover)} saved`;
+			this.host.setStatus(text, metrics, null);
+		}
+		return plan;
 	}
 
 	conduct(view: ConductorView): Command[] {
@@ -139,10 +177,11 @@ export class MyCustomizeConductor implements Conductor {
 		}
 
 		const preGroupTarget = effectivePreGroupTokens(view, this.opts);
+		let preGroupTokens = 0;
 		if (preGroupTarget > 0) {
 			const preGroupFromIndex = computePreGroupFromIndex(view, preGroupTarget, (block) => isGroupBoundary(block, pstackByBlockId));
 			const preGroupBlocks = view.blocks.slice(preGroupFromIndex, view.protectedFromIndex);
-			const preGroupTokens = preGroupBlocks.reduce((sum, block) => sum + block.tokens, 0);
+			preGroupTokens = preGroupBlocks.reduce((sum, block) => sum + block.tokens, 0);
 			const nextBlock = view.blocks[view.protectedFromIndex];
 			const preGroupEndsOnTurnBoundary = nextBlock?.kind === "user" || view.protectedFromIndex === view.blocks.length;
 			const noOpen = noOpenToolPairAcrossPreGroupTail(view, preGroupFromIndex);
@@ -175,7 +214,7 @@ export class MyCustomizeConductor implements Conductor {
 						this.tokensSavedByRollover += estimatedGroupSaving;
 						this.lastEstimatedGroupSaving = estimatedGroupSaving;
 						this.breakFrozenCount += 1;
-						return [{ kind: "group", ids, digest }];
+						return this.finishConduct([{ kind: "group", ids, digest }], preGroupTokens, preGroupTarget, true);
 					}
 				}
 			}
@@ -187,7 +226,7 @@ export class MyCustomizeConductor implements Conductor {
 			this.lastSemanticKey = null;
 			this.lastFrozenGroupEpochKey = null;
 			this.lastViewKey = null;
-			return [];
+			return this.finishConduct([], preGroupTokens, preGroupTarget, false);
 		}
 
 		const allCandidates = view.blocks.filter(
@@ -219,14 +258,18 @@ export class MyCustomizeConductor implements Conductor {
 		// HOLD_BAND × cap, return it unchanged — keeps the KV prefix stable. Semantic state changes
 		// invalidate the hold so stale beacon text does not survive mode changes or newer poteto blocks.
 		if (this.lastSemanticKey !== null && this.lastSemanticKey !== semanticKey) this.lastFrozenGroupEpochKey = null;
-		if (this.lastPlan !== null && this.lastSemanticKey === semanticKey && this.lastViewKey === viewKey) return this.lastPlan;
+		if (this.lastPlan !== null && this.lastSemanticKey === semanticKey && this.lastViewKey === viewKey) {
+			return this.finishConduct(this.lastPlan, preGroupTokens, preGroupTarget, false);
+		}
 		if (this.lastPlan !== null && this.lastSemanticKey === semanticKey) {
 			let projectedHeld = view.liveTokens;
 			for (const [id, saving] of this.lastSavings) {
 				const b = byId.get(id);
 				if (b && !b.held && !b.protected && !b.grouped) projectedHeld -= saving.tokens;
 			}
-			if (projectedHeld <= HOLD_BAND * cap) return this.lastPlan;
+			if (projectedHeld <= HOLD_BAND * cap) {
+				return this.finishConduct(this.lastPlan, preGroupTokens, preGroupTarget, false);
+			}
 		}
 		this.lastPlan = null;
 		this.lastSavings.clear();
@@ -389,7 +432,7 @@ export class MyCustomizeConductor implements Conductor {
 		this.lastSemanticKey = semanticKey;
 		this.lastViewKey = viewKey;
 
-		return cmds;
+		return this.finishConduct(cmds, preGroupTokens, preGroupTarget, false);
 	}
 }
 

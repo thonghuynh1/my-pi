@@ -39,6 +39,7 @@ import { NaiveCompactionConductor } from "$conductors/compaction-naive/compactio
 import { MyCustomizeConductor } from "$conductors/my-customize-conductor/my-customize-conductor";
 import * as chunkedCompaction from "$conductors/my-customize-conductor/chunked-compaction";
 import { corpusContentHash } from "$conductors/my-customize-conductor/chunked-compaction";
+import { humanTokens } from "$conductors/my-customize-conductor/constants";
 import { AccordionStore } from "./store.svelte";
 import type { Block, ParsedSession } from "./types";
 import type {
@@ -47,6 +48,7 @@ import type {
 	ViewBlock,
 	CompletionRequest,
 	CompletionResult,
+	JSONValue,
 } from "$conductors/contract";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -163,6 +165,11 @@ class MockHost implements ConductorHost {
 	digestOfCalls: string[] = [];
 	statusText = "";
 	statusMetrics: Record<string, number | string | boolean> = {};
+	statusCalls: Array<{
+		text: string | null;
+		metrics: Record<string, number | string | boolean>;
+		details: JSONValue | undefined;
+	}> = [];
 
 	/** Pending in-flight completions. Pop and resolve/reject from tests. */
 	pending: PendingCompletion[] = [];
@@ -199,9 +206,10 @@ class MockHost implements ConductorHost {
 		return `{#digest FOLDED} digest of ${id}`;
 	}
 
-	setStatus(text: string | null, metrics: Record<string, number | string | boolean> = {}): void {
+	setStatus(text: string | null, metrics: Record<string, number | string | boolean> = {}, details?: JSONValue): void {
 		this.statusText = text ?? "";
 		this.statusMetrics = text ? metrics : {};
+		this.statusCalls.push({ text, metrics, details });
 	}
 
 	requestRerun(): void {
@@ -1607,6 +1615,92 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 			chunkedBlock("tail", 8, 100, { kind: "user", protected: true }),
 		];
 	}
+
+	it("attach and setStatus fire on every conduct pass", () => {
+		const host = new MockHost();
+		const setStatus = vi.spyOn(host, "setStatus");
+		const conductor = new MyCustomizeConductor();
+		const blocks = rolloverBlocks();
+		const nonRolloverBlocks = [...blocks.slice(0, 7), blocks[8]];
+		conductor.attach(host);
+
+		conductor.conduct(rolloverView(nonRolloverBlocks));
+		conductor.conduct(rolloverView(blocks));
+
+		expect(setStatus).toHaveBeenCalledTimes(2);
+		const nonRolloverMetrics = setStatus.mock.calls[0]?.[1];
+		const rolloverCall = setStatus.mock.calls[1];
+		const rolloverMetrics = rolloverCall?.[1];
+		expect(Object.keys(nonRolloverMetrics ?? {}).sort()).toEqual([
+			"breakFrozenCount",
+			"lastEstimatedGroupSaving",
+			"preGroupFillPct",
+			"preGroupTokens",
+			"rolloverCount",
+			"tokensSavedByRollover",
+		]);
+		expect(typeof nonRolloverMetrics?.preGroupTokens).toBe("number");
+		expect(typeof nonRolloverMetrics?.preGroupFillPct).toBe("number");
+		expect(rolloverMetrics?.preGroupTokens).toBeTypeOf("number");
+		expect(rolloverMetrics?.rolloverCount).toBe(1);
+		expect(rolloverMetrics?.breakFrozenCount).toBe(1);
+		expect(rolloverCall?.[2]).toBeNull();
+	});
+
+	it("rollover-pass setStatus text uses the rollover template", () => {
+		const host = new MockHost();
+		const setStatus = vi.spyOn(host, "setStatus");
+		const conductor = new MyCustomizeConductor();
+		conductor.attach(host);
+		const blocks = rolloverBlocks();
+		conductor.conduct(rolloverView([...blocks.slice(0, 7), blocks[8]]));
+		conductor.conduct(rolloverView(blocks));
+
+		expect(setStatus.mock.calls[0]?.[0]).toMatch(/^chunked · \d+% pregroup · \d+ rollovers · [\d.]+[kmb]? saved$/);
+		expect(setStatus.mock.calls[1]?.[0]).toMatch(/^chunked · rollover · \d+ rollover\(s\) · [\d.]+[kmb]? saved · pregroup \d+ → 0$/);
+	});
+
+	it("setStatus fires on small-context sessions with zero counters", () => {
+		const host = new MockHost();
+		const setStatus = vi.spyOn(host, "setStatus");
+		const conductor = new MyCustomizeConductor();
+		conductor.attach(host);
+		const view = rolloverView(rolloverBlocks(), 32_000);
+
+		conductor.conduct(view);
+		conductor.conduct(view);
+
+		expect(setStatus).toHaveBeenCalledTimes(2);
+		for (const [text, metrics] of setStatus.mock.calls) {
+			expect(text).toBe("chunked · 0% pregroup · 0 rollovers · 0 saved");
+			expect(metrics?.preGroupTokens).toBe(0);
+			expect(metrics?.rolloverCount).toBe(0);
+			expect(metrics?.tokensSavedByRollover).toBe(0);
+			expect(metrics?.breakFrozenCount).toBe(0);
+		}
+	});
+
+	it("attach replaces the current host", () => {
+		const host1 = new MockHost();
+		const host2 = new MockHost();
+		const status1 = vi.spyOn(host1, "setStatus");
+		const status2 = vi.spyOn(host2, "setStatus");
+		const conductor = new MyCustomizeConductor();
+		conductor.attach(host1);
+		conductor.attach(host2);
+
+		conductor.conduct(rolloverView(rolloverBlocks(), 32_000));
+
+		expect(status1).not.toHaveBeenCalled();
+		expect(status2).toHaveBeenCalledTimes(1);
+	});
+
+	it("humanTokens formats compact token counts deterministically", () => {
+		expect(humanTokens(42)).toBe("42");
+		expect(humanTokens(1_500)).toBe("1.5k");
+		expect(humanTokens(15_338)).toBe("15.3k");
+		expect(humanTokens(1_050_000)).toBe("1.05m");
+	});
 
 	it("walking skeleton emits one chunked-compaction group", () => {
 		const plan = new MyCustomizeConductor().conduct(rolloverView(rolloverBlocks()));

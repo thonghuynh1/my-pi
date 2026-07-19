@@ -1276,7 +1276,7 @@ export class AccordionStore {
 			autoFolded: false,
 			by: null,
 		};
-		this.appendBlocks([
+		const appended: Block[] = [
 			{
 				id: `${callId}:call`,
 				kind: "tool_call",
@@ -1299,7 +1299,12 @@ export class AccordionStore {
 				proactivelyCompressed: true,
 				...common,
 			},
-		]);
+		];
+		// This is a tail mutation, not streamed ingestion. Reusing appendBlocks would run a
+		// conductor pass and clear an auto-owned rollover group from the mutable suffix.
+		for (const [offset, block] of appended.entries()) this.index.set(block.id, this.blocks.length + offset);
+		this.blocks.push(...appended);
+		this.version++;
 	}
 
 	/** Resize the protected working tail, then re-fold so the change takes effect. */

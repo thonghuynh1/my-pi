@@ -420,6 +420,21 @@ describe("resolveUnfold", () => {
 		expect(missing).toEqual([]);
 	});
 
+	it("tail append preserves an auto-owned rollover group in the mutable suffix", () => {
+		const { store, memberId, groupId } = makeChunkedMemberStore();
+		const group = store.groupById(groupId)!;
+		group.by = "auto";
+		store.groups = [...store.groups];
+		store.frozenFromIndex = 0;
+		const digest = group.digest;
+
+		const result = resolveUnfold(store, [foldCode(memberId)]);
+
+		expect(result.missing).toEqual([]);
+		expect(store.groupById(groupId)).toBe(group);
+		expect(store.groupById(groupId)!.digest).toBe(digest);
+	});
+
 	it("resolveUnfold still restores non-group-member fold codes in place", () => {
 		const id = "a:normal:p0";
 		const store = makeStore([

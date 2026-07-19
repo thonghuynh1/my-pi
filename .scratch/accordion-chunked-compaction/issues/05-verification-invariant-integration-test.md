@@ -1,11 +1,10 @@
 ---
-status: ready-for-agent
-labels: ready-for-agent
+status: closed
 prd: ../PRD.md
 adr: ../../../docs/adr/0004-accordion-chunked-compaction.md
 ---
 
-# #05 — Verification invariant: JSONL rollover count matches cache-mismatch count (minus cold-start)
+# #05 — Verification invariant: rollover count matches cache-break count minus cold start
 
 ## Parent
 
@@ -14,117 +13,115 @@ Parent ADR: [`docs/adr/0004-accordion-chunked-compaction.md`](../../../docs/adr/
 
 ## What to build
 
-Add an integration test that drives a scripted multi-turn session through the real `MyCustomizeConductor` + real engine store + real extension JSONL writer, and verifies the load-bearing invariant `RB-010` / `DEC-018`:
+Add an integration test that drives scripted multi-turn sessions through the real `MyCustomizeConductor`, real `AccordionStore`, real plan mapping, real cache tracker, and real chunked-compaction diagnostic builder. The only mock is an in-memory append sink for JSONL lines.
 
-```
+Verify `RB-010` and `DEC-018` in a stable-provider session where chunked compaction is the only operation that rewrites provider-visible messages:
+
+```text
+prefixRewrite(record)
+  = record.cacheTracker.previousMessageCount > 0
+    && record.cacheTracker.matchedPrefix < record.cacheTracker.previousMessageCount
+
+cacheBreak(record)
+  = record.cacheTracker.reason == "cold-start" || prefixRewrite(record)
+
 count(chunkedCompaction.event == "rollover")
-  == count(cacheDiagnostics.reason == "prefix-mismatch") − coldStartCount
+  == count(cacheBreak(record)) − coldStartCount
 ```
 
-where `coldStartCount ≤ 1` per session (the first-turn cold-start prefix-mismatch is explicitly excluded).
+`coldStartCount` is the count of records whose reason is `cold-start` and is at most one in the scripted session.
 
-This is the primary downstream verification surface: it proves both `#01`'s single-emission guarantee (a rollover produces exactly one prefix-mismatch, not zero and not two) and `#01`'s JSONL author path (the `chunkedCompaction` block is written on rollover turns and only on rollover turns).
+The numeric prefix comparison is load-bearing. `cacheTracker.reason === "prefix-mismatch"` means `matchedPrefix === 0`, not that every cached-prefix rewrite started at message zero. A later rollover normally preserves earlier immutable group summaries, reports `prefix-match`, and still satisfies `matchedPrefix < previousMessageCount`.
 
-Covers:
+## Corrected production contract
 
-- **User story**: `US-004` (Site 2 verification).
-- **Required behavior**: `RB-010`.
-- **Decision**: `DEC-018` (verification invariant with cold-start exclusion).
-- **Test seam**: 3 (verification invariant integration test).
+`computeGroupOps()` emits all folded groups in the current plan, including older chunked-compaction groups. The extension must not author another rollover block for an older group repeated in a later plan.
 
-## Implementation map
+The extension owns a per-session set of chunked-compaction group ids selected for rollover diagnostics. It:
 
-### Contract — integration test shape
+1. Selects the first chunked-compaction group whose id is not in that set.
+2. Builds and appends one `chunkedCompaction` diagnostic for that group.
+3. Adds the id after the diagnostic is built.
+4. Clears the set on session start and shutdown.
 
-Add a new test file (implementer picks location under `F:/MyWork/my-pi/vendor/accordion/app/src/lib/` — the vitest config includes `src/lib/**/*.test.ts`). The test:
+The engine preserves chunked-compaction groups across conductor passes even when their first member sits exactly at `frozenFromIndex`. This enforces `RB-004` immutability and prevents the next build turn from expanding the summary back into raw messages.
 
-1. Constructs a real `MyCustomizeConductor` instance (no mocks of substances under test).
-2. Constructs a real engine `AccordionStore` (no mocks).
-3. Constructs a fake extension `writeContextDiagnostic` sink that captures each per-turn JSONL record into an in-memory array (the sink IS a mock — it stands in for the file system, but not for any substance-under-test logic).
-4. Drives at least 3 turns:
-   - **Turn 1**: cold-start; the pre-group is small; no chunked-compaction rollover fires.
-   - **Turn 2**: still building; a normal turn.
-   - **Turn 3**: the pre-group crosses ~15 000 tokens on a safe boundary; the trigger fires; exactly one chunked-compaction `GroupCommand` is emitted and applied.
-5. After the final turn, evaluate the invariant against the captured JSONL records.
+## Test seam
 
-The test may generate additional turns to exercise the invariant across two rollovers (`R = 2`, `M − C = 2`), but a single-rollover case is sufficient for the primary assertion.
+Test file: `vendor/accordion/extension/chunked-compaction-invariant.test.ts`.
 
-### Contract — invariant check inside the test
+The invariant harness uses:
 
-Implement the invariant as a pure function inside the test (or in a sibling helper module) that mirrors the shell one-liner from the PRD's `## Testing Decisions`:
+- Real `MyCustomizeConductor`.
+- Real `AccordionStore` and frozen-group bypass.
+- Real `computeFoldOps()` and `computeGroupOps()`.
+- Real `applyPlan()`.
+- Real `cacheTracker.observeMessages()` and `cacheTracker.getDiagnostics()`.
+- Real `buildUnreportedChunkedCompactionDiagnostic()` and `formatContextDiagnostic()`.
+- An in-memory append sink instead of filesystem writes.
+
+`vendor/accordion/extension/accordion.chunkedCompactionJsonl.test.ts` separately drives the real `accordionLive` hook, WebSocket plan path, filesystem writer, and repeated-old-group suppression.
+
+Each rollover corpus is sent below threshold on one turn before a later turn crosses the threshold. This ensures the rollover rewrites messages that were visible to the provider rather than compacting unseen messages on cold start.
+
+## Invariant result shape
 
 ```ts
-function verifyInvariant(records: readonly Record<string, unknown>[]): {
+interface InvariantResult {
     rollovers: number;
-    mismatches: number;
     coldStarts: number;
+    prefixRewrites: number;
+    cacheBreaks: number;
     ok: boolean;
-} {
-    const rollovers = records.filter(
-        (r) => (r as any).chunkedCompaction?.event === "rollover",
-    ).length;
-    const mismatches = records.filter(
-        (r) => (r as any).cacheTracker?.reason === "prefix-mismatch",
-    ).length;
-    const coldStarts = records.filter(
-        (r) => (r as any).cacheTracker?.reason === "cold-start",
-    ).length;
-    return { rollovers, mismatches, coldStarts, ok: rollovers === mismatches - coldStarts };
 }
 ```
 
-**Note on JSONL field naming**: `#01` writes the diagnostic under the top-level `cacheTracker` key (from `cacheTracker.getDiagnostics()` — see `F:/MyWork/my-pi/vendor/accordion/extension/accordion.ts:~1227`), whose payload includes `reason: CacheTrackerReason`. Verify the actual field path in the current extension code before writing the assertion. If the field path is different (e.g. `cacheDiagnostics` instead of `cacheTracker`), use the actual path from the current writer.
+`cacheBreaks = coldStarts + prefixRewrites` and `ok = rollovers === cacheBreaks - coldStarts`.
 
-### Verified anchors
+## Required edits
 
-- Existing `writeContextDiagnostic` payload with `cacheTracker: cacheTracker.getDiagnostics()`: `F:/MyWork/my-pi/vendor/accordion/extension/accordion.ts:~1227` (confirmed via grounding pass).
-- `CacheTrackerDiagnostics` reasons enum (includes `"cold-start"`, `"prefix-match"`, `"prefix-mismatch"` per grounding): `F:/MyWork/my-pi/vendor/accordion/extension/cache-tracker.ts:17-23`.
-- `chunkedCompaction.event = "rollover"` shape: added by `#01` (see `#01`'s AC-10).
-- Cold-start behavior: `cacheTracker.reason === "cold-start"` on the very first turn of every session (an operational fact of the tracker); `coldStartCount === 1` per session unless the session is empty.
-
-### Blocking-edge input — from `#01` (walking skeleton)
-
-- **Producer output**: `#01` authors the `chunkedCompaction: { event: "rollover", ... }` field on the per-turn JSONL for rollover turns, and does **not** author it on non-rollover turns.
-- **Consumer input**: this issue's test parses those records and computes `count(chunkedCompaction.event == "rollover")`.
-- **Crossing contract**: JSONL record shape from `#01`'s AC-10 — top-level `chunkedCompaction` object present on rollover turns only.
-- **Wiring owner (consumer)**: this issue's test harness — it captures the JSONL sink and evaluates the invariant.
-- **Proof of connection**: **AC-1** below runs a real single-rollover session and asserts `rollovers === 1` **and** `mismatches - coldStarts === 1`. If `#01` fails to author the JSONL block, `rollovers === 0` and the AC fails.
-
-### Blocking-edge input — from `#02` (engine group frozen-clamp bypass)
-
-- **Producer output**: `#02` allows the group substitution to apply across the frozen boundary; without it, the group is clamped and no cache-mismatch is triggered by chunked compaction.
-- **Consumer input**: this issue's test observes `cacheTracker.reason` transitioning from `"prefix-match"` to `"prefix-mismatch"` at the rollover turn.
-- **Proof of connection**: covered by AC-1 (if `#02` is reverted, the group is clamped, no mismatch occurs, `mismatches - coldStarts === 0`, and the AC fails).
-
-### Required edits
-
-1. **New test file** (implementer picks location under `app/src/lib/`), containing:
-   - The `verifyInvariant` helper (or an inline equivalent).
-   - The multi-turn harness that drives real `MyCustomizeConductor` + real `AccordionStore` and captures the JSONL sink.
-   - The three ACs below.
-2. **No changes to production code.** This issue is a pure verification-test addition — it depends on `#01` and `#02` having landed, and does not introduce new source code outside `app/src/lib/**/*.test.ts`.
+1. Add `vendor/accordion/extension/chunked-compaction-invariant.test.ts`.
+2. Add typed selection and build helpers in `vendor/accordion/extension/chunked-compaction-diagnostic.ts` for the first unreported chunked-compaction group.
+3. Update `vendor/accordion/extension/accordion.ts` to own and reset the per-session reported-group set.
+4. Preserve immutable chunked-compaction groups in `AccordionStore.clearConductorState()`.
+5. Extend `accordion.chunkedCompactionJsonl.test.ts` to run through the real writer and prove repeated groups do not produce repeated rollover fields.
+6. Amend `RB-010`, `DEC-018`, ADR-0004, and this issue to use numeric prefix-rewrite accounting.
+7. Do not change `cache-tracker.ts` reason semantics and do not fabricate diagnostics.
 
 ## Acceptance criteria
 
-Working directory: `F:/MyWork/my-pi/vendor/accordion/app`.
+Working directory: `vendor/accordion/app`.
 
-- [ ] **AC-1** (invariant holds on a single-rollover session — `RB-010` primary, proves both blocking edges): after a scripted 3-turn session in which turn 3 fires exactly one chunked-compaction rollover, `verifyInvariant(records).ok === true` with `rollovers === 1`, `mismatches === 2` (cold-start + rollover), `coldStarts === 1`.
-  - Run: `pnpm vitest run chunked-compaction-invariant -t "single rollover satisfies count(rollover) == count(prefix-mismatch) - coldStarts"`
-  - Expected: the assertion passes with the exact counts above; the test fails immediately (with a diff-friendly message) if `rollovers`, `mismatches`, or `coldStarts` differ.
+- [x] **AC-1. Single rollover.** A stable-provider session produces `rollovers === 1`, `prefixRewrites === 1`, `coldStarts === 1`, `cacheBreaks === 2`, and `ok === true`.
+  - Run: `pnpm vitest run chunked-compaction-invariant -t "single rollover satisfies count(rollover) == cacheBreaks - coldStarts"`
 
-- [ ] **AC-2** (invariant holds on a two-rollover session — extends AC-1): after a scripted session that fires two chunked-compaction rollovers on well-separated turns, `verifyInvariant(records).ok === true` with `rollovers === 2`, `mismatches === 3` (cold-start + 2 rollovers), `coldStarts === 1`.
-  - Run: `pnpm vitest run chunked-compaction-invariant -t "two rollovers satisfy the invariant"`
-  - Expected: the assertion passes with the exact counts above.
+- [x] **AC-2. Two rollovers.** Two well-separated rollover cycles produce `rollovers === 2`, `prefixRewrites === 2`, `coldStarts === 1`, `cacheBreaks === 3`, and `ok === true`.
+  - The intervening build turn has no `chunkedCompaction` field.
+  - The two rollover records have two distinct digest content hashes.
+  - Run: `pnpm vitest run chunked-compaction-invariant -t "two rollovers satisfy the invariant without repeating old-group diagnostics"`
 
-- [ ] **AC-3** (invariant holds on a small-context session — verifies `RB-008` interaction): after a scripted session on a 32 k-context corpus that never fires a rollover, `verifyInvariant(records).ok === true` with `rollovers === 0`, `mismatches === 1` (cold-start only), `coldStarts === 1`. `mismatches - coldStarts === 0`.
-  - Run: `pnpm vitest run chunked-compaction-invariant -t "small-context session has zero rollovers and zero non-cold-start mismatches"`
-  - Expected: the assertion passes with `rollovers === 0` and `mismatches - coldStarts === 0`.
+- [x] **AC-3. Zero rollovers.** A below-threshold session produces `rollovers === 0`, `prefixRewrites === 0`, `coldStarts === 1`, `cacheBreaks === 1`, and `ok === true`.
+  - Run: `pnpm vitest run chunked-compaction-invariant -t "zero rollovers satisfy the invariant"`
 
-- [ ] **AC-4** (invariant is discriminating — anti-stub check): a deliberately-corrupted variant of the harness that drops the `chunkedCompaction` field from the rollover-turn record (simulating a `#01` regression) causes `AC-1` to **fail** with a clear counts-mismatch message.
+- [x] **AC-4. Discriminating check.** Removing the `chunkedCompaction` field from a real rollover record preserves the observed prefix rewrite and produces `rollovers === 0`, `prefixRewrites === 1`, `cacheBreaks === 2`, and `ok === false`.
   - Run: `pnpm vitest run chunked-compaction-invariant -t "invariant fails when a rollover JSONL block is missing (discriminating check)"`
-  - Expected: the corrupted-variant test **passes** by asserting the invariant returns `ok === false`; the assertion message shows `rollovers === 0, mismatches === 2, coldStarts === 1` and `0 !== 2 - 1`. This proves the invariant would catch a real `#01` regression and is not a tautology.
+
+- [x] **AC-5. No production diagnostic fabrication.** The implementation uses the existing `matchedPrefix` and `previousMessageCount` fields. It does not alter tracker reasons or inject synthetic `prefix-mismatch` records.
+
+## Verification
+
+Focused result:
+
+```text
+Invariant test files  1 passed (1)
+Invariant tests       4 passed (4)
+Writer test files     1 passed (1)
+Writer tests          1 passed (1)
+```
+
+The original red two-rollover result reported rollover flags `[false, true, true, true]`, three rollover records, two prefix rewrites, and `ok === false`. The per-session reported-group set changed the flags to `[false, true, false, true]` and restored the invariant.
 
 ## Blocked by
 
-- `01-walking-skeleton-deterministic-rollover.md` — required for AC-1, AC-2, AC-3 (the JSONL `chunkedCompaction` block is authored by `#01`).
-- `02-engine-group-frozen-clamp-bypass.md` — required for AC-1 and AC-2 (without the bypass the group is clamped and no rollover-driven prefix-mismatch occurs).
+- `01-walking-skeleton-deterministic-rollover.md`.
+- `02-engine-group-frozen-clamp-bypass.md`.

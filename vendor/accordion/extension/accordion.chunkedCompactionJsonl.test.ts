@@ -1,12 +1,16 @@
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import * as http from "node:http";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-vi.mock("ws", async () => await import("../app/node_modules/ws/wrapper.mjs"));
+vi.mock("ws", async () => {
+	const { createRequire } = await import("node:module");
+	const path = await import("node:path");
+	const ws = createRequire(`${process.cwd()}/package.json`)(path.resolve(process.cwd(), "../../../node_modules/ws/index.js"));
+	return { default: ws, WebSocket: ws.WebSocket, WebSocketServer: ws.WebSocketServer };
+});
 vi.mock("typebox", () => ({
 	Type: {
 		String: (): Record<string, never> => ({}),
@@ -38,6 +42,12 @@ async function waitFor<T>(read: () => T | undefined, timeoutMs = 2_000): Promise
 }
 
 type Hook = (...args: unknown[]) => unknown;
+
+function resultMessageCount(value: unknown): number | undefined {
+	return value !== null && typeof value === "object" && "messages" in value && Array.isArray(value.messages)
+		? value.messages.length
+		: undefined;
+}
 
 function makePi(): { pi: ExtensionAPI; invoke: (name: string, ...args: unknown[]) => Promise<unknown>; registered: () => string[]; invoked: () => string[] } {
 	const hooks = new Map<string, Hook[]>();
@@ -80,8 +90,6 @@ describe("accordion.chunkedCompactionJsonl", () => {
 		tempDir = testEnvironment.home;
 		process.env.ACCORDION_HOME = testEnvironment.home;
 		vi.resetModules();
-		const listenSpy = vi.spyOn(http.Server.prototype, "listen");
-
 		const { default: accordionLive } = await import("./accordion");
 		const { pi, invoke, registered, invoked } = makePi();
 		accordionLive(pi);
@@ -111,16 +119,24 @@ describe("accordion.chunkedCompactionJsonl", () => {
 
 		await invoke("session_start", undefined, context);
 		expect(invoked()).toContain("session_start");
-		const server = await waitFor(() => {
-			const instance = listenSpy.mock.instances[0];
-			const address = instance?.address();
-			return address && typeof address === "object" ? { instance, port: address.port } : undefined;
+		const advertised = await waitFor(() => {
+			try {
+				const sessionsDirectory = path.join(tempDir ?? "", ".accordion", "sessions");
+				const filename = readdirSync(sessionsDirectory).find((entry) => entry.endsWith(".json"));
+				if (!filename) return undefined;
+				const value: unknown = JSON.parse(readFileSync(path.join(sessionsDirectory, filename), "utf8"));
+				if (value === null || typeof value !== "object" || !("port" in value) || !("sessionId" in value)) return undefined;
+				return typeof value.port === "number" && typeof value.sessionId === "string"
+					? { port: value.port, sessionId: value.sessionId }
+					: undefined;
+			} catch {
+				return undefined;
+			}
 		});
-		const port = server.port;
+		const port = advertised.port;
 
 		const ws = new WebSocket(`ws://127.0.0.1:${String(port)}`);
-		let rolloverSent = false;
-		let sessionId = "";
+		let sessionId = advertised.sessionId;
 		ws.on("message", (raw: Buffer) => {
 			const message = JSON.parse(raw.toString()) as { type?: string; reqId?: number; sessionId?: string };
 			if (message.type === "hello") {
@@ -128,9 +144,7 @@ describe("accordion.chunkedCompactionJsonl", () => {
 				return;
 			}
 			if (message.type === "sync" && typeof message.reqId === "number") {
-				const plan = rolloverSent ? { ops: [], groups: [] } : { ops: [], groups: [group] };
-				rolloverSent = true;
-				ws.send(JSON.stringify({ type: "plan", reqId: message.reqId, ...plan }));
+				ws.send(JSON.stringify({ type: "plan", reqId: message.reqId, ops: [], groups: [group] }));
 			}
 		});
 		await new Promise<void>((resolve, reject) => {
@@ -141,11 +155,11 @@ describe("accordion.chunkedCompactionJsonl", () => {
 		const beforeProviderRequest = { payload: { messages } };
 		await invoke("before_provider_request", beforeProviderRequest);
 		await invoke("before_provider_request", beforeProviderRequest);
-		const firstResult = await invoke("context", { messages }, context) as { messages: PiMessage[] };
+		const firstResult = await invoke("context", { messages }, context);
 		const secondResult = await invoke("context", { messages }, context);
 
-		expect(firstResult.messages).toHaveLength(1);
-		expect(secondResult).toBeUndefined();
+		expect(resultMessageCount(firstResult)).toBe(1);
+		expect(resultMessageCount(secondResult)).toBe(1);
 		const diagnosticDirectory = path.join(tempDir, ".accordion", "diagnostics");
 		const diagnosticPath = path.join(diagnosticDirectory, `${sessionId}.context.jsonl`);
 		const records = await waitFor(() => {

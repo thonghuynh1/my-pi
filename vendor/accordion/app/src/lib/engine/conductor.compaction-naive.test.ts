@@ -1735,10 +1735,11 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const conductor = new MyCustomizeConductor();
 		const first = conductor.conduct(rolloverView(blocks));
 		expect(first[0].kind).toBe("group");
-		if (first[0].kind !== "group") return;
+		const group = first[0];
+		if (group.kind !== "group") return;
 		const tailAppendedIds = ["recall:a:chunked-member:p0:0:call", "recall:a:chunked-member:p0:0:result"];
 		const afterRecall = [
-			...blocks.map((block) => first[0].ids.includes(block.id) ? { ...block, grouped: true } : block),
+			...blocks.map((block) => group.ids.includes(block.id) ? { ...block, grouped: true } : block),
 			chunkedBlock(tailAppendedIds[0], 9, 20, { kind: "tool_call", toolName: "recall" }),
 			chunkedBlock(tailAppendedIds[1], 10, 2_000, { kind: "tool_result", toolName: "recall", proactivelyCompressed: true }),
 		];

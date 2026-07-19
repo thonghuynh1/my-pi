@@ -1,6 +1,7 @@
 import type { ConductorView, ViewBlock } from "../contract";
 import { foldCode } from "./mcp-summary";
 import {
+	CHUNKED_COMPACTION_PREFIX,
 	DEFAULT_PRE_GROUP_TOKENS,
 	MIN_CONTEXT_WINDOW_FOR_CHUNKED_COMPACTION,
 	PRE_GROUP_OVERFLOW_CAP,
@@ -98,7 +99,7 @@ export function trimOpenToolPairs(ids: string[], allBlocks: readonly ViewBlock[]
 }
 
 export function digestHeader(corpusHash: string, count: number, turnRange: [number, number]): string {
-	return `⟨chunked-compaction · ${count} blocks · turns ${turnRange[0]}–${turnRange[1]} · content-hash ${corpusHash}⟩`;
+	return `${CHUNKED_COMPACTION_PREFIX} ${count} blocks · turns ${turnRange[0]}–${turnRange[1]} · content-hash ${corpusHash}⟩`;
 }
 
 function normalizedText(text: string): string {

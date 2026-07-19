@@ -17,6 +17,7 @@ import { estTokens, BLOCK_OVERHEAD } from "./tokens";
 import type { Conductor, ConductorView, Command, ClampReport, ClampReason, LockName, ConductorHost, CompletionRequest, CompletionResult, JSONValue } from "$conductors/contract";
 import { contextWindowCap, hasLock } from "$conductors/contract";
 import { BuiltinConductor } from "$conductors";
+import { CHUNKED_COMPACTION_PREFIX } from "$conductors/my-customize-conductor/constants";
 
 /** Classification of a folded group's members for accounting + the wire (ADR 0006 §4/§5). */
 interface GroupShape {
@@ -995,12 +996,13 @@ export class AccordionStore {
 				if (b.by === "auto" || b.by === "conductor") b.by = null;
 			}
 		}
-		// Keep human groups and conductor groups that touch the cached prefix. Clearing either
-		// kind would change an already-sent provider payload. Other conductor groups rebuild on
-		// every pass, so a conductor that returns [] still restores the mutable suffix to raw.
+		// Keep human groups, immutable chunked-compaction groups, and conductor groups that touch
+		// the cached prefix. Other conductor groups rebuild on every pass, so a conductor that
+		// returns [] still restores the mutable suffix to raw.
 		const preservedGroups = this.groups.filter(
 			(g) =>
 				(g.by !== "auto" && g.by !== "conductor") ||
+				g.digest?.startsWith(CHUNKED_COMPACTION_PREFIX) === true ||
 				g.memberIds.some((id) => (this.get(id)?.order ?? this.frozenFromIndex) < this.frozenFromIndex),
 		);
 		if (preservedGroups.length !== this.groups.length) this.groups = preservedGroups;

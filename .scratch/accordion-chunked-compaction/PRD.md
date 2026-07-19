@@ -50,7 +50,7 @@ Acceptance criterion: a real `MyCustomizeConductor` instance, driven by a synthe
 - **`RB-007`**: On every `conduct()` pass, `MyCustomizeConductor` emits one `conductor/status` frame with the payload shape in `DEC-016`. Requires a new `attach(host)` implementation on the conductor (currently absent — verified NOT IMPLEMENTED).
 - **`RB-008`**: Chunked compaction is **inert** when `view.contextWindow < 128 000` or `null` — `effectivePreGroupTokens(view)` returns `0`, the walk-back returns an empty range, the trigger never fires, no `chunkedCompaction` JSONL block is written, and `conductor/status.metrics.rolloverCount` stays at `0` for the life of the session.
 - **`RB-009`**: Unfolding a group-member fold code (either agent `recall` or human GUI unfold) appends the original member content into the Protected Tail as a synthesised `recall(<code>)` `tool_call` / `tool_result` pair. The group summary block and the frozen prefix are **not** mutated. Repeated recalls of the same code produce repeated tail entries (no deduplication).
-- **`RB-010`** (verification invariant, normative): over any session's per-turn JSONL, `count(chunkedCompaction.event == "rollover") == count(cacheDiagnostics.reason == "prefix-mismatch") − coldStartCount`, with `coldStartCount ≤ 1` per session. Any deviation is a bug in either the conductor's single-emission guarantee or the extension's JSONL author path.
+- **`RB-010`** (verification invariant, normative): in a stable-provider scripted session where chunked compaction is the only operation that rewrites provider-visible messages, let `prefixRewrite = cacheTracker.previousMessageCount > 0 && cacheTracker.matchedPrefix < cacheTracker.previousMessageCount` and `cacheBreak = cacheTracker.reason == "cold-start" || prefixRewrite`. Then `count(chunkedCompaction.event == "rollover") == count(cacheBreak) − coldStartCount`, with `coldStartCount ≤ 1`. Older chunked groups repeated in later full plans must not author another rollover record.
 
 ## Accepted Decision Register
 
@@ -261,7 +261,7 @@ Acceptance criterion: a real `MyCustomizeConductor` instance, driven by a synthe
       "frozenFromIndexBefore": 22,
       "frozenFromIndexAfter": 68,
       "cacheTrackerReasonBefore": "prefix-match",
-      "cacheTrackerReasonAfter": "prefix-mismatch",
+      "cacheTrackerReasonAfter": "prefix-match",
       "digestContentHash": "sha256:..."
     }
   }
@@ -286,20 +286,27 @@ Acceptance criterion: a real `MyCustomizeConductor` instance, driven by a synthe
 
 ### `DEC-018` — Verification invariant with cold-start exclusion
 
-- **Decision**: Over any session's per-turn JSONL:
+- **Decision**: In a stable-provider scripted session where chunked compaction is the only operation that rewrites provider-visible messages:
 
   ```text
+  prefixRewrite(record)
+    = record.cacheTracker.previousMessageCount > 0
+      && record.cacheTracker.matchedPrefix < record.cacheTracker.previousMessageCount
+
+  cacheBreak(record)
+    = record.cacheTracker.reason == "cold-start" || prefixRewrite(record)
+
   count(chunkedCompaction.event == "rollover")
-    == count(cacheDiagnostics.reason == "prefix-mismatch") − coldStartCount
+    == count(cacheBreak(record)) − coldStartCount
   ```
 
-  with `coldStartCount ≤ 1` per session (the cold-start prefix-mismatch on the very first turn is explicitly excluded).
-- **Rationale**: Every session begins with `cacheTracker.reason == "cold-start"` on the very first turn (see `F:/MyWork/my-pi/vendor/accordion/extension/cache-tracker.ts:17–23`), producing a first-turn prefix-mismatch that is not attributable to chunked compaction. Every other prefix-mismatch **must** correspond to exactly one chunked-compaction rollover; any deviation is a bug in either the conductor's single-emission guarantee (`DEC-005`) or the extension's JSONL author path (`DEC-016`).
-- **Rejected alternatives**: A verification that counts all prefix-mismatch events without cold-start subtraction (false positives on every session).
-- **Downstream impact**: The invariant is a test seam (see `## Testing Decisions`) — a one-line grep on a session's JSONL becomes a downstream regression test.
+  `coldStartCount` is the count of records whose reason is `cold-start` and is at most one in the scripted session. An older group repeated in a later full plan is not another rollover.
+- **Rationale**: `CacheTrackerReason` values are disjoint. A cold start reports `cold-start`, not `prefix-mismatch`. The tracker reports `prefix-mismatch` only when `matchedPrefix == 0`; a later rollover after an immutable summary can report `prefix-match` while `matchedPrefix < previousMessageCount` proves that the cached suffix was rewritten. Numeric prefix accounting therefore matches the cache event being verified.
+- **Rejected alternatives**: Counting `reason == "prefix-mismatch"` misses partial-prefix rewrites and subtracts cold starts that were never included. Applying the equality to arbitrary sessions also misattributes provider, system, tools, and unrelated folding changes to chunked compaction.
+- **Downstream impact**: The invariant is an extension integration-test seam. The test drives zero, one, and two rollovers through the real conductor, store, plan mapping, and tracker. It also removes one real rollover block to prove that the count is discriminating.
 - **Depends on**: `DEC-016`.
-- **Decided implementation**: Formal claim in this PRD; test seam in `## Testing Decisions`.
-- **Left to the implementer**: The specific test framework binding (unit test on a synthetic JSONL fixture vs. an integration test on a live session).
+- **Decided implementation**: `vendor/accordion/extension/chunked-compaction-invariant.test.ts` owns the scripted session and in-memory JSONL sink.
+- **Left to the implementer**: None.
 
 ### `DEC-019` — No LLM broker; digest is a deterministic pure function of the corpus
 
@@ -322,7 +329,7 @@ Acceptance criterion: a real `MyCustomizeConductor` instance, driven by a synthe
 - **Rejected alternatives**: Re-summarising when a level-2 rollover is needed (level-2 rollover is a follow-up map — see `## Out of Scope`).
 - **Downstream impact**: Any implementer temptation to "improve" an existing digest is a defect; the digest string is fixed for the life of the group.
 - **Depends on**: `DEC-010`, `DEC-012`.
-- **Decided implementation**: No re-emission code exists; the conductor's emission site guarantees a one-way transition.
+- **Decided implementation**: The conductor emits each digest once. `AccordionStore.clearConductorState()` preserves groups whose digest starts with `⟨chunked-compaction ·`, even when their first member sits exactly at `frozenFromIndex`, so a later pass cannot expand an immutable summary back into raw messages.
 - **Left to the implementer**: None.
 
 ## Implementation Plan
@@ -458,7 +465,7 @@ Acceptance criterion: a real `MyCustomizeConductor` instance, driven by a synthe
 ### Area: Extension — `chunkedCompaction` JSONL block
 
 - **Coverage**: `DEC-015`, `DEC-016`, `DEC-018`, `US-004`, `RB-006`, `RB-010`.
-- **Contract**: `writeContextDiagnostic()` at `F:/MyWork/my-pi/vendor/accordion/extension/accordion.ts:~433` composes an additional `chunkedCompaction` field on the per-turn record when the applied plan contains a `GroupCommand` whose `digest` begins with `⟨chunked-compaction ·`. The field is absent on non-rollover turns.
+- **Contract**: `writeContextDiagnostic()` at `F:/MyWork/my-pi/vendor/accordion/extension/accordion.ts:~433` composes an additional `chunkedCompaction` field when the applied plan contains a previously unreported `GroupCommand` whose digest begins with `⟨chunked-compaction ·`. The extension tracks reported group ids per session because full plans repeat older folded groups. The field is absent on non-rollover turns.
 - **Decision constraints**: `DEC-016` — payload shape verbatim; extension owns the JSONL record; conductor is JSONL-oblivious.
 - **Code anchors**:
   - `F:/MyWork/my-pi/vendor/accordion/extension/accordion.ts:~433` → `writeContextDiagnostic()` writer (private nested function; anchor updated from PRD-drafting-time ~368).
@@ -467,17 +474,18 @@ Acceptance criterion: a real `MyCustomizeConductor` instance, driven by a synthe
   - `F:/MyWork/my-pi/vendor/accordion/extension/cache-tracker.ts:67` → `getDiagnostics()` accessor.
 - **Existing behavior**: `writeContextDiagnostic()` writes per-turn JSONL records with existing fields; it already has `cacheTracker.getDiagnostics()` in scope at every call site.
 - **Required edits**:
-  - At `accordion.ts:~1227` (anchor updated from PRD-drafting-time ~1215), detect a chunked-compaction group by pattern-match on `plan.groups[*].digest.startsWith("⟨chunked-compaction ·")`.
+  - At `accordion.ts:~1227` (anchor updated from PRD-drafting-time ~1215), select the first chunked-compaction group whose id is not in the session's reported-group set.
   - Compose the `chunkedCompaction` block from: the plan (block count, turn range, member ids), the cache-tracker diagnostics (`frozenFromIndex` before / after via a snapshot pair, `reason` before / after), and the digest string (content-hash extraction).
+  - Add the group id to the reported set only when its diagnostic is authored. Clear the set on session start and shutdown.
   - Append to the existing payload; keep the existing best-effort write semantics.
 - **Normative snippet**: See `DEC-016`.
-- **Test seam**: A new test that synthesises a rollover pass, drives `writeContextDiagnostic()`, and asserts the JSONL block shape. The invariant `RB-010` can be exercised by a scripted multi-turn session followed by the one-line `jq` grep in `## Testing Decisions`.
+- **Test seam**: `vendor/accordion/extension/chunked-compaction-invariant.test.ts` drives real conductor, store, plan mapping, and cache tracking through zero, one, and two rollovers. The only mock is an in-memory append sink. It verifies numeric prefix rewrites, suppresses repeated old-group diagnostics, and removes one rollover block as a discriminating check.
 - **Wiring**: No new module registration; the block is one additional key on the existing payload.
 - **Grounding evidence**: Subagent verification confirmed the four `writeContextDiagnostic()` call sites, the `applyPlan` call at `~1215`, and the `CacheTrackerDiagnostics` field set.
 
 ## Global Build & Wiring Notes
 
-- **Constants file**: `constants.ts` does not currently exist under `F:/MyWork/my-pi/vendor/accordion/conductors/my-customize-conductor/` (verified). The implementer creates a new file (e.g. `conductors/my-customize-conductor/constants.ts`) exporting `DEFAULT_PRE_GROUP_TOKENS = 15_000`, `PRE_GROUP_OVERFLOW_CAP = 1.25`, `MIN_CONTEXT_WINDOW_FOR_CHUNKED_COMPACTION = 128_000`. The existing inline `HOLD_BAND = 0.9` and the inline `Math.max(2_000, 0.05 * cap)` gate at line 279 (anchor updated from PRD-drafting-time line 233 per to-issues grounding) may stay inline (cosmetic per `DEC-006`) or move into the same constants file (implementer's choice).
+- **Constants file**: `constants.ts` does not currently exist under `F:/MyWork/my-pi/vendor/accordion/conductors/my-customize-conductor/` (verified). The implementer creates a new file (e.g. `conductors/my-customize-conductor/constants.ts`) exporting `DEFAULT_PRE_GROUP_TOKENS = 15_000`, `PRE_GROUP_OVERFLOW_CAP = 1.25`, `MIN_CONTEXT_WINDOW_FOR_CHUNKED_COMPACTION = 128_000`, and the shared `CHUNKED_COMPACTION_PREFIX` marker used by the conductor, engine, plan resolver, and extension diagnostics. The existing inline `HOLD_BAND = 0.9` and the inline `Math.max(2_000, 0.05 * cap)` gate at line 279 (anchor updated from PRD-drafting-time line 233 per to-issues grounding) may stay inline (cosmetic per `DEC-006`) or move into the same constants file (implementer's choice).
 - **Constructor option**: `MyCustomizeConductor` accepts a new constructor option `preGroupTokens?: number` (default = `DEFAULT_PRE_GROUP_TOKENS`). No user-facing UI setting.
 - **`ConductorHost` API**: The method for the `DEC-016` `conductor/status` frame is **`host.setStatus(text: string | null, metrics?: Record<string, number | string | boolean>, details?: JSONValue): void`** at `F:/MyWork/my-pi/vendor/accordion/conductors/contract/conductor.ts` (three arguments). **Anchor correction (from to-issues grounding)**: an earlier draft referred to `host.emit(…)` — the actual API is `setStatus`, not `emit`.
 - **Test command**: The vendor repo at `F:/MyWork/my-pi/vendor/accordion/` has **no root `package.json`** and no `pnpm-workspace.yaml`; the app package name is **`accordion-app`** (not `accordion`). The correct test invocation is `cd F:/MyWork/my-pi/vendor/accordion/app && pnpm vitest run <filename-fragment>` (or `pnpm test` for the full suite). The PRD-drafting-time command `pnpm --filter accordion test conductor.compaction-naive` is incorrect; use the vitest form above. The vitest config at `app/vitest.config.ts` picks up `src/lib/**/*.test.ts` automatically.
@@ -497,18 +505,15 @@ Chunked compaction is tested at five seams. Each seam runs against real wiring (
   1. **Property test** (`RB-002`): randomised views (block-kinds × `frozenFromIndex` × `protectedFromIndex`); property — for every emitted `GroupCommand`, `group.ids` contains both halves of every referenced `callId` or neither.
   2. **Regression test**: build a view where `protectedFromIndex − 1` is a `tool_call` and `protectedFromIndex` is its `tool_result`; assert emitted `ids` **excludes** the trailing `tool_call`; the `tool_call` block stays live between the group and the tail (i.e., is a `ViewBlock` after the group and before the tail on the next `conduct()` pass).
   3. **Cost-honesty test**: assert `estimateDefaultGroupDigestCost` is called with `|ids|` **after** trim, not before.
-- **Seam 3 — Verification invariant (integration).** Scripted multi-turn session driven from a test harness that produces a JSONL log at a well-known path. Then run the one-line `jq` grep:
+- **Seam 3 — Verification invariant (integration).** `vendor/accordion/extension/chunked-compaction-invariant.test.ts` drives a stable-provider multi-turn session through real `MyCustomizeConductor`, `AccordionStore`, `computeGroupOps`, `applyPlan`, and `cacheTracker`. The test computes:
 
-  ```bash
-  # RB-010 verification (grep against session.jsonl)
-  ROLL=$(jq '[.[] | select(.chunkedCompaction.event == "rollover")] | length' session.jsonl)
-  MISS=$(jq '[.[] | select(.cacheDiagnostics.reason == "prefix-mismatch")] | length' session.jsonl)
-  COLD=$(jq '[.[] | select(.cacheDiagnostics.reason == "cold-start")] | length' session.jsonl)
-  # coldStartCount == COLD (≤ 1); pass condition:
-  test "$ROLL" -eq "$((MISS - COLD))"
+  ```text
+  prefixRewrite = previousMessageCount > 0 && matchedPrefix < previousMessageCount
+  cacheBreaks = count(reason == "cold-start") + count(prefixRewrite)
+  pass = count(chunkedCompaction.event == "rollover") == cacheBreaks - coldStartCount
   ```
 
-  This test lives in the extension's test suite (not the engine's) since the JSONL is authored by the extension. Success criterion: the shell command exits `0` for any session with `≥ 1` chunked-compaction rollover.
+  The zero, one, and two rollover cases expect cache-break counts `1`, `2`, and `3`. An intervening build turn after the first rollover must not re-author the older group's diagnostic. A corrupted copy with one rollover block removed must fail the equality. The only mock is the in-memory append sink.
 
 - **Seam 4 — Engine group frozen-clamp bypass (unit).** Add tests to the engine's existing store test suite covering the four cases in the "Engine — group frozen-region clamp bypass" area above.
 - **Seam 5 — Fold-code resolver tail-append (unit).** Add tests to the engine's existing `plan.ts` test suite covering the four cases in the "Engine — fold-code resolver policy branch" area above.

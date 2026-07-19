@@ -1,6 +1,7 @@
 export const DEFAULT_PRE_GROUP_TOKENS = 15_000;
 export const PRE_GROUP_OVERFLOW_CAP = 1.25;
 export const MIN_CONTEXT_WINDOW_FOR_CHUNKED_COMPACTION = 128_000;
+export const CHUNKED_COMPACTION_PREFIX = "⟨chunked-compaction ·";
 
 /** Format a token count as a compact human-readable string. */
 export function humanTokens(n: number): string {

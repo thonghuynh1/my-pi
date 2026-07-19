@@ -1,8 +1,16 @@
+import { CHUNKED_COMPACTION_PREFIX } from "../conductors/my-customize-conductor/constants";
 import { estTokens } from "../app/src/lib/engine/tokens";
 import type { GroupOp, WireBlock } from "../app/src/lib/live/protocol";
 import type { CacheTrackerReason } from "./cache-tracker";
 
-const PREFIX = "⟨chunked-compaction ·";
+function findUnreportedChunkedCompactionGroup(
+	groups: readonly GroupOp[],
+	reportedGroupIds: ReadonlySet<string>,
+): GroupOp | undefined {
+	return groups.find(
+		(group) => !reportedGroupIds.has(group.id) && (group.summaryText ?? "").startsWith(CHUNKED_COMPACTION_PREFIX),
+	);
+}
 
 export interface ChunkedCompactionDiagnostic {
 	event: "rollover";
@@ -18,14 +26,19 @@ export interface ChunkedCompactionDiagnostic {
 	digestContentHash: string;
 }
 
+interface CacheTrackerState {
+	frozenFromIndex: number;
+	reason: CacheTrackerReason;
+}
+
 export function buildChunkedCompactionDiagnostic(
 	group: GroupOp,
 	blocks: readonly WireBlock[],
-	before: { frozenFromIndex: number; reason: CacheTrackerReason },
-	after: { frozenFromIndex: number; reason: CacheTrackerReason },
+	before: CacheTrackerState,
+	after: CacheTrackerState,
 ): ChunkedCompactionDiagnostic | undefined {
 	const digest = group.summaryText ?? "";
-	if (!digest.startsWith(PREFIX)) return undefined;
+	if (!digest.startsWith(CHUNKED_COMPACTION_PREFIX)) return undefined;
 	const members = blocks.filter((block) => group.memberIds.includes(block.id));
 	const turns = members.map((block) => block.turn);
 	const digestContentHash = /^⟨chunked-compaction ·[^⟩]*content-hash\s+([^\s⟩]+)⟩/.exec(digest)?.[1] ?? "sha256:";
@@ -46,8 +59,20 @@ export function buildChunkedCompactionDiagnostic(
 	};
 }
 
+export function buildUnreportedChunkedCompactionDiagnostic(
+	groups: readonly GroupOp[],
+	reportedGroupIds: Set<string>,
+	blocks: readonly WireBlock[],
+	before: CacheTrackerState,
+	after: CacheTrackerState,
+): ChunkedCompactionDiagnostic | undefined {
+	const group = findUnreportedChunkedCompactionGroup(groups, reportedGroupIds);
+	if (!group) return undefined;
+	const diagnostic = buildChunkedCompactionDiagnostic(group, blocks, before, after);
+	if (diagnostic) reportedGroupIds.add(group.id);
+	return diagnostic;
+}
+
 export function formatContextDiagnostic(entry: Record<string, unknown>): string {
 	return `${JSON.stringify(entry)}\n`;
 }
-
-export { PREFIX as CHUNKED_COMPACTION_PREFIX };

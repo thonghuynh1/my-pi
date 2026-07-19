@@ -27,6 +27,7 @@ import type { Block } from "../engine/types";
 import type { FoldOp, GroupOp, UnfoldRestored, RecallContent } from "./protocol";
 import { isDurableId } from "./mapping";
 import { foldCode, wireFoldable } from "../engine/digest";
+import { CHUNKED_COMPACTION_PREFIX } from "$conductors/my-customize-conductor/constants";
 
 /**
  * Compute the fold plan for the current store state: one `FoldOp` per block that
@@ -81,8 +82,6 @@ export function blockLabel(b: Block): string {
 	const where = b.turn > 0 ? `turn ${b.turn}` : "preamble";
 	return b.toolName ? `${b.kind} ${b.toolName} · ${where}` : `${b.kind} · ${where}`;
 }
-
-const CHUNKED_COMPACTION_PREFIX = "⟨chunked-compaction ·";
 
 function isChunkedCompactionGroupMember(store: AccordionStore, block: Block): boolean {
 	const group = store.groupOf(block);

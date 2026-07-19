@@ -12,7 +12,7 @@
  * intent. Deterministic and explainable; the smarts come later.
  */
 import type { Block, Actor, SessionMeta, ParsedSession, Group } from "./types";
-import { digest, digestTokens, foldTag, groupDigest, groupDigestTokens, substTokens, wireFoldable } from "./digest";
+import { digest, digestTokens, foldCode, foldTag, groupDigest, groupDigestTokens, substTokens, wireFoldable } from "./digest";
 import { estTokens, BLOCK_OVERHEAD } from "./tokens";
 import type { Conductor, ConductorView, Command, ClampReport, ClampReason, LockName, ConductorHost, CompletionRequest, CompletionResult, JSONValue } from "$conductors/contract";
 import { contextWindowCap, hasLock } from "$conductors/contract";
@@ -183,6 +183,8 @@ export class AccordionStore {
 	 * consumer already depends on `blocks`).
 	 */
 	private index = new Map<string, number>();
+	/** Number of synthetic recall pairs appended for each source block. */
+	private tailAppendCounts = new Map<string, number>();
 
 	/**
 	 * The active context-management strategy (ADR 0007). Defaults to the built-in folder
@@ -1253,6 +1255,56 @@ export class AccordionStore {
 		if (!fresh.length) return;
 		this.blocks.push(...fresh);
 		this.refold();
+	}
+
+	/**
+	 * Materialise a synthetic recall(<code>) tool_call/tool_result pair for a chunked-compaction
+	 * group member and append it to the Protected Tail. The source group and frozen prefix are
+	 * untouched. Each call appends a fresh pair, even for the same member.
+	 */
+	appendToTail(id: string): void {
+		const source = this.get(id);
+		if (!source || !this.groupAt.get(id)) return;
+		const count = this.tailAppendCounts.get(id) ?? 0;
+		this.tailAppendCounts.set(id, count + 1);
+		const callId = `recall:${id}:${count}`;
+		const firstOrder = this.blocks.reduce((max, block) => Math.max(max, block.order), -1) + 1;
+		const code = foldCode(id);
+		const common: Pick<Block, "turn" | "override" | "autoFolded" | "by"> = {
+			turn: source.turn,
+			override: null,
+			autoFolded: false,
+			by: null,
+		};
+		const appended: Block[] = [
+			{
+				id: `${callId}:call`,
+				kind: "tool_call",
+				order: firstOrder,
+				text: `recall(${code})`,
+				tokens: estTokens(`recall(${code})`) + BLOCK_OVERHEAD,
+				toolName: "recall",
+				callId,
+				proactivelyCompressed: false,
+				...common,
+			},
+			{
+				id: `${callId}:result`,
+				kind: "tool_result",
+				order: firstOrder + 1,
+				text: source.text,
+				tokens: estTokens(source.text) + BLOCK_OVERHEAD,
+				toolName: "recall",
+				callId,
+				proactivelyCompressed: true,
+				...common,
+			},
+		];
+		// This is a tail mutation, not streamed ingestion. Reusing appendBlocks would run a
+		// conductor pass and clear an auto-owned rollover group from the mutable suffix.
+		for (const [offset, block] of appended.entries()) this.index.set(block.id, this.blocks.length + offset);
+		this.blocks.push(...appended);
+		this.version++;
 	}
 
 	/** Resize the protected working tail, then re-fold so the change takes effect. */

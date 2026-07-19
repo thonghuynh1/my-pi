@@ -1730,6 +1730,25 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		expect(second.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(0);
 	});
 
+	it("tail-appended recall blocks are not immediately re-grouped", () => {
+		const blocks = rolloverBlocks();
+		const conductor = new MyCustomizeConductor();
+		const first = conductor.conduct(rolloverView(blocks));
+		expect(first[0].kind).toBe("group");
+		if (first[0].kind !== "group") return;
+		const tailAppendedIds = ["recall:a:chunked-member:p0:0:call", "recall:a:chunked-member:p0:0:result"];
+		const afterRecall = [
+			...blocks.map((block) => first[0].ids.includes(block.id) ? { ...block, grouped: true } : block),
+			chunkedBlock(tailAppendedIds[0], 9, 20, { kind: "tool_call", toolName: "recall" }),
+			chunkedBlock(tailAppendedIds[1], 10, 2_000, { kind: "tool_result", toolName: "recall", proactivelyCompressed: true }),
+		];
+		const nextPlan = conductor.conduct(rolloverView(afterRecall));
+		const overlappingGroups = nextPlan.filter(
+			(command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·") && command.ids.some((id) => tailAppendedIds.includes(id)),
+		);
+		expect(overlappingGroups).toHaveLength(0);
+	});
+
 	it("chunked-compaction is inert below the context-window gate", () => {
 		for (const contextWindow of [32_000, 64_000, null]) {
 			const plan = new MyCustomizeConductor().conduct(rolloverView(rolloverBlocks(), contextWindow));

@@ -82,6 +82,13 @@ export function blockLabel(b: Block): string {
 	return b.toolName ? `${b.kind} ${b.toolName} · ${where}` : `${b.kind} · ${where}`;
 }
 
+const CHUNKED_COMPACTION_PREFIX = "⟨chunked-compaction ·";
+
+function isChunkedCompactionGroupMember(store: AccordionStore, block: Block): boolean {
+	const group = store.groupOf(block);
+	return group?.folded === true && group.digest?.startsWith(CHUNKED_COMPACTION_PREFIX) === true;
+}
+
 /**
  * Resolve an agent `unfold` request against the live store (protocol v3). For each
  * `code` the agent sent (read from a `{#<code> FOLDED}` tag), restore EVERY folded
@@ -93,14 +100,15 @@ export function blockLabel(b: Block): string {
  * stateless way to handle that — an extra restored block is harmless (it only shows the
  * model more of its own content).
  *
- * Restoring uses `store.unfold(id, "agent")` — a sticky override (protected from
+ * Normal blocks use `store.unfold(id, "agent")` — a sticky override (protected from
  * auto-refold) with provenance "agent" so the activity log shows the agent pulled it
- * back and the human stays the source of truth (free to re-fold it). Guarding on
- * `isFolded` is the safety pillar: the agent can only restore what was actually folded,
- * so it can never downgrade a human pin or flip an auto-managed block to a sticky
- * agent-unfold. It can request, never force. This MUTATES the store; the restored
- * content reaches the model at the next `context` hook (the block drops out of
- * `computeFoldOps`). Pure of the wire — the caller sends the result.
+ * back and the human stays the source of truth (free to re-fold it). Chunked-compaction
+ * members instead append a synthetic recall pair to the protected tail, preserving the
+ * immutable group range. Guarding on `isFolded` is the safety pillar: the agent can only
+ * restore what was actually folded, so it can never downgrade a human pin or flip an
+ * auto-managed block to a sticky agent-unfold. It can request, never force. This MUTATES
+ * the store; the restored content reaches the model at the next `context` hook. Pure of
+ * the wire — the caller sends the result.
  */
 export function resolveUnfold(store: AccordionStore, codes: string[]): { restored: UnfoldRestored[]; missing: string[] } {
 	const restored: UnfoldRestored[] = [];
@@ -128,6 +136,14 @@ export function resolveUnfold(store: AccordionStore, codes: string[]): { restore
 		// a positional-id block that was never on the wire.
 		const matches = store.blocks.filter((b) => store.isFolded(b) && wireFoldable(b) && isDurableId(b.id) && foldCode(b.id) === code);
 		for (const b of matches) {
+			// Chunked-compaction members are immutable prefix content. Recalling one appends a
+			// fresh pair to the protected tail instead of rewriting the cached group range.
+			if (isChunkedCompactionGroupMember(store, b)) {
+				store.appendToTail(b.id);
+				restored.push({ code, kind: b.kind, label: `recall(${code}) → tail`, ids: [b.id] });
+				hit = true;
+				continue;
+			}
 			// A member of a FOLDED group is controlled by the group, not per-block overrides —
 			// `store.unfold` would no-op there (ADR 0006 §2). Route it through `unfoldGroup` so
 			// the reported restore is never a lie. (In practice a collapsed member is removed

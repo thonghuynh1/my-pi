@@ -6,7 +6,14 @@ import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-vi.mock("ws", async () => await import("./node_modules/ws/wrapper.mjs"));
+vi.mock("ws", async () => await import("../app/node_modules/ws/wrapper.mjs"));
+vi.mock("typebox", () => ({
+	Type: {
+		String: (): Record<string, never> => ({}),
+		Array: (): Record<string, never> => ({}),
+		Object: (): Record<string, never> => ({}),
+	},
+}));
 
 import { linearize, type PiMessage } from "../app/src/lib/live/mapping";
 import { estTokens } from "../app/src/lib/engine/tokens";

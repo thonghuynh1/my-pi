@@ -38,38 +38,18 @@ import {
 } from "./mcp-summary";
 import { riskFlags } from "../keel/ledger";
 import * as chunkedCompaction from "./chunked-compaction";
-import {
-	composeDigest,
-	computePreGroupFromIndex,
-	corpusContentHash,
-	digestBody,
-	digestHeader,
-	digestMembersFooter,
-	effectivePreGroupTokens,
-	noOpenToolPairAcrossPreGroupTail,
-	trimOpenToolPairs,
-	type MyCustomizeConductorOpts,
-} from "./chunked-compaction";
 import { DEFAULT_PRE_GROUP_TOKENS, humanTokens, PRE_GROUP_OVERFLOW_CAP } from "./constants";
 
-export {
-	composeDigest,
-	computePreGroupFromIndex,
-	corpusContentHash,
-	digestBody,
-	digestHeader,
-	digestMembersFooter,
-	effectivePreGroupTokens,
-	isGroupBoundary,
-	noOpenToolPairAcrossPreGroupTail,
-	trimOpenToolPairs,
-};
 export type { MyCustomizeConductorOpts } from "./chunked-compaction";
 
 function isGroupBoundary(block: ViewBlock, pstackByBlockId: Map<string, PstackIdentity>): boolean {
-	if (block.kind === "user" || block.held || block.protected || block.grouped || block.proactivelyCompressed) return true;
+	if (block.kind === "user" || block.held || block.protected || block.grouped) return true;
 	const tool = (block.toolName ?? "").trim().toLowerCase();
 	return tool === "mcp" || tool === "recall" || pstackByBlockId.has(block.id);
+}
+
+function isChunkedPreGroupBoundary(block: ViewBlock, pstackByBlockId: Map<string, PstackIdentity>): boolean {
+	return block.proactivelyCompressed || isGroupBoundary(block, pstackByBlockId);
 }
 
 /** Fraction of cap below which the current fold plan is held stable (epoch hold band). */
@@ -101,14 +81,13 @@ export class MyCustomizeConductor implements Conductor {
 	private lastSemanticKey: string | null = null;
 	private lastFrozenGroupEpochKey: string | null = null;
 	private lastViewKey: string | null = null;
-	private readonly opts: Required<MyCustomizeConductorOpts>;
+	private readonly opts: Required<chunkedCompaction.MyCustomizeConductorOpts>;
 	private host: ConductorHost | null = null;
 	private rolloverCount = 0;
 	private tokensSavedByRollover = 0;
 	private lastEstimatedGroupSaving = 0;
-	private breakFrozenCount = 0;
 
-	constructor(opts: MyCustomizeConductorOpts = {}) {
+	constructor(opts: chunkedCompaction.MyCustomizeConductorOpts = {}) {
 		this.opts = { preGroupTokens: opts.preGroupTokens ?? DEFAULT_PRE_GROUP_TOKENS };
 	}
 
@@ -130,7 +109,7 @@ export class MyCustomizeConductor implements Conductor {
 				rolloverCount: this.rolloverCount,
 				tokensSavedByRollover: this.tokensSavedByRollover,
 				lastEstimatedGroupSaving: this.lastEstimatedGroupSaving,
-				breakFrozenCount: this.breakFrozenCount,
+				breakFrozenCount: this.rolloverCount,
 			};
 			const text = rolloverJustFired
 				? `chunked · rollover · ${this.rolloverCount} rollover(s) · ${humanTokens(this.tokensSavedByRollover)} saved · pregroup ${preGroupTokens} → 0`
@@ -176,24 +155,20 @@ export class MyCustomizeConductor implements Conductor {
 			if (identity) pstackByBlockId.set(b.id, identity);
 		}
 
-		const preGroupTarget = effectivePreGroupTokens(view, this.opts);
+		const preGroupTarget = chunkedCompaction.effectivePreGroupTokens(view, this.opts);
 		let preGroupTokens = 0;
 		if (preGroupTarget > 0) {
-			const preGroupFromIndex = computePreGroupFromIndex(view, preGroupTarget, (block) => isGroupBoundary(block, pstackByBlockId));
+			const preGroupFromIndex = chunkedCompaction.computePreGroupFromIndex(view, preGroupTarget, (block) => isChunkedPreGroupBoundary(block, pstackByBlockId));
 			const preGroupBlocks = view.blocks.slice(preGroupFromIndex, view.protectedFromIndex);
 			preGroupTokens = preGroupBlocks.reduce((sum, block) => sum + block.tokens, 0);
 			const nextBlock = view.blocks[view.protectedFromIndex];
 			const preGroupEndsOnTurnBoundary = nextBlock?.kind === "user" || view.protectedFromIndex === view.blocks.length;
-			const noOpen = noOpenToolPairAcrossPreGroupTail(view, preGroupFromIndex);
+			const noOpen = chunkedCompaction.noOpenToolPairAcrossPreGroupTail(view, preGroupFromIndex);
 			const fastPathFires = preGroupTokens >= preGroupTarget && preGroupEndsOnTurnBoundary && noOpen;
-			// A boundary that straddles a tool pair cannot use the fast path, but it is still
-			// eligible once the target is reached. Trimming the in-group half below keeps that
-			// pair live while allowing the rest of the safe pre-group to roll over.
-			const trimmedPairPathFires = preGroupTokens >= preGroupTarget && nextBlock?.kind === "tool_result" && !noOpen;
 			const escapeValveFires = preGroupTokens > preGroupTarget * PRE_GROUP_OVERFLOW_CAP;
 
-			if (fastPathFires || trimmedPairPathFires || escapeValveFires) {
-				const ids = trimOpenToolPairs(preGroupBlocks.map((block) => block.id), view.blocks);
+			if (fastPathFires || escapeValveFires) {
+				const ids = chunkedCompaction.trimOpenToolPairs(preGroupBlocks.map((block) => block.id), view.blocks);
 				if (ids.length >= 2) {
 					const members = view.blocks.filter((block) => ids.includes(block.id));
 					const digestCost = chunkedCompaction.estimateDefaultGroupDigestCost(members);
@@ -205,15 +180,14 @@ export class MyCustomizeConductor implements Conductor {
 							Math.min(...members.map((block) => block.turn)),
 							Math.max(...members.map((block) => block.turn)),
 						];
-						const digest = composeDigest(
-							digestHeader(corpusContentHash(members), ids.length, turnRange),
-							digestBody(members),
-							digestMembersFooter(ids.map(foldCode)),
+						const digest = chunkedCompaction.composeDigest(
+							chunkedCompaction.digestHeader(chunkedCompaction.corpusContentHash(members), ids.length, turnRange),
+							chunkedCompaction.digestBody(members),
+							chunkedCompaction.digestMembersFooter(ids.map(foldCode)),
 						);
 						this.rolloverCount += 1;
 						this.tokensSavedByRollover += estimatedGroupSaving;
 						this.lastEstimatedGroupSaving = estimatedGroupSaving;
-						this.breakFrozenCount += 1;
 						return this.finishConduct([{ kind: "group", ids, digest }], preGroupTokens, preGroupTarget, true);
 					}
 				}
@@ -413,7 +387,7 @@ export class MyCustomizeConductor implements Conductor {
 				if (firstId) {
 					const members = c.ids.map((id) => byId.get(id)).filter((b): b is ViewBlock => b !== undefined);
 					const originalResidue = members.reduce((total, block) => total + block.tokens, 0);
-					const saving = originalResidue - estimateDefaultGroupDigestCost(members);
+					const saving = originalResidue - chunkedCompaction.estimateDefaultGroupDigestCost(members);
 					savings.set(firstId, { tokens: Math.max(0, saving), breakFrozen: false });
 				}
 			} else if (c.kind === "fold") {

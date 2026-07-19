@@ -11,8 +11,10 @@ export interface MyCustomizeConductorOpts {
 	preGroupTokens?: number;
 }
 
+type DigestCostBlock = Pick<ViewBlock, "kind" | "tokens" | "turn">;
+
 /** Conservative estimate of the host's default recoverable group digest. */
-export function estimateDefaultGroupDigestCost(run: ViewBlock[]): number {
+export function estimateDefaultGroupDigestCost(run: readonly DigestCostBlock[]): number {
 	let totalTokens = 0;
 	let lowestTurn = Infinity;
 	let highestTurn = -Infinity;

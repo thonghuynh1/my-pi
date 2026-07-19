@@ -1741,7 +1741,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const afterRecall = [
 			...blocks.map((block) => group.ids.includes(block.id) ? { ...block, grouped: true } : block),
 			chunkedBlock(tailAppendedIds[0], 9, 20, { kind: "tool_call", toolName: "recall" }),
-			chunkedBlock(tailAppendedIds[1], 10, 2_000, { kind: "tool_result", toolName: "recall", proactivelyCompressed: true }),
+			chunkedBlock(tailAppendedIds[1], 10, 2_000, { kind: "tool_result", toolName: "recall" }),
 		];
 		const nextPlan = conductor.conduct(rolloverView(afterRecall));
 		const overlappingGroups = nextPlan.filter(
@@ -1757,37 +1757,27 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		}
 	});
 
-	it("chunked-compaction trims open tool pairs before cost estimation", () => {
+	it("chunked-compaction does not add a third trigger for open tool pairs", () => {
 		const preGroup = Array.from({ length: 8 }, (_, i) => chunkedBlock(`p${i}`, i));
 		preGroup.push(chunkedBlock("call", 8, 2_000, { kind: "tool_call", callId: "pair", toolName: "bash" }));
 		const tail = chunkedBlock("result", 9, 100, { kind: "tool_result", callId: "pair", toolName: "bash", protected: true });
-		const blocks = [...preGroup, tail];
-		const observedCostIds: string[][] = [];
-		const originalEstimator = chunkedCompaction.estimateDefaultGroupDigestCost;
-		const estimator = vi.spyOn(chunkedCompaction, "estimateDefaultGroupDigestCost").mockImplementation((members) => {
-			observedCostIds.push(members.map((block) => block.id));
-			return originalEstimator(members);
-		});
+		const plan = new MyCustomizeConductor().conduct(rolloverView([...preGroup, tail]));
 
-		const plan = new MyCustomizeConductor().conduct(rolloverView(blocks));
-		expect(plan).toHaveLength(1);
-		const first = plan[0];
-		expect(first.kind).toBe("group");
-		if (first.kind !== "group") return;
-		expect(first.ids).toEqual(preGroup.slice(1, 8).map((block) => block.id));
-		expect(first.ids).not.toContain("call");
-		expect(observedCostIds).toContainEqual(first.ids);
-		estimator.mockRestore();
+		expect(plan.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(0);
+	});
 
-		const followUp = blocks.map((block) => first.ids.includes(block.id) ? { ...block, grouped: true } : block);
-		const nextPlan = new MyCustomizeConductor().conduct(rolloverView(followUp));
-		expect(nextPlan.flatMap((command) => command.kind === "group" ? command.ids : [])).not.toContain("call");
-		expect(followUp.find((block) => block.id === "call")?.grouped).toBe(false);
+	it("trimOpenToolPairs removes the in-group half of straddling pairs", () => {
+		const preGroup = Array.from({ length: 8 }, (_, i) => chunkedBlock(`p${i}`, i));
+		const call = chunkedBlock("call", 8, 2_000, { kind: "tool_call", callId: "pair", toolName: "bash" });
+		const tail = chunkedBlock("result", 9, 100, { kind: "tool_result", callId: "pair", toolName: "bash", protected: true });
+		const ids = [...preGroup, call].map((block) => block.id);
+
+		expect(chunkedCompaction.trimOpenToolPairs(ids, [...preGroup, call, tail])).toEqual(preGroup.map((block) => block.id));
 	});
 
 	it("pre-existing frozen-grouping pressure valve is unaffected", () => {
 		const frozen = [
-			chunkedBlock("f0", 0, 5_000, { foldedTokens: 5_000 }),
+			chunkedBlock("f0", 0, 5_000, { foldedTokens: 5_000, proactivelyCompressed: true }),
 			chunkedBlock("f1", 1, 5_000, { foldedTokens: 5_000 }),
 		];
 		const protectedTail = Array.from({ length: 19 }, (_, i) => chunkedBlock(`tail${i}`, i + 2, 10_000, { protected: true }));

@@ -1,4 +1,5 @@
 import { CHUNKED_COMPACTION_PREFIX } from "../conductors/my-customize-conductor/constants";
+import { estimateDefaultGroupDigestCost } from "../conductors/my-customize-conductor/chunked-compaction";
 import { estTokens } from "../app/src/lib/engine/tokens";
 import type { GroupOp, WireBlock } from "../app/src/lib/live/protocol";
 import type { CacheTrackerReason } from "./cache-tracker";
@@ -44,13 +45,14 @@ export function buildChunkedCompactionDiagnostic(
 	const digestContentHash = /^⟨chunked-compaction ·[^⟩]*content-hash\s+([^\s⟩]+)⟩/.exec(digest)?.[1] ?? "sha256:";
 	const digestTokens = estTokens(digest);
 	const preGroupTokensBefore = members.reduce((sum, block) => sum + block.tokens, 0);
+	const estimatedGroupSaving = preGroupTokensBefore - estimateDefaultGroupDigestCost(members);
 	return {
 		event: "rollover",
 		preGroupTokensBefore,
 		preGroupBlockCount: group.memberIds.length,
 		preGroupTurnRange: turns.length ? [Math.min(...turns), Math.max(...turns)] : [0, 0],
 		digestTokens,
-		estimatedGroupSaving: preGroupTokensBefore - digestTokens,
+		estimatedGroupSaving,
 		frozenFromIndexBefore: before.frozenFromIndex,
 		frozenFromIndexAfter: after.frozenFromIndex,
 		cacheTrackerReasonBefore: before.reason,
@@ -71,8 +73,4 @@ export function buildUnreportedChunkedCompactionDiagnostic(
 	const diagnostic = buildChunkedCompactionDiagnostic(group, blocks, before, after);
 	if (diagnostic) reportedGroupIds.add(group.id);
 	return diagnostic;
-}
-
-export function formatContextDiagnostic(entry: Record<string, unknown>): string {
-	return `${JSON.stringify(entry)}\n`;
 }

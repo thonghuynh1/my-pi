@@ -7,10 +7,7 @@ import { applyPlan, linearize, type PiMessage, wireToBlock } from "../app/src/li
 import { computeFoldOps, computeGroupOps } from "../app/src/lib/live/plan";
 import type { CacheTrackerDiagnostics } from "./cache-tracker";
 import * as cacheTracker from "./cache-tracker";
-import {
-	buildUnreportedChunkedCompactionDiagnostic,
-	formatContextDiagnostic,
-} from "./chunked-compaction-diagnostic";
+import { buildUnreportedChunkedCompactionDiagnostic } from "./chunked-compaction-diagnostic";
 
 const PROVIDER = "anthropic";
 const CONTEXT_WINDOW = 200_000;
@@ -201,7 +198,7 @@ function runSession(rolloverCount: 0 | 1 | 2): SessionRun {
 			cacheTracker: cacheTracker.getDiagnostics(),
 			...(chunkedCompaction ? { chunkedCompaction } : {}),
 		};
-		sink.append(formatContextDiagnostic(entry));
+		sink.append(`${JSON.stringify(entry)}\n`);
 		cacheTracker.observe({ system: "", tools: [], messages: messagesForModel }, PROVIDER);
 	}
 

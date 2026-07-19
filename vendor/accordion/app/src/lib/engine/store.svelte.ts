@@ -1176,8 +1176,8 @@ export class AccordionStore {
 				return void reports.push(clamp("group", ids, "human-override", `would collapse ${held.length} human-held block(s)`));
 			const frozen = range.some((id) => (this.get(id)?.order ?? this.frozenFromIndex) < this.frozenFromIndex);
 			if (frozen) {
-				const isChunkedCompactionSubst = digest !== null && digest !== undefined && digest !== "";
-				if (!isChunkedCompactionSubst && !this.hasHardContextPressure())
+				const hasNonEmptyDigest = digest !== null && digest !== undefined && digest !== "";
+				if (!hasNonEmptyDigest && !this.hasHardContextPressure())
 					return void reports.push(clamp("group", ids, "frozen", "would rewrite the provider's cached prefix"));
 			}
 		}
@@ -1298,7 +1298,7 @@ export class AccordionStore {
 				tokens: estTokens(source.text) + BLOCK_OVERHEAD,
 				toolName: "recall",
 				callId,
-				proactivelyCompressed: true,
+				proactivelyCompressed: false,
 				...common,
 			},
 		];

@@ -47,7 +47,7 @@ import { runToolsAudit } from "./tools-audit";
 import * as payloadAudit from "./payload-audit";
 import * as cacheTracker from "./cache-tracker";
 import * as proactiveCompress from "./proactive-compress";
-import { buildUnreportedChunkedCompactionDiagnostic, formatContextDiagnostic } from "./chunked-compaction-diagnostic";
+import { buildUnreportedChunkedCompactionDiagnostic } from "./chunked-compaction-diagnostic";
 
 import { linearize, applyPlan, type PiMessage } from "../app/src/lib/live/mapping";
 import { DEFAULT_PORT, PROTOCOL_VERSION, type FoldOp, type GroupOp, type ServerMessage, type StreamMessage, type UnfoldRequestMessage, type UnfoldResultMessage, type RecallRequestMessage, type RecallContent, type CompleteRequestMessage, type CompleteResultMessage } from "../app/src/lib/live/protocol";
@@ -439,7 +439,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		if (!sessionId) return;
 		try {
 			fs.mkdirSync(DIAGNOSTICS_DIR, { recursive: true });
-			fs.appendFileSync(path.join(DIAGNOSTICS_DIR, `${sessionId}.context.jsonl`), formatContextDiagnostic(entry));
+			fs.appendFileSync(path.join(DIAGNOSTICS_DIR, `${sessionId}.context.jsonl`), `${JSON.stringify(entry)}\n`);
 		} catch {
 			/* diagnostics must never break the model-call path */
 		}

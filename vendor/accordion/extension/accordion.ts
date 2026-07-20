@@ -47,6 +47,7 @@ import { runToolsAudit } from "./tools-audit";
 import * as payloadAudit from "./payload-audit";
 import * as cacheTracker from "./cache-tracker";
 import * as proactiveCompress from "./proactive-compress";
+import { buildUnreportedChunkedCompactionDiagnostic } from "./chunked-compaction-diagnostic";
 
 import { linearize, applyPlan, type PiMessage } from "../app/src/lib/live/mapping";
 import { DEFAULT_PORT, PROTOCOL_VERSION, type FoldOp, type GroupOp, type ServerMessage, type StreamMessage, type UnfoldRequestMessage, type UnfoldResultMessage, type RecallRequestMessage, type RecallContent, type CompleteRequestMessage, type CompleteResultMessage } from "../app/src/lib/live/protocol";
@@ -347,6 +348,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 	// this as a one-turn safety net is cheaper and safer than sending the raw 500k+
 	// token history and detonating the provider cache/window.
 	let lastNonEmptyPlan: Plan | null = null;
+	const reportedChunkedCompactionGroupIds = new Set<string>();
 	let epoch = 0; // bumped on every new GUI connection; invalidates in-flight requests
 	const pending = new Map<number, (plan: Plan) => void>();
 	// Unfold requests: keyed by reqId, resolved when the GUI replies (or null on flush).
@@ -1045,6 +1047,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		sessionId = `s-${process.pid}-${Date.now()}`;
 		sentCount = 0;
 		lastNonEmptyPlan = null;
+		reportedChunkedCompactionGroupIds.clear();
 		pendingSince = [];
 		// Seed the cache from the session itself. For a fresh session this is []; for a
 		// RESUMED/loaded session (reason "resume"/"startup"/"fork") it is the full prior
@@ -1225,7 +1228,19 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			return; // empty plan → pass through
 		}
 
+		const frozenFromIndexBefore = cacheTracker.getFrozenFromIndex();
+		const cacheTrackerReasonBefore = cacheTracker.getDiagnostics().reason;
 		const messagesForModel = applyPlan(originalMessages, plan.ops, plan.groups);
+		cacheTracker.observeMessages(messagesForModel, latestModel?.provider);
+		const frozenFromIndexAfter = cacheTracker.getFrozenFromIndex();
+		const cacheTrackerReasonAfter = cacheTracker.getDiagnostics().reason;
+		const chunkedCompaction = buildUnreportedChunkedCompactionDiagnostic(
+			plan.groups,
+			reportedChunkedCompactionGroupIds,
+			all,
+			{ frozenFromIndex: frozenFromIndexBefore, reason: cacheTrackerReasonBefore },
+			{ frozenFromIndex: frozenFromIndexAfter, reason: cacheTrackerReasonAfter },
+		);
 		lastNonEmptyPlan = plan;
 		writeContextDiagnostic({
 			event: "accordion_context_apply_plan",
@@ -1250,6 +1265,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			frozenFromIndex: cacheTracker.getFrozenFromIndex(),
 			cacheTracker: cacheTracker.getDiagnostics(),
 			payloadAudit: payloadAudit.getLatestSizes(),
+			...(chunkedCompaction ? { chunkedCompaction } : {}),
 		});
 
 		return { messages: messagesForModel as unknown as AgentMessage[] };
@@ -1392,6 +1408,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			heartbeat = null;
 		}
 		cacheTracker.reset();
+		reportedChunkedCompactionGroupIds.clear();
 		deleteEntry(); // stop advertising — the app drops our row immediately
 		flushPending(); // resolve any awaiting context hook as passthrough
 		try {

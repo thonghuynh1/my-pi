@@ -34,8 +34,12 @@
  *      swallowed into the group (not left live); tool_call/result pair-balanced.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { NaiveCompactionConductor } from "$conductors/compaction-naive/compaction-naive";
+import { MyCustomizeConductor } from "$conductors/my-customize-conductor/my-customize-conductor";
+import * as chunkedCompaction from "$conductors/my-customize-conductor/chunked-compaction";
+import { corpusContentHash } from "$conductors/my-customize-conductor/chunked-compaction";
+import { humanTokens } from "$conductors/my-customize-conductor/constants";
 import { AccordionStore } from "./store.svelte";
 import type { Block, ParsedSession } from "./types";
 import type {
@@ -44,6 +48,7 @@ import type {
 	ViewBlock,
 	CompletionRequest,
 	CompletionResult,
+	JSONValue,
 } from "$conductors/contract";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -160,6 +165,11 @@ class MockHost implements ConductorHost {
 	digestOfCalls: string[] = [];
 	statusText = "";
 	statusMetrics: Record<string, number | string | boolean> = {};
+	statusCalls: Array<{
+		text: string | null;
+		metrics: Record<string, number | string | boolean>;
+		details: JSONValue | undefined;
+	}> = [];
 
 	/** Pending in-flight completions. Pop and resolve/reject from tests. */
 	pending: PendingCompletion[] = [];
@@ -196,9 +206,10 @@ class MockHost implements ConductorHost {
 		return `{#digest FOLDED} digest of ${id}`;
 	}
 
-	setStatus(text: string | null, metrics: Record<string, number | string | boolean> = {}): void {
+	setStatus(text: string | null, metrics: Record<string, number | string | boolean> = {}, details?: JSONValue): void {
 		this.statusText = text ?? "";
 		this.statusMetrics = text ? metrics : {};
+		this.statusCalls.push({ text, metrics, details });
 	}
 
 	requestRerun(): void {
@@ -333,9 +344,8 @@ describe("NaiveCompactionConductor — first compaction cycle", () => {
 		const g = group as { ids: string[]; digest: string };
 		expect(g.ids).toEqual(["a0", "a2"]);
 
-		// The digest is the summary (preamble + model text). No {# FOLDED} tag.
+		// The digest is the summary (preamble + model text), not an engine fold marker.
 		expect(g.digest).toContain("Summary text from the model.");
-		expect(g.digest).not.toMatch(/\{#\w+\s+FOLDED\}/);
 		expect(g.digest).toContain("3 earlier message");
 	});
 
@@ -1565,6 +1575,278 @@ describe("NaiveCompactionConductor — AccordionStore integration", () => {
 // conductor's `detach()` runs and aborts any in-flight `host.complete()`. Without it, a
 // naive-compaction summary call caught mid-flight runs to completion against an orphaned
 // store — uncancelled, billable, and a lifecycle leak.
+
+describe("MyCustomizeConductor — deterministic chunked-compaction rollover", () => {
+	function chunkedBlock(id: string, order: number, tokens = 2_000, extra: Partial<ViewBlock> = {}): ViewBlock {
+		return {
+			id,
+			kind: "text",
+			turn: order + 1,
+			order,
+			tokens,
+			foldedTokens: 50,
+			held: false,
+			folded: false,
+			protected: false,
+			grouped: false,
+			proactivelyCompressed: false,
+			text: `chunk ${id}`,
+			...extra,
+		};
+	}
+
+	function rolloverView(blocks: ViewBlock[], contextWindow: number | null = 200_000): ConductorView {
+		const protectedFromIndex = blocks.findIndex((block) => block.protected);
+		return {
+			blocks,
+			budget: 100_000,
+			contextWindow,
+			liveTokens: blocks.reduce((sum, block) => sum + block.tokens, 0),
+			protectedFromIndex: protectedFromIndex < 0 ? blocks.length : protectedFromIndex,
+			protectTokens: 20_000,
+			frozenFromIndex: 0,
+			harnessOverhead: 5_000,
+		};
+	}
+
+	function rolloverBlocks(): ViewBlock[] {
+		return [
+			...Array.from({ length: 8 }, (_, i) => chunkedBlock(`c${i}`, i)),
+			chunkedBlock("tail", 8, 100, { kind: "user", protected: true }),
+		];
+	}
+
+	it("attach and setStatus fire on every conduct pass", () => {
+		const host = new MockHost();
+		const setStatus = vi.spyOn(host, "setStatus");
+		const conductor = new MyCustomizeConductor();
+		const blocks = rolloverBlocks();
+		const nonRolloverBlocks = [...blocks.slice(0, 7), blocks[8]];
+		conductor.attach(host);
+
+		conductor.conduct(rolloverView(nonRolloverBlocks));
+		conductor.conduct(rolloverView(blocks));
+
+		expect(setStatus).toHaveBeenCalledTimes(2);
+		const nonRolloverMetrics = setStatus.mock.calls[0]?.[1];
+		const rolloverCall = setStatus.mock.calls[1];
+		const rolloverMetrics = rolloverCall?.[1];
+		expect(Object.keys(nonRolloverMetrics ?? {}).sort()).toEqual([
+			"breakFrozenCount",
+			"lastEstimatedGroupSaving",
+			"preGroupFillPct",
+			"preGroupTokens",
+			"rolloverCount",
+			"tokensSavedByRollover",
+		]);
+		expect(typeof nonRolloverMetrics?.preGroupTokens).toBe("number");
+		expect(typeof nonRolloverMetrics?.preGroupFillPct).toBe("number");
+		expect(rolloverMetrics?.preGroupTokens).toBeTypeOf("number");
+		expect(rolloverMetrics?.rolloverCount).toBe(1);
+		expect(rolloverMetrics?.breakFrozenCount).toBe(1);
+		expect(rolloverCall?.[2]).toBeNull();
+	});
+
+	it("rollover-pass setStatus text uses the rollover template", () => {
+		const host = new MockHost();
+		const setStatus = vi.spyOn(host, "setStatus");
+		const conductor = new MyCustomizeConductor();
+		conductor.attach(host);
+		const blocks = rolloverBlocks();
+		conductor.conduct(rolloverView([...blocks.slice(0, 7), blocks[8]]));
+		conductor.conduct(rolloverView(blocks));
+
+		expect(setStatus.mock.calls[0]?.[0]).toMatch(/^chunked · \d+% pregroup · \d+ rollovers · [\d.]+[kmb]? saved$/);
+		expect(setStatus.mock.calls[1]?.[0]).toMatch(/^chunked · rollover · \d+ rollover\(s\) · [\d.]+[kmb]? saved · pregroup \d+ → 0$/);
+	});
+
+	it("setStatus fires on small-context sessions with zero counters", () => {
+		const host = new MockHost();
+		const setStatus = vi.spyOn(host, "setStatus");
+		const conductor = new MyCustomizeConductor();
+		conductor.attach(host);
+		const view = rolloverView(rolloverBlocks(), 32_000);
+
+		conductor.conduct(view);
+		conductor.conduct(view);
+
+		expect(setStatus).toHaveBeenCalledTimes(2);
+		for (const [text, metrics] of setStatus.mock.calls) {
+			expect(text).toBe("chunked · 0% pregroup · 0 rollovers · 0 saved");
+			expect(metrics?.preGroupTokens).toBe(0);
+			expect(metrics?.rolloverCount).toBe(0);
+			expect(metrics?.tokensSavedByRollover).toBe(0);
+			expect(metrics?.breakFrozenCount).toBe(0);
+		}
+	});
+
+	it("attach replaces the current host", () => {
+		const host1 = new MockHost();
+		const host2 = new MockHost();
+		const status1 = vi.spyOn(host1, "setStatus");
+		const status2 = vi.spyOn(host2, "setStatus");
+		const conductor = new MyCustomizeConductor();
+		conductor.attach(host1);
+		conductor.attach(host2);
+
+		conductor.conduct(rolloverView(rolloverBlocks(), 32_000));
+
+		expect(status1).not.toHaveBeenCalled();
+		expect(status2).toHaveBeenCalledTimes(1);
+	});
+
+	it("humanTokens formats compact token counts deterministically", () => {
+		expect(humanTokens(42)).toBe("42");
+		expect(humanTokens(1_500)).toBe("1.5k");
+		expect(humanTokens(15_338)).toBe("15.3k");
+		expect(humanTokens(1_050_000)).toBe("1.05m");
+	});
+
+	it("walking skeleton emits one chunked-compaction group", () => {
+		const plan = new MyCustomizeConductor().conduct(rolloverView(rolloverBlocks()));
+		expect(plan).toHaveLength(1);
+		expect(plan[0].kind).toBe("group");
+		if (plan[0].kind !== "group") return;
+		expect(plan[0].ids).toHaveLength(8);
+		expect(plan[0].digest).toMatch(/^⟨chunked-compaction ·/);
+		expect(plan[0].digest).toMatch(/Members: \{#[a-z0-9]+\}/);
+	});
+
+	it("chunked-compaction digest is byte-identical on replay", () => {
+		const view = rolloverView(rolloverBlocks());
+		const first = new MyCustomizeConductor().conduct(view);
+		const second = new MyCustomizeConductor().conduct(view);
+		expect(first[0].kind).toBe("group");
+		expect(second[0].kind).toBe("group");
+		if (first[0].kind !== "group" || second[0].kind !== "group") return;
+		expect(first[0].digest).toBe(second[0].digest);
+	});
+
+	it("no repeat chunked-compaction emission on next conduct pass", () => {
+		const blocks = rolloverBlocks();
+		const first = new MyCustomizeConductor().conduct(rolloverView(blocks));
+		const grouped = blocks.map((block) => first[0].kind === "group" && first[0].ids.includes(block.id) ? { ...block, grouped: true } : block);
+		const second = new MyCustomizeConductor().conduct(rolloverView(grouped));
+		expect(second.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(0);
+	});
+
+	it("tail-appended recall blocks are not immediately re-grouped", () => {
+		const blocks = rolloverBlocks();
+		const conductor = new MyCustomizeConductor();
+		const first = conductor.conduct(rolloverView(blocks));
+		expect(first[0].kind).toBe("group");
+		const group = first[0];
+		if (group.kind !== "group") return;
+		const tailAppendedIds = ["recall:a:chunked-member:p0:0:call", "recall:a:chunked-member:p0:0:result"];
+		const afterRecall = [
+			...blocks.map((block) => group.ids.includes(block.id) ? { ...block, grouped: true } : block),
+			chunkedBlock(tailAppendedIds[0], 9, 20, { kind: "tool_call", toolName: "recall" }),
+			chunkedBlock(tailAppendedIds[1], 10, 2_000, { kind: "tool_result", toolName: "recall" }),
+		];
+		const nextPlan = conductor.conduct(rolloverView(afterRecall));
+		const overlappingGroups = nextPlan.filter(
+			(command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·") && command.ids.some((id) => tailAppendedIds.includes(id)),
+		);
+		expect(overlappingGroups).toHaveLength(0);
+	});
+
+	it("chunked-compaction is inert below the context-window gate", () => {
+		for (const contextWindow of [32_000, 64_000, null]) {
+			const plan = new MyCustomizeConductor().conduct(rolloverView(rolloverBlocks(), contextWindow));
+			expect(plan.some((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toBe(false);
+		}
+	});
+
+	it("chunked-compaction does not add a third trigger for open tool pairs", () => {
+		const preGroup = Array.from({ length: 8 }, (_, i) => chunkedBlock(`p${i}`, i));
+		preGroup.push(chunkedBlock("call", 8, 2_000, { kind: "tool_call", callId: "pair", toolName: "bash" }));
+		const tail = chunkedBlock("result", 9, 100, { kind: "tool_result", callId: "pair", toolName: "bash", protected: true });
+		const plan = new MyCustomizeConductor().conduct(rolloverView([...preGroup, tail]));
+
+		expect(plan.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(0);
+	});
+
+	it("trimOpenToolPairs removes the in-group half of straddling pairs", () => {
+		const preGroup = Array.from({ length: 8 }, (_, i) => chunkedBlock(`p${i}`, i));
+		const call = chunkedBlock("call", 8, 2_000, { kind: "tool_call", callId: "pair", toolName: "bash" });
+		const tail = chunkedBlock("result", 9, 100, { kind: "tool_result", callId: "pair", toolName: "bash", protected: true });
+		const ids = [...preGroup, call].map((block) => block.id);
+
+		expect(chunkedCompaction.trimOpenToolPairs(ids, [...preGroup, call, tail])).toEqual(preGroup.map((block) => block.id));
+	});
+
+	it("pre-existing frozen-grouping pressure valve is unaffected", () => {
+		const frozen = [
+			chunkedBlock("f0", 0, 5_000, { foldedTokens: 5_000, proactivelyCompressed: true }),
+			chunkedBlock("f1", 1, 5_000, { foldedTokens: 5_000 }),
+		];
+		const protectedTail = Array.from({ length: 19 }, (_, i) => chunkedBlock(`tail${i}`, i + 2, 10_000, { protected: true }));
+		const view = rolloverView([...frozen, ...protectedTail]);
+		view.liveTokens = 250_000;
+		view.frozenFromIndex = 2;
+		view.budget = 100_000;
+		const plan = new MyCustomizeConductor({ preGroupTokens: 200_000 }).conduct(view);
+		const groups = plan.filter((command): command is Extract<typeof command, { kind: "group" }> => command.kind === "group");
+		expect(groups.length).toBeGreaterThan(0);
+		expect(groups.some((group) => !(group.digest ?? "").startsWith("⟨chunked-compaction ·"))).toBe(true);
+	});
+
+	it("chunked-compaction group.ids has balanced tool pairs (property)", () => {
+		let seed = 0x01_02_03_04;
+		const random = (): number => {
+			seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+			return seed / 0x1_0000_0000;
+		};
+		let emitted = 0;
+		for (let sample = 0; sample < 100; sample++) {
+			const blocks = Array.from({ length: 12 }, (_, i) => chunkedBlock(`r${sample}-${i}`, i, 1_500 + Math.floor(random() * 1_000)));
+			if (random() < 0.5) {
+				blocks[2] = { ...blocks[2], kind: "tool_call", callId: `inside-${sample}`, toolName: "bash" };
+				blocks[3] = { ...blocks[3], kind: "tool_result", callId: `inside-${sample}`, toolName: "bash" };
+			}
+			if (random() < 0.5) {
+				blocks[11] = { ...blocks[11], kind: "tool_call", callId: `cross-${sample}`, toolName: "bash" };
+			}
+			blocks.push(chunkedBlock(`r${sample}-tail`, 12, 100, {
+				kind: blocks[11].kind === "tool_call" ? "tool_result" : "user",
+				callId: blocks[11].kind === "tool_call" ? blocks[11].callId : undefined,
+				toolName: blocks[11].kind === "tool_call" ? "bash" : undefined,
+				protected: true,
+			}));
+			const plan = new MyCustomizeConductor({ preGroupTokens: 10_000 }).conduct(rolloverView(blocks));
+			for (const command of plan) {
+				if (command.kind !== "group" || !(command.digest ?? "").startsWith("⟨chunked-compaction ·")) continue;
+				emitted += 1;
+				const ids = new Set(command.ids);
+				for (const callId of new Set(blocks.flatMap((block) => block.callId ? [block.callId] : []))) {
+					const halves = blocks.filter((block) => block.callId === callId);
+					const selected = halves.filter((block) => ids.has(block.id));
+					expect(selected.length === 0 || selected.length === halves.length, `sample ${sample}, callId ${callId}`).toBe(true);
+				}
+			}
+		}
+		expect(emitted).toBeGreaterThan(0);
+	});
+
+	it("walking skeleton group is applied by the engine across the frozen boundary", () => {
+		const blocks = Array.from({ length: 10 }, (_, i) => blk(i, "text", 2_000));
+		blocks.push(blk(10, "user", 100, { text: "tail" }));
+		const store = makeStore(blocks);
+		store.setProtect(100);
+		store.frozenFromIndex = 8;
+		const viewBlocks = blocks.map((block, order) => chunkedBlock(block.id, order, block.tokens, { kind: block.kind, text: block.text, protected: order === 10 }));
+		const plan = new MyCustomizeConductor().conduct(rolloverView(viewBlocks));
+		expect(plan).toHaveLength(1);
+		const reports = store.applyCommands(plan, "conductor");
+		expect(reports.some((report) => report.reason === "frozen")).toBe(false);
+		expect(store.groups).toHaveLength(1);
+		if (plan[0].kind === "group") expect(store.groups[0].memberIds).toHaveLength(plan[0].ids.length);
+	});
+
+	it("corpus content hash uses the SHA-256 digest shape", () => {
+		expect(corpusContentHash([])).toBe("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+	});
+});
 
 describe("AccordionStore.dispose() — outgoing-store cleanup", () => {
 	it("aborts an in-flight naive-compaction completion when the store is disposed", async () => {

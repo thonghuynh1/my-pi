@@ -46,22 +46,48 @@ export function install(
 	};
 
 	api.on?.("before_provider_request", (event) => {
-		try {
-			const currentSnapshot = buildSnapshot(event?.payload, getProvider());
-			latestDiagnostics = computeDiagnostics(previousSnapshot, currentSnapshot);
-			previousSnapshot = currentSnapshot;
-		} catch {
-			previousSnapshot = null;
-			latestDiagnostics = {
-				frozenFromIndex: 0,
-				reason: "error",
-				messageCount: 0,
-				previousMessageCount: 0,
-				matchedPrefix: 0,
-			};
-		}
+		observe(event?.payload, getProvider());
 		return undefined;
 	});
+}
+
+/** Record the payload that actually crossed the provider boundary. */
+export function observe(payload: unknown, provider: string | undefined): void {
+	try {
+		recordSnapshot(buildSnapshot(payload, provider));
+	} catch {
+		recordError();
+	}
+}
+
+/** Update only the message portion after Accordion rewrites the provider payload. */
+export function observeMessages(messages: readonly unknown[], provider: string | undefined): void {
+	try {
+		recordSnapshot({
+			messageStrings: messages.map((message) => JSON.stringify(message) ?? ""),
+			systemHash: previousSnapshot?.systemHash ?? "",
+			toolsHash: previousSnapshot?.toolsHash ?? "",
+			provider: provider ?? previousSnapshot?.provider ?? "",
+		});
+	} catch {
+		recordError();
+	}
+}
+
+function recordSnapshot(currentSnapshot: PrefixSnapshot): void {
+	latestDiagnostics = computeDiagnostics(previousSnapshot, currentSnapshot);
+	previousSnapshot = currentSnapshot;
+}
+
+function recordError(): void {
+	previousSnapshot = null;
+	latestDiagnostics = {
+		frozenFromIndex: 0,
+		reason: "error",
+		messageCount: 0,
+		previousMessageCount: 0,
+		matchedPrefix: 0,
+	};
 }
 
 export function getFrozenFromIndex(): number {

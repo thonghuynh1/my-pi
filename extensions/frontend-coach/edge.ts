@@ -160,6 +160,28 @@ export async function ensurePickerInstalled(context: BrowserContext, page?: Page
 	}
 }
 
+/**
+ * Find the best "app" page — skip DevTools, chrome://, edge://,
+ * and about:blank pages so we don't accidentally drive the wrong tab.
+ * Searches across all contexts in the browser.
+ */
+export function findAppPage(browser: Browser): Page | undefined {
+	for (const ctx of browser.contexts()) {
+		for (const p of ctx.pages()) {
+			const url = p.url();
+			if (
+				!url.startsWith("devtools://") &&
+				!url.startsWith("chrome://") &&
+				!url.startsWith("edge://") &&
+				url !== "about:blank"
+			) {
+				return p;
+			}
+		}
+	}
+	return undefined;
+}
+
 /** Connect Playwright to the running Edge via CDP. Cached. */
 export async function ensureBrowser(port = DEFAULT_CDP_PORT): Promise<Browser> {
 	if (cachedBrowser && cachedBrowser.isConnected() && cachedPort === port) {

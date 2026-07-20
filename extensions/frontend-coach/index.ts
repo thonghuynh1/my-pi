@@ -34,6 +34,7 @@ import {
 	DEFAULT_CDP_PORT,
 	ensureBrowser,
 	ensurePickerInstalled,
+	findAppPage,
 	findEdgeBinary,
 	isEdgeRunning,
 	launchEdge,
@@ -677,14 +678,22 @@ export default async function (pi: ExtensionAPI) {
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			try {
 				const browser = await ensureBrowser();
-				const context = browser.contexts()[0] ?? (await browser.newContext());
-				const pages = context.pages();
-				await ensurePickerInstalled(context, pages[0]);
-				// Also inject into any other open tabs so they all gain Alt+P.
-				for (const p of pages.slice(1)) {
-					try { await ensurePickerInstalled(context, p); } catch {}
+				// Inject into every page in every context, but prefer app pages
+				// over internal ones (devtools://, chrome://, edge://).
+				let count = 0;
+				for (const context of browser.contexts()) {
+					for (const p of context.pages()) {
+						const url = p.url();
+						if (url.startsWith("devtools://") || url.startsWith("chrome://") || url.startsWith("edge://")) continue;
+						try { await ensurePickerInstalled(context, p); count++; } catch {}
+					}
 				}
-				ctx.ui.notify(`Picker injected into ${pages.length} tab(s).`, "info");
+				if (count === 0) {
+					// No app pages found — install in first context for future navigations
+					const context = browser.contexts()[0] ?? (await browser.newContext());
+					await ensurePickerInstalled(context);
+				}
+				ctx.ui.notify(`Picker injected into ${count || 'no app'} tab(s).`, "info");
 			} catch (err) {
 				ctx.ui.notify(`Failed to inject picker: ${(err as Error).message}`, "error");
 			}
@@ -712,9 +721,17 @@ export default async function (pi: ExtensionAPI) {
 			// any navigation done by browser_record_test.
 			try {
 				const browser = await ensureBrowser(r.port);
-				const context = browser.contexts()[0] ?? (await browser.newContext());
-				const page = context.pages()[0];
-				await ensurePickerInstalled(context, page);
+				const appPage = findAppPage(browser);
+				const context = appPage?.context() ?? browser.contexts()[0] ?? (await browser.newContext());
+				await ensurePickerInstalled(context, appPage);
+				// Also inject into any other app pages in this context.
+				for (const p of context.pages()) {
+					if (p !== appPage) {
+						const url = p.url();
+						if (url.startsWith("devtools://") || url.startsWith("chrome://") || url.startsWith("edge://")) continue;
+						try { await ensurePickerInstalled(context, p); } catch {}
+					}
+				}
 				ctx.ui.notify(`Alt+P picker installed (auto-injects on every page).`, "info");
 			} catch (err) {
 				ctx.ui.notify(`Picker auto-install failed: ${(err as Error).message}`, "warning");

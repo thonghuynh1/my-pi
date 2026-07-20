@@ -12,7 +12,7 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { statSync } from "node:fs";
-import { ensureBrowser, ensurePickerInstalled } from "./edge.ts";
+import { ensureBrowser, ensurePickerInstalled, findAppPage } from "./edge.ts";
 import {
 	makeRecordId,
 	pathsForId,
@@ -161,9 +161,14 @@ export async function recordTest(input: RecordTestInput): Promise<RecordTestOutc
 	const paths = pathsForId(id);
 
 	const browser = await ensureBrowser();
-	const context = browser.contexts()[0] ?? (await browser.newContext());
-	let page = context.pages()[0];
-	if (!page) page = await context.newPage();
+	let page = findAppPage(browser);
+	let context: import("playwright-core").BrowserContext;
+	if (page) {
+		context = page.context();
+	} else {
+		context = browser.contexts()[0] ?? (await browser.newContext());
+		page = await context.newPage();
+	}
 
 	// Make sure the Alt+P picker survives whatever navigations the steps do.
 	// Without this, page.goto() wipes window.__piCoach and Alt+P stops working

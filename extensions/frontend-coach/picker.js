@@ -160,10 +160,19 @@
 		btnSend.onclick = () => resolve(input.value.trim() || null);
 		btnCancel.onclick = () => resolve(null);
 		input.onkeydown = (e) => {
+			e.stopPropagation();
 			if (e.key === "Enter") resolve(input.value.trim() || null);
 			if (e.key === "Escape") resolve(null);
 		};
 		overlay.onclick = (e) => { if (e.target === overlay) resolve(null); };
+
+		// Isolate the overlay from the host page's event handlers.
+		// Without this, the app's global keyboard shortcuts (e.g. 'S' for save,
+		// 'N' for new) can intercept keystrokes meant for the input field, and
+		// page-level click handlers can swallow button clicks.
+		for (const evt of ["keydown", "keyup", "keypress", "click", "mousedown", "mouseup"]) {
+			overlay.addEventListener(evt, (e) => e.stopPropagation());
+		}
 
 		overlay._label = label;
 		overlay._input = input;

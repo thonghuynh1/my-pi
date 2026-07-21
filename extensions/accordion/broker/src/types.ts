@@ -1,7 +1,7 @@
 /**
  * types.ts — shared data shapes for the Accordion Browser Broker.
  *
- * Mirrors the constants from vendor/accordion/app/src/lib/live/registry.ts and
+ * Mirrors the constants from extensions/accordion/app/src/lib/live/registry.ts and
  * protocol.ts but kept local so the broker package stays independent of the
  * Svelte app bundle.
  */
@@ -9,7 +9,7 @@
 /** Wire protocol version this broker speaks. Mirrors PROTOCOL_VERSION in protocol.ts. */
 export const PROTOCOL_VERSION = 5;
 
-/** Must match REGISTRY_PROTOCOL in vendor registry.ts so session files parse correctly. */
+/** Must match REGISTRY_PROTOCOL in the app registry.ts so session files parse correctly. */
 export const REGISTRY_PROTOCOL = 1;
 
 /** A session whose heartbeat is older than this is considered dead. Mirrors STALE_AFTER_MS. */

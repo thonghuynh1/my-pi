@@ -140,13 +140,13 @@ groups, no replay. That's the build ahead.
 The fastest path. The pi extension HTTP-serves Accordion in your browser — no Rust, no
 desktop app needed. Single session only.
 
-**1. Clone, build the browser UI, and install the extension:**
+**1. Build the browser UI from the `my-pi` checkout and install the extension:**
 
 ```bash
-git clone https://github.com/a-Fig/accordion.git
-cd accordion
-npm install --prefix app && npm run build --prefix app   # builds the static browser bundle (app/build)
-cd extension && npm install                              # the pi extension that serves it
+cd <my-pi-checkout>
+npm install --prefix extensions/accordion/app
+npm install --prefix extensions/accordion/extension
+npm run build --prefix extensions/accordion/app   # builds extensions/accordion/app/build
 ```
 
 > The extension serves the UI from `app/build` (produced by `npm run build` above).
@@ -155,7 +155,7 @@ cd extension && npm install                              # the pi extension that
 **2. Register it with pi** — add to `~/.pi/agent/settings.json`:
 
 ```json
-{ "extensions": ["<absolute-path-to-repo>/extension/accordion.ts"] }
+{ "extensions": ["<absolute-path-to-my-pi>/extensions/accordion/index.ts"] }
 ```
 
 **3. Run pi in any project, then open Accordion in your browser:**
@@ -180,22 +180,23 @@ that foregrounds the right session automatically. It requires Node 20+ and Rust.
 **https://v2.tauri.app/start/prerequisites/** (WebView2 + MSVC on Windows, Xcode CLT on
 macOS).
 
-**1. Clone and install:**
+**1. Install the desktop app from the `my-pi` checkout:**
 
 ```bash
-git clone https://github.com/a-Fig/accordion.git
-cd accordion/app && npm install
+cd <my-pi-checkout>
+npm install --prefix extensions/accordion/app
 ```
 
 **2. Register the extension with pi** — same as above, in `~/.pi/agent/settings.json`:
 
 ```json
-{ "extensions": ["<absolute-path-to-repo>/extension/accordion.ts"] }
+{ "extensions": ["<absolute-path-to-my-pi>/extensions/accordion/index.ts"] }
 ```
 
 **3. Launch the desktop app:**
 
 ```bash
+cd <my-pi-checkout>/extensions/accordion/app
 npm run tauri dev   # opens the native window; hot-reloads on save
 ```
 

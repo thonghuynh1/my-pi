@@ -20,7 +20,7 @@ Enabling issue for the walking skeleton. The `proactivelyCompressed` flag pipeli
 
 ### 1. `proactive-compress.ts` — set flag at origin
 
-- **File**: `vendor/accordion/extension/proactive-compress.ts`
+- **File**: `extensions/accordion/extension/proactive-compress.ts`
 - **Symbol**: `handleBeforeProviderRequest()` → line 72
 - **Existing**: `return { ...message, content: compress(message.content, code) };`
 - **Edit**:
@@ -30,25 +30,25 @@ Enabling issue for the walking skeleton. The `proactivelyCompressed` flag pipeli
 
 ### 2. `types.ts` — add field to `Block`
 
-- **File**: `vendor/accordion/app/src/lib/engine/types.ts`
+- **File**: `extensions/accordion/app/src/lib/engine/types.ts`
 - **Symbol**: `Block` interface (line 34)
 - **Edit**: add `proactivelyCompressed: boolean;`. Default `false` at all block creation sites.
 
 ### 3. `conductor.ts` — add field to `ViewBlock` and extend `ClampReason`
 
-- **File**: `vendor/accordion/conductors/contract/conductor.ts`
+- **File**: `extensions/accordion/conductors/contract/conductor.ts`
 - **Symbol**: `ViewBlock` interface (line 57), `ClampReason` type (line 292)
 - **Edit**: add `proactivelyCompressed: boolean;` to `ViewBlock`; add `| "proactively-compressed"` to `ClampReason`.
 
 ### 4. `mapping.ts` — propagate in linearizer
 
-- **File**: `vendor/accordion/app/src/lib/live/mapping.ts`
+- **File**: `extensions/accordion/app/src/lib/live/mapping.ts`
 - **Symbol**: `linearize()` (line 154), `push()` helper (line 159), `case "toolResult":` (line 195)
 - **Edit**: in `case "toolResult":`, include `proactivelyCompressed: !!m._pccCompressed` in the extra passed to `push()`. Non-toolResult branches default to `false`.
 
 ### 5. `store.svelte.ts` — propagate in `buildView()`
 
-- **File**: `vendor/accordion/app/src/lib/engine/store.svelte.ts`
+- **File**: `extensions/accordion/app/src/lib/engine/store.svelte.ts`
 - **Symbol**: `buildView()` (line 1018)
 - **Edit**: add `proactivelyCompressed: b.proactivelyCompressed` to the `ViewBlock` object literal.
 

@@ -1,6 +1,6 @@
 # Contributing to Accordion
 
-This guide gets a new contributor from a fresh clone to a running dev build and a
+This guide gets a new contributor from a `my-pi` checkout to a running dev build and a
 clean quality gate. For *what* the product is, read [VISION.md](VISION.md); for *how
 the code is organized and the conventions to follow*, read [CLAUDE.md](CLAUDE.md) — it
 is the authoritative guide to working in this codebase.
@@ -39,17 +39,13 @@ cargo -V     # any recent stable
 
 ---
 
-## 2. Clone & install
+## 2. Checkout & install
+
+From the `my-pi` checkout:
 
 ```bash
-git clone https://github.com/a-Fig/accordion.git
-cd accordion
-
-# the desktop app
-cd app && npm install
-
-# the pi extension (only if you'll touch the live link)
-cd ../extension && npm install
+npm install --prefix extensions/accordion/app
+npm install --prefix extensions/accordion/extension
 ```
 
 The first `npm run tauri dev` / `cargo` invocation also compiles the Rust crates, which
@@ -86,7 +82,7 @@ disabled there — it falls back to a manual-port Connect box and the bundled de
 Keep all of these clean. CI parity is on you locally.
 
 ```bash
-# from app/
+# from <my-pi-checkout>/extensions/accordion/app/
 npm run check       # svelte-check / typecheck — must be 0 errors / 0 warnings
 npm run test        # vitest — unit tests for the risky live / mapping / engine logic
 npm run build       # production SPA build must succeed
@@ -94,8 +90,9 @@ npm run build       # production SPA build must succeed
 # the native discovery layer
 cd src-tauri && cargo check
 
-# the pi extension (from extension/)
-cd ../../extension && node smoke.mjs   # drives the extension via jiti + a real WS client
+# the pi extension
+cd ../extension && node smoke.mjs       # drives the extension via jiti + a real WS client
+node adoption-smoke.mjs                 # proves the stable entry and detached broker
 ```
 
 Production installer (when you need a real bundle): `npm run tauri build` from `app/`.
@@ -110,7 +107,7 @@ edits **your own** pi config:
 Add this repo's extension to `~/.pi/agent/settings.json`:
 
 ```json
-{ "extensions": ["<absolute-path-to-repo>/extension/accordion.ts"] }
+{ "extensions": ["<absolute-path-to-my-pi>/extensions/accordion/index.ts"] }
 ```
 
 Then run `pi` in any project. It advertises itself in `~/.accordion/sessions/` and shows
@@ -121,8 +118,8 @@ context.
 
 ### Keeping the `/accordion` app binary current
 
-`/accordion` does **not** run a dev server — it launches a pre-built binary. The extension
-(`extension/accordion.ts → resolveAccordionApp`) picks the first one it finds, in this order:
+`/accordion` does **not** run a dev server — it launches a pre-built binary. The runtime
+(`extensions/accordion/extension/accordion.ts → resolveAccordionApp`) picks the first one it finds, in this order:
 
 1. the `--accordion-app <path>` pi flag, then the `ACCORDION_APP_PATH` env var (explicit overrides);
 2. an installed bundle — `%LOCALAPPDATA%\Programs\Accordion\Accordion.exe`, `Program Files\Accordion\…`, etc.;
@@ -141,13 +138,13 @@ To refresh it after `main` moves:
 #    linker will fail to overwrite it. (Check: Get-Process app,Accordion -ErrorAction SilentlyContinue)
 
 # 1. Update the registered checkout to the new main
-cd "<the repo whose extension/accordion.ts is in settings.json>"
+cd "<my-pi-checkout>"
 git checkout main
 git pull
 
 # 2. Install deps — easy to forget, and a missing new dependency fails the build at the
 #    Vite step (e.g. the design-system overhaul added @fontsource-variable/inter).
-cd app
+cd extensions/accordion/app
 npm install
 
 # 3. Rebuild. cargo must be on PATH (see Platform gotchas).
@@ -156,7 +153,7 @@ npm run tauri build -- --no-bundle   # builds target/release/app.exe; --no-bundl
                                      # the slower MSI/NSIS installers /accordion doesn't use
 ```
 
-The fresh binary lands at `app/src-tauri/target/release/app.exe` — the exact path `/accordion`
+The fresh binary lands at `extensions/accordion/app/src-tauri/target/release/app.exe` — the exact path `/accordion`
 launches. No reload needed for the *app*; the next `/accordion` opens the new build. (If the
 **extension** code itself changed, restart pi so it reloads `accordion.ts`.)
 

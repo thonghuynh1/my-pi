@@ -15,6 +15,7 @@
     "extensions/**/*.ts"
   ],
   "exclude": [
-    "extensions/__tests__"
+    "extensions/__tests__",
+    "extensions/accordion/**"
   ]
 }

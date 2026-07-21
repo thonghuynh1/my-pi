@@ -12,7 +12,7 @@ findings: ./10-findings.md
 
 The initial reconnaissance surfaced a comment that "hierarchical groups are on the roadmap" in accordion. Find where that thinking lives so we don't reinvent it:
 
-- Scan `F:/MyWork/my-pi/vendor/accordion/conductors/README.md`, `VISION.md`, and any `docs/roadmap*` for the hierarchical / multi-level summary note.
+- Scan `F:/MyWork/my-pi/extensions/accordion/conductors/README.md`, `VISION.md`, and any `docs/roadmap*` for the hierarchical / multi-level summary note.
 - Also grep the repo for `hierarchical`, `group.*summary`, `tier.*summary`.
 - Capture: (a) direct quotes with file:line references, (b) whether any prior design work exists, (c) any linked issues.
 

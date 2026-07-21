@@ -50,8 +50,8 @@ function resolveClientRoot(explicitRoot?: string | null): string | null {
 	const candidates = explicitRoot !== undefined
 		? [explicitRoot]
 		: [
-			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../vendor/accordion/app/build"),
-			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../vendor/accordion/extension/dist/client"),
+			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../app/build"),
+			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../extension/dist/client"),
 		];
 	for (const dir of candidates) {
 		if (!dir) continue;
@@ -132,7 +132,7 @@ export function createBrokerServer(store: BrokerStore, options: BrokerServerOpti
 		if (req.method === "GET" || req.method === "HEAD") {
 			if (!clientRoot) {
 				res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-				res.end("No browser build found. Run `npm run accordion:build` or `npm run setup:accordion`.");
+				res.end("No browser build found. Run `npm run accordion:build`.");
 				return;
 			}
 			serveClient(req, res, clientRoot);

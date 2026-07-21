@@ -28,7 +28,7 @@ Covers:
 
 ### Contract — resolver policy branch
 
-`resolveUnfold(store, codes)` at `F:/MyWork/my-pi/vendor/accordion/app/src/lib/live/plan.ts:105` gains a policy branch **inside the per-block match loop** (currently in the block-path body around `plan.ts:129–145`). Detection is: "the matched block is a member of a chunked-compaction `GroupCommand`" — implementer's choice among (a) a store-side lookup on the group registry checking whether the containing group's digest starts with `⟨chunked-compaction ·`, (b) a marker on the group (e.g. `group.kind === "chunked-compaction"` derived at group-creation time from the digest prefix), or (c) a `groupMemberOf` field on `ViewBlock`. Any deterministic, cheap approach is acceptable.
+`resolveUnfold(store, codes)` at `F:/MyWork/my-pi/extensions/accordion/app/src/lib/live/plan.ts:105` gains a policy branch **inside the per-block match loop** (currently in the block-path body around `plan.ts:129–145`). Detection is: "the matched block is a member of a chunked-compaction `GroupCommand`" — implementer's choice among (a) a store-side lookup on the group registry checking whether the containing group's digest starts with `⟨chunked-compaction ·`, (b) a marker on the group (e.g. `group.kind === "chunked-compaction"` derived at group-creation time from the digest prefix), or (c) a `groupMemberOf` field on `ViewBlock`. Any deterministic, cheap approach is acceptable.
 
 Behavior:
 
@@ -62,10 +62,10 @@ Left to the implementer:
 
 ### Verified anchors
 
-- `resolveUnfold(store, codes)` entry point: `F:/MyWork/my-pi/vendor/accordion/app/src/lib/live/plan.ts:105` (verified).
+- `resolveUnfold(store, codes)` entry point: `F:/MyWork/my-pi/extensions/accordion/app/src/lib/live/plan.ts:105` (verified).
 - Whole-group unfold path (unchanged): `plan.ts:~111–125` (`for (const g of store.groups)` loop with `foldCode(g.id) === code` and `store.unfoldGroup(g.id, "agent")`).
 - Per-block match loop (**insertion point for the new branch**): `plan.ts:129–145` (`const matches = store.blocks.filter(...)` at line 129 and the subsequent `for (const b of matches)` at line 130; policy branch fires **inside** that loop, **before** the existing `store.unfold(b.id, "agent")` call at line 139).
-- Existing in-place restore path (unchanged for non-group-member fold codes): `F:/MyWork/my-pi/vendor/accordion/app/src/lib/engine/store.svelte.ts:1439-1456` (`store.unfold(id, by)`); the call from `resolveUnfold` is at `plan.ts:139`.
+- Existing in-place restore path (unchanged for non-group-member fold codes): `F:/MyWork/my-pi/extensions/accordion/app/src/lib/engine/store.svelte.ts:1439-1456` (`store.unfold(id, by)`); the call from `resolveUnfold` is at `plan.ts:139`.
 - Group registry / `store.groups` (source of truth for group membership + digest): `store.svelte.ts` — the `groups` accessor and `groupById` / `groupOf` helpers are already exercised by `resolveUnfold`; reuse the same accessors.
 - Chunked-compaction digest prefix (**pattern to match on for detection**): the literal `⟨chunked-compaction ·` (produced by `#01`'s `digestHeader`).
 
@@ -83,10 +83,10 @@ Left to the implementer:
 
 ### Required edits
 
-1. **Modify** `F:/MyWork/my-pi/vendor/accordion/app/src/lib/engine/store.svelte.ts`:
+1. **Modify** `F:/MyWork/my-pi/extensions/accordion/app/src/lib/engine/store.svelte.ts`:
    - Add `appendToTail(id: string): void` (or equivalent name).
    - The method retrieves the original member content from the group registry, constructs a synthetic `tool_call` + `tool_result` pair with a fresh synthetic `callId` (per the scheme above), and appends both blocks to the store's block list at the tail-end. Optionally marks them `proactivelyCompressed = true` per the recommendation above.
-2. **Modify** `F:/MyWork/my-pi/vendor/accordion/app/src/lib/live/plan.ts`:
+2. **Modify** `F:/MyWork/my-pi/extensions/accordion/app/src/lib/live/plan.ts`:
    - Inside the per-block match loop in `resolveUnfold` (line 130 `for (const b of matches)`), add a branch: if the matched block is a member of a chunked-compaction group (detection per the chosen mechanism), call `store.appendToTail(b.id)`, push a `restored` entry `{ code, kind: b.kind, label: `recall(${code}) → tail`, ids: [b.id] }`, set `hit = true`, and `continue` (skip the existing `store.unfold` path at line 139). Otherwise fall through to existing behavior.
 
 ### Normative snippet
@@ -106,7 +106,7 @@ for (const b of matches) {
 
 ## Acceptance criteria
 
-Test file: extend `F:/MyWork/my-pi/vendor/accordion/app/src/lib/live/plan.test.ts` (or the closest existing test suite for `plan.ts` — the implementer verifies against the current vendor test layout). Working directory: `F:/MyWork/my-pi/vendor/accordion/app`.
+Test file: extend `F:/MyWork/my-pi/extensions/accordion/app/src/lib/live/plan.test.ts` (or the closest existing test suite for `plan.ts` — the implementer verifies against the current vendor test layout). Working directory: `F:/MyWork/my-pi/extensions/accordion/app`.
 
 - [ ] **AC-1** (tail-append on group-member unfold — `RB-009` primary, proves the `#01` blocking edge): after `#01`'s walking-skeleton rollover, calling `resolveUnfold(store, [<memberCode>])` for one member's fold code appends a synthetic `recall(<code>)` `tool_call` / `tool_result` pair to the tail; the group summary block is unchanged; `frozenFromIndex` is unchanged.
   - Run: `pnpm vitest run plan -t "resolveUnfold appends tail entry for chunked-compaction group member"`

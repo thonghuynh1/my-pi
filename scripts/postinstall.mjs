@@ -10,14 +10,14 @@ function run(cmd) {
 	execSync(cmd, { cwd: root, stdio: "inherit" });
 }
 
-if (!existsSync(join(root, "vendor", "accordion", "app", "node_modules"))) {
+if (!existsSync(join(root, "extensions", "accordion", "app", "node_modules"))) {
 	run("npm run accordion:install");
 }
 
-if (!existsSync(join(root, "packages", "accordion-broker", "node_modules"))) {
-	run("npm install --prefix packages/accordion-broker");
+if (!existsSync(join(root, "extensions", "accordion", "broker", "node_modules"))) {
+	run("npm install --prefix extensions/accordion/broker");
 }
 
-if (!existsSync(join(root, "vendor", "accordion", "app", "build", "index.html"))) {
+if (!existsSync(join(root, "extensions", "accordion", "app", "build", "index.html"))) {
 	run("npm run accordion:build");
 }

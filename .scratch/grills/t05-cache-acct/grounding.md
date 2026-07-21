@@ -1,3 +1,5 @@
+> Historical path note: Accordion was later relocated to `extensions/accordion/` and `extensions/accordion/broker/` by `.scratch/accordion-first-party-extension/issues/01-adopt-accordion-as-first-party-extension.md`.
+
 # Grounding — Ticket 05 (Cache-invalidation accounting)
 
 ## Inherited from closed tickets

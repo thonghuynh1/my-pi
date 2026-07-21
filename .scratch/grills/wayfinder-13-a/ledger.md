@@ -1,3 +1,5 @@
+> Historical path note: Accordion was later relocated to `extensions/accordion/` and `extensions/accordion/broker/` by `.scratch/accordion-first-party-extension/issues/01-adopt-accordion-as-first-party-extension.md`.
+
 # Grill ledger — wayfinder ticket 13 (Summarizer-LLM choice)
 
 > **ARCHIVED AS HISTORICAL.** Ticket 13 was superseded by ticket 14's α outcome (no LLM broker for group summaries). All open decisions below (D1 fallback, D2 prompt shape, D3 cost/latency budget) evaporated with the LLM itself. Preserved here for provenance; do not resume grilling.

@@ -22,12 +22,13 @@ The `postinstall` script handles Accordion build automatically.
 
 ## Accordion
 
-This repo vendors [Accordion](https://github.com/a-Fig/accordion) under `vendor/accordion` and registers its Pi extension automatically.
+This repo owns First-Party Accordion under `extensions/accordion/` and registers its stable Pi entry automatically.
 
 Setup is automatic via `postinstall`. Manual steps only if needed:
 
 ```bash
-npm run setup:accordion
+npm run accordion:install
+npm run accordion:build
 ```
 
 Then in Pi:
@@ -56,7 +57,7 @@ Run `/accordion` in any Pi session to add it to the dashboard and focus its entr
 
 ### Accordion Browser Broker
 
-The Accordion Browser Broker (`packages/accordion-broker/`) is a singleton local HTTP/WebSocket service that backs the Global Accordion Dashboard. Run it manually for debugging or development:
+The Accordion Browser Broker (`extensions/accordion/broker/`) is a singleton local HTTP/WebSocket service that backs the Global Accordion Dashboard. Run it manually for debugging or development:
 
 ```bash
 npm run accordion:broker

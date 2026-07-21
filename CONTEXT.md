@@ -28,6 +28,10 @@ A `my-pi` configuration layer that controls which managed custom extension tools
 
 A custom `my-pi` extension that opts into Capability Visibility by declaring a stable `piExtension.id`. Capability Visibility settings target this ID rather than the extension file path.
 
+## First-Party Accordion
+
+The complete Accordion fork owned and evolved within `my-pi`, including its Authoritative Accordion Folding Runtime, browser/desktop app, conductors, tests, and supporting documentation and assets; it is not an upstream-tracking vendored dependency.
+
 ## Agent-Visible Tool
 
 A managed extension tool that is included in the agent's active callable tool schema.

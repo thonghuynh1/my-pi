@@ -1,7 +1,8 @@
 /*
  * smoke.mjs — exercise the extension's WS loop + registry without running pi.
  *
- * Loads accordion.ts via jiti (the same loader pi uses → proves the cross-package
+ * Loads the stable index.ts entry via jiti (the same loader pi uses → proves the
+ * cross-package
  * relative imports resolve), drives it with a mock `pi`, discovers the session's
  * ephemeral port from the registry file it writes, connects a real WS client as
  * the "GUI", and checks hello → sync → plan → apply plus the discovery contract
@@ -31,7 +32,7 @@ const FOCUS_PATH = path.join(REGISTRY_ROOT, "focus.json");
 const BROWSER_BROKER_PATH = path.join(REGISTRY_ROOT, "browser-broker.json");
 
 const jiti = createJiti(import.meta.url);
-const mod = await jiti.import("./accordion.ts");
+const mod = await jiti.import("../index.ts");
 const accordionLive = mod.default;
 if (typeof accordionLive !== "function") throw new Error("default export is not a function");
 

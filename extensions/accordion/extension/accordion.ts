@@ -27,7 +27,7 @@
  * call — it only proves the loop and powers the live view.
  *
  * Register it in ~/.pi/agent/settings.json:
- *   { "extensions": ["<repo>/extension/accordion.ts"] }
+ *   { "extensions": ["<repo>/extensions/accordion/index.ts"] }
  */
 import { WebSocketServer, type WebSocket } from "ws";
 import * as os from "node:os";
@@ -276,8 +276,8 @@ function countFoldMarkers(value: unknown): number {
 
 function resolveBrokerCwd(): string | null {
 	try {
-		const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-		const brokerDir = path.join(root, "packages", "accordion-broker");
+		const here = path.dirname(fileURLToPath(import.meta.url));
+		const brokerDir = path.resolve(here, "..", "broker");
 		if (fs.statSync(path.join(brokerDir, "src", "index.ts")).isFile()) return brokerDir;
 	} catch {
 		return null;
@@ -315,7 +315,7 @@ function brokerResultLine(result: BrokerEnsureResult): { text: string; type: "in
 		const prefix = result.started ? "Started broker dashboard" : "Broker dashboard";
 		return { text: `${prefix}: http://127.0.0.1:${result.port}/`, type: "info" };
 	}
-	if (result.reason === "not-found") return { text: "Broker dashboard unavailable: packages/accordion-broker was not found.", type: "warning" };
+	if (result.reason === "not-found") return { text: "Broker dashboard unavailable: extensions/accordion/broker was not found.", type: "warning" };
 	if (result.reason === "spawn-failed") return { text: "Broker dashboard unavailable: failed to start broker process.", type: "warning" };
 	return { text: "Broker dashboard unavailable: broker did not become ready in time.", type: "warning" };
 }

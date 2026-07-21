@@ -49,7 +49,7 @@ Compiled `.scratch/accordion-chunked-compaction/PRD.md` from the accepted ADR-00
 - `## Walking Skeleton` nominates `US-001` with a full-flow acceptance criterion.
 - `## Unresolved Gaps: None`.
 
-**Grounding pass:** a subagent verified every code anchor named in `Code anchors` clauses against `F:/MyWork/my-pi/vendor/accordion/` (`MyCustomizeConductor` class + `conduct()` signature; `substOne` + clamp lines; `resolveUnfold` + per-block match loop; `store.svelte.ts:824–847` protected-tail walk-back; `mapping.ts` `applyPlan` Phase A fixpoint; `digest.ts:198`; `cache-tracker.ts` diagnostics interface; `accordion.ts` JSONL author path; `GroupCommand` type; `CONDUCTOR_PROTOCOL_VERSION=3`). Anchors confirmed. Fresh identifiers (`constants.ts`, `attach(host)`, `preGroupTokens`) confirmed as new fabrications, correctly labelled in `Required edits` clauses.
+**Grounding pass:** a subagent verified every code anchor named in `Code anchors` clauses against `F:/MyWork/my-pi/extensions/accordion/` (`MyCustomizeConductor` class + `conduct()` signature; `substOne` + clamp lines; `resolveUnfold` + per-block match loop; `store.svelte.ts:824–847` protected-tail walk-back; `mapping.ts` `applyPlan` Phase A fixpoint; `digest.ts:198`; `cache-tracker.ts` diagnostics interface; `accordion.ts` JSONL author path; `GroupCommand` type; `CONDUCTOR_PROTOCOL_VERSION=3`). Anchors confirmed. Fresh identifiers (`constants.ts`, `attach(host)`, `preGroupTokens`) confirmed as new fabrications, correctly labelled in `Required edits` clauses.
 
 **HITL confirmation received.** Human confirmed handoff-ready on close-out; ticket flipped to `done`; map updated; destination reached.
 

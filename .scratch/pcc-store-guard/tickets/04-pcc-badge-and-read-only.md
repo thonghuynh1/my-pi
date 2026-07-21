@@ -18,7 +18,7 @@ Dashboard Inspector renders a "PCC" pill badge on `proactivelyCompressed` blocks
 
 ### 1. `Inspector.svelte` — PCC pill badge
 
-- **File**: `vendor/accordion/app/src/lib/ui/map/Inspector.svelte`
+- **File**: `extensions/accordion/app/src/lib/ui/map/Inspector.svelte`
 - **Symbol**: block-level pill section (lines 251–268), after the `protected` pill (line 265)
 - **Edit**:
   ```svelte
@@ -40,7 +40,7 @@ Dashboard Inspector renders a "PCC" pill badge on `proactivelyCompressed` blocks
 
 ### 4. Component test — headless verification
 
-- **File**: `vendor/accordion/app/src/lib/ui/map/Inspector.test.ts` (new)
+- **File**: `extensions/accordion/app/src/lib/ui/map/Inspector.test.ts` (new)
 - **Test seam**: `vitest` + `@testing-library/svelte`
 - **Tests**:
   1. `it("renders PCC pill when block.proactivelyCompressed is true")`

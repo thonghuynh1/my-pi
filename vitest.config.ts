@@ -1,10 +1,11 @@
-import base from "./vendor/accordion/app/vitest.config.ts";
+import base from "./extensions/accordion/app/vitest.config.ts";
 
 export default {
 	...base,
 	test: {
 		...base.test,
-		include: ["vendor/accordion/app/src/lib/**/*.test.ts", "vendor/accordion/extension/**/*.test.ts"],
+		include: ["extensions/accordion/app/src/lib/**/*.test.ts", "extensions/accordion/extension/**/*.test.ts"],
+		setupFiles: ["./extensions/accordion/app/src/lib/test/setup-component.ts"],
 		testTimeout: 30_000,
 	},
 };

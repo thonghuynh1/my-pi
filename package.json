@@ -12,10 +12,10 @@
     "postinstall": "node scripts/postinstall.mjs",
     "session-cost-report": "node scripts/session-cost-report.mjs",
     "check": "tsc --noEmit",
-    "accordion:install": "npm install --prefix vendor/accordion/app && npm install --prefix vendor/accordion/extension",
-    "accordion:build": "npm run build --prefix vendor/accordion/app",
+    "accordion:install": "npm install --prefix extensions/accordion/app && npm install --prefix extensions/accordion/extension",
+    "accordion:build": "npm run build --prefix extensions/accordion/app",
     "accordion:update": "npm run accordion:build",
-    "accordion:broker": "npm run start --prefix packages/accordion-broker"
+    "accordion:broker": "npm run start --prefix extensions/accordion/broker"
   },
   "dependencies": {
     "@ogulcancelik/pi-herdr": "^0.2.5",
@@ -40,7 +40,6 @@
     "extensions": [
       "./node_modules/pi-mcp-adapter/index.ts",
       "./node_modules/@ogulcancelik/pi-herdr/index.ts",
-      "./vendor/accordion/extension/accordion.ts",
       "./extensions"
     ],
     "prompts": [

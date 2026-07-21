@@ -40,7 +40,7 @@ All helpers are **pure functions** (no I/O, no clock, no PRNG) so replay is byte
 
 ```ts
 // Constants (new file)
-// F:/MyWork/my-pi/vendor/accordion/conductors/my-customize-conductor/constants.ts
+// F:/MyWork/my-pi/extensions/accordion/conductors/my-customize-conductor/constants.ts
 export const DEFAULT_PRE_GROUP_TOKENS = 15_000;
 export const PRE_GROUP_OVERFLOW_CAP = 1.25;              // hard ceiling = 15_000 * 1.25 = 18_750
 export const MIN_CONTEXT_WINDOW_FOR_CHUNKED_COMPACTION = 128_000;
@@ -93,7 +93,7 @@ corpusContentHash(blocks: readonly ViewBlock[]): string
 
 // Fold code derivation for group members: a deterministic function of ViewBlock.id (not random,
 // not turn-scoped). Reuse the engine's existing foldCode(id) helper from
-// F:/MyWork/my-pi/vendor/accordion/app/src/lib/engine/... (already used by resolveUnfold at
+// F:/MyWork/my-pi/extensions/accordion/app/src/lib/engine/... (already used by resolveUnfold at
 // plan.ts:127). Encodes DEC-009 footer contract; the resolver policy branch that consumes
 // these codes ships in #03.
 ```
@@ -184,7 +184,7 @@ Members: {#<code1>} {#<code2>} …
 
 ### Contract — extension JSONL `chunkedCompaction` block (Site 2)
 
-At `F:/MyWork/my-pi/vendor/accordion/extension/accordion.ts:~1227` (the `applyPlan(originalMessages, plan.ops, plan.groups)` call site), the `writeContextDiagnostic({...})` payload gains one optional field, populated **only** when `plan.groups` contains at least one `GroupCommand` whose `digest` starts with the literal `⟨chunked-compaction ·` prefix:
+At `F:/MyWork/my-pi/extensions/accordion/extension/accordion.ts:~1227` (the `applyPlan(originalMessages, plan.ops, plan.groups)` call site), the `writeContextDiagnostic({...})` payload gains one optional field, populated **only** when `plan.groups` contains at least one `GroupCommand` whose `digest` starts with the literal `⟨chunked-compaction ·` prefix:
 
 ```jsonc
 {
@@ -209,7 +209,7 @@ At `F:/MyWork/my-pi/vendor/accordion/extension/accordion.ts:~1227` (the `applyPl
 }
 ```
 
-Field types: all integers except `event` (string, always `"rollover"` in v1), `preGroupTurnRange` (`[number, number]`), `cacheTrackerReasonBefore/After` (strings drawn from `CacheTrackerReason` union at `F:/MyWork/my-pi/vendor/accordion/extension/cache-tracker.ts:17-23`), `digestContentHash` (string with `sha256:` or equivalent prefix, as parsed from the digest header).
+Field types: all integers except `event` (string, always `"rollover"` in v1), `preGroupTurnRange` (`[number, number]`), `cacheTrackerReasonBefore/After` (strings drawn from `CacheTrackerReason` union at `F:/MyWork/my-pi/extensions/accordion/extension/cache-tracker.ts:17-23`), `digestContentHash` (string with `sha256:` or equivalent prefix, as parsed from the digest header).
 
 Absent on non-rollover turns (`RB-006`).
 
@@ -217,20 +217,20 @@ The extension is JSONL-author and pattern-matches the digest prefix; the conduct
 
 ### Verified anchors
 
-- `MyCustomizeConductor` class declaration: `F:/MyWork/my-pi/vendor/accordion/conductors/my-customize-conductor/my-customize-conductor.ts:74` (field initialisers only; no explicit constructor today — the implementer adds one to accept `preGroupTokens?: number`).
+- `MyCustomizeConductor` class declaration: `F:/MyWork/my-pi/extensions/accordion/conductors/my-customize-conductor/my-customize-conductor.ts:74` (field initialisers only; no explicit constructor today — the implementer adds one to accept `preGroupTokens?: number`).
 - `conduct(view)` signature: same file, ~line 82.
 - Existing `isGroupBoundary(block, pstackByBlockId)` free function: same file, ~line 67 (**REUSE**, do not duplicate).
 - Existing frozen-grouping pressure valve (**unchanged** — remains as hard-pressure fallback): same file, ~lines 217–237.
 - Existing `Math.max(2_000, 0.05 * cap)` gate expression: same file, **line 279** (PRD's stated line 233 is drifted; current anchor is 279). May stay inline or move to constants — cosmetic per `DEC-006`.
 - Existing `estimateDefaultGroupDigestCost` helper: same file, ~line 49 (**REUSE**; call **after** trim per `DEC-011` cost-honesty).
-- Protected-tail walk-back reference algorithm to mirror: `F:/MyWork/my-pi/vendor/accordion/extension/store.svelte.ts:824-847`.
-- `GroupCommand` type: `F:/MyWork/my-pi/vendor/accordion/conductors/contract/conductor.ts:254-259`. `digest?: string | null` — `undefined` = host default, `null | ""` = DROP, non-empty = verbatim.
-- Engine dispatch to `groupCmd`: `F:/MyWork/my-pi/vendor/accordion/app/src/lib/engine/store.svelte.ts:1077-1079`.
-- Extension `writeContextDiagnostic` writer: `F:/MyWork/my-pi/vendor/accordion/extension/accordion.ts:~433` (private nested function inside the extension's outer scope).
-- Extension `applyPlan` call site with `cacheTracker.getDiagnostics()` in scope: `F:/MyWork/my-pi/vendor/accordion/extension/accordion.ts:~1227`. **Anchor drift note**: PRD cites `~1215`; current line is `~1227`. There is also a parallel passthrough branch (~lines 1207-1225) that also calls `writeContextDiagnostic`, but it fires only when `plan.groups.length === 0` — no rollover can occur on that branch, so no JSONL block is required there.
-- `CacheTrackerDiagnostics` shape: `F:/MyWork/my-pi/vendor/accordion/extension/cache-tracker.ts:17-23`.
+- Protected-tail walk-back reference algorithm to mirror: `F:/MyWork/my-pi/extensions/accordion/extension/store.svelte.ts:824-847`.
+- `GroupCommand` type: `F:/MyWork/my-pi/extensions/accordion/conductors/contract/conductor.ts:254-259`. `digest?: string | null` — `undefined` = host default, `null | ""` = DROP, non-empty = verbatim.
+- Engine dispatch to `groupCmd`: `F:/MyWork/my-pi/extensions/accordion/app/src/lib/engine/store.svelte.ts:1077-1079`.
+- Extension `writeContextDiagnostic` writer: `F:/MyWork/my-pi/extensions/accordion/extension/accordion.ts:~433` (private nested function inside the extension's outer scope).
+- Extension `applyPlan` call site with `cacheTracker.getDiagnostics()` in scope: `F:/MyWork/my-pi/extensions/accordion/extension/accordion.ts:~1227`. **Anchor drift note**: PRD cites `~1215`; current line is `~1227`. There is also a parallel passthrough branch (~lines 1207-1225) that also calls `writeContextDiagnostic`, but it fires only when `plan.groups.length === 0` — no rollover can occur on that branch, so no JSONL block is required there.
+- `CacheTrackerDiagnostics` shape: `F:/MyWork/my-pi/extensions/accordion/extension/cache-tracker.ts:17-23`.
 - `cacheTracker.getDiagnostics()` accessor: same file, ~line 67.
-- `CONDUCTOR_PROTOCOL_VERSION = 3` (must stay `3`): `F:/MyWork/my-pi/vendor/accordion/conductors/contract/protocol.ts:32`.
+- `CONDUCTOR_PROTOCOL_VERSION = 3` (must stay `3`): `F:/MyWork/my-pi/extensions/accordion/conductors/contract/protocol.ts:32`.
 
 ### Blocking-edge input — from `#02` (engine group frozen-clamp bypass)
 
@@ -247,13 +247,13 @@ The extension is JSONL-author and pattern-matches the digest prefix; the conduct
 
 ### Required edits
 
-1. **New file** `F:/MyWork/my-pi/vendor/accordion/conductors/my-customize-conductor/constants.ts` exporting `DEFAULT_PRE_GROUP_TOKENS`, `PRE_GROUP_OVERFLOW_CAP`, `MIN_CONTEXT_WINDOW_FOR_CHUNKED_COMPACTION`.
+1. **New file** `F:/MyWork/my-pi/extensions/accordion/conductors/my-customize-conductor/constants.ts` exporting `DEFAULT_PRE_GROUP_TOKENS`, `PRE_GROUP_OVERFLOW_CAP`, `MIN_CONTEXT_WINDOW_FOR_CHUNKED_COMPACTION`.
 2. **New file** or additional exports alongside `my-customize-conductor.ts` for the pure helpers: `effectivePreGroupTokens`, `computePreGroupFromIndex`, `noOpenToolPairAcrossPreGroupTail`, `trimOpenToolPairs`, `digestHeader`, `digestBody`, `digestMembersFooter`, `composeDigest`, `corpusContentHash`. Placement (single file vs. split) is left to the implementer.
 3. **Modify** `MyCustomizeConductor`:
    - Add a constructor accepting `opts?: { preGroupTokens?: number }` and store as `private readonly opts: Required<MyCustomizeConductorOpts>` (with `DEFAULT_PRE_GROUP_TOKENS` fallback).
    - Add instance fields: `private rolloverCount = 0`, `private tokensSavedByRollover = 0`, `private lastEstimatedGroupSaving = 0`, `private breakFrozenCount = 0`. These are consumed by `#04`.
    - Add the trigger branch at the top of `conduct()`, before the pre-existing epoch-gated frozen-grouping path.
-4. **Modify** `F:/MyWork/my-pi/vendor/accordion/extension/accordion.ts` at the applyPlan branch (~line 1227):
+4. **Modify** `F:/MyWork/my-pi/extensions/accordion/extension/accordion.ts` at the applyPlan branch (~line 1227):
    - After `const messagesForModel = applyPlan(...)`, snapshot `cacheTracker.getFrozenFromIndex()` and `cacheTracker.getDiagnostics().reason` BEFORE `applyPlan` (i.e., save them before the call) and AFTER.
    - Detect chunked-compaction rollover by `plan.groups.some((g) => (g.digest ?? "").startsWith("⟨chunked-compaction ·"))`.
    - When true, compose the `chunkedCompaction` block from the detected group and the before/after snapshots; append to the `writeContextDiagnostic({...})` payload.
@@ -271,7 +271,7 @@ Verified during grounding:
 
 ## Acceptance criteria
 
-Test file: extend `F:/MyWork/my-pi/vendor/accordion/app/src/lib/engine/conductor.compaction-naive.test.ts`. Working directory for every command below: `F:/MyWork/my-pi/vendor/accordion/app`.
+Test file: extend `F:/MyWork/my-pi/extensions/accordion/app/src/lib/engine/conductor.compaction-naive.test.ts`. Working directory for every command below: `F:/MyWork/my-pi/extensions/accordion/app`.
 
 - [ ] **AC-1** (walking skeleton emission — `US-001` first half): a synthesised `ConductorView` with `contextWindow = 200_000`, harnessOverhead ~5 000, and a pre-group summing to ~15 850 tokens on a turn boundary with no open tool pair, yields exactly one `GroupCommand` from `conductor.conduct(view)`.
   - Run: `pnpm vitest run conductor.compaction-naive -t "walking skeleton emits one chunked-compaction group"`
@@ -310,19 +310,19 @@ Test file: extend `F:/MyWork/my-pi/vendor/accordion/app/src/lib/engine/conductor
   - Expected: property holds for all 100 seeded views; failures print the offending view for reproducibility.
 
 - [ ] **AC-10** (extension JSONL block on rollover — `RB-006`, `DEC-016` Site 2): a scripted rollover through the extension's real `applyPlan` path appends exactly one JSONL record whose `chunkedCompaction.event === "rollover"` and whose fields match the shape above; a non-rollover turn on the same session appends a record with no `chunkedCompaction` key.
-  - Run: `pnpm vitest run accordion.chunkedCompactionJsonl` (new test file: `F:/MyWork/my-pi/vendor/accordion/app/src/lib/... or extension test suite`, whichever hosts extension-side unit tests — implementer chooses; add to `app/vitest.config.ts` if needed but do NOT create a new runner)
+  - Run: `pnpm vitest run accordion.chunkedCompactionJsonl` (new test file: `F:/MyWork/my-pi/extensions/accordion/app/src/lib/... or extension test suite`, whichever hosts extension-side unit tests — implementer chooses; add to `app/vitest.config.ts` if needed but do NOT create a new runner)
   - Expected: after two turns (one rollover, one passthrough), `readFileSync(sessionJsonlPath).toString().trim().split("\n").map(JSON.parse)` yields two records; `records[0].chunkedCompaction.event === "rollover"`, `records[0].chunkedCompaction.preGroupBlockCount === plan.groups[0].ids.length`, `records[0].chunkedCompaction.frozenFromIndexBefore !== records[0].chunkedCompaction.frozenFromIndexAfter`, `records[0].chunkedCompaction.digestContentHash.startsWith("sha256:")`; `records[1].chunkedCompaction === undefined`.
 
 - [ ] **AC-11** (no wire-protocol change, `RB-001`): the diff of this issue's commit touches **zero** files under `conductors/contract/`.
-  - Run: `cd F:/MyWork/my-pi/vendor/accordion && git diff --stat conductors/contract/ && cat conductors/contract/protocol.ts | grep -E "CONDUCTOR_PROTOCOL_VERSION"`
+  - Run: `cd F:/MyWork/my-pi/extensions/accordion && git diff --stat conductors/contract/ && cat conductors/contract/protocol.ts | grep -E "CONDUCTOR_PROTOCOL_VERSION"`
   - Expected: `0 files changed` (or empty output from git diff), and `export const CONDUCTOR_PROTOCOL_VERSION = 3;` still present in `protocol.ts`.
 
 - [ ] **AC-12** (no persistence, `DEC-015`, `RB-005`): the diff of this issue's commit adds no writes under `~/.accordion/sessions/` or any group-summary cache file, and grep for `fs.writeFileSync` / `fs.appendFileSync` in the new/changed code shows only the existing JSONL writer path.
-  - Run: `cd F:/MyWork/my-pi/vendor/accordion && git diff HEAD~1 HEAD | grep -E "writeFileSync|appendFileSync|group-summar|\.accordion/sessions" | grep -v "context.jsonl"`
+  - Run: `cd F:/MyWork/my-pi/extensions/accordion && git diff HEAD~1 HEAD | grep -E "writeFileSync|appendFileSync|group-summar|\.accordion/sessions" | grep -v "context.jsonl"`
   - Expected: empty output (no persistence added).
 
 - [ ] **AC-13** (no LLM at rollover, `DEC-019`): the diff of this issue's commit does not add any `host.complete(` call in the chunked-compaction code path.
-  - Run: `cd F:/MyWork/my-pi/vendor/accordion && git diff HEAD~1 HEAD -- conductors/my-customize-conductor/ | grep -E "host\.complete\("`
+  - Run: `cd F:/MyWork/my-pi/extensions/accordion && git diff HEAD~1 HEAD -- conductors/my-customize-conductor/ | grep -E "host\.complete\("`
   - Expected: empty output.
 
 ## Blocked by

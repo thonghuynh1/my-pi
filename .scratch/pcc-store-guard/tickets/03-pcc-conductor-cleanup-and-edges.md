@@ -18,7 +18,7 @@ Refinement of the walking skeleton. Cover the remaining PCC behaviors: `breakFro
 
 ### 1. `my-customize-conductor.ts` — remove redundant PCC detection
 
-- **File**: `vendor/accordion/conductors/my-customize-conductor/my-customize-conductor.ts`
+- **File**: `extensions/accordion/conductors/my-customize-conductor/my-customize-conductor.ts`
 - **Symbols to remove**:
   - Line 45: `const PROACTIVE_COMPRESS_MARKER = ...`
   - Lines 334–336: `function isProactivelyCompressed(b: ViewBlock): boolean { ... }`
@@ -27,13 +27,13 @@ Refinement of the walking skeleton. Cover the remaining PCC behaviors: `breakFro
 
 ### 2. `conductor.my-customize-conductor.test.ts` — update fixture
 
-- **File**: `vendor/accordion/app/src/lib/engine/conductor.my-customize-conductor.test.ts`
+- **File**: `extensions/accordion/app/src/lib/engine/conductor.my-customize-conductor.test.ts`
 - **Symbol**: `it("skips proactively-compressed tool results as fold candidates")`
 - **Edit**: fixture uses `proactivelyCompressed: true` on the `ViewBlock` instead of marker text.
 
 ### 3. `store.foldgate.test.ts` — edge cases
 
-- **File**: `vendor/accordion/app/src/lib/engine/store.foldgate.test.ts`
+- **File**: `extensions/accordion/app/src/lib/engine/store.foldgate.test.ts`
 - **New describe block**: `describe("PCC guard — edge cases")`
 - **Tests**:
   1. `it("a conductor 'fold' with breakFrozen of a PCC block is still clamped (no bypass)")`

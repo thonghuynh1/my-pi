@@ -39,7 +39,7 @@ class MyCustomizeConductor implements Conductor {
 }
 ```
 
-**Important**: `Conductor.attach(host)` is called by the extension during conductor construction. Verify the current `Conductor` interface at `F:/MyWork/my-pi/vendor/accordion/conductors/contract/conductor.ts` — if `attach` is an optional method, mark it accordingly; if it's a required method previously implemented as a no-op elsewhere, add it here with the storage behavior above.
+**Important**: `Conductor.attach(host)` is called by the extension during conductor construction. Verify the current `Conductor` interface at `F:/MyWork/my-pi/extensions/accordion/conductors/contract/conductor.ts` — if `attach` is an optional method, mark it accordingly; if it's a required method previously implemented as a no-op elsewhere, add it here with the storage behavior above.
 
 ### Contract — per-pass `setStatus` emission
 
@@ -88,8 +88,8 @@ Placement: alongside the constants file from `#01` (`conductors/my-customize-con
 
 ### Verified anchors
 
-- `ConductorHost` interface: `F:/MyWork/my-pi/vendor/accordion/conductors/contract/conductor.ts`. The method is **`host.setStatus(text: string | null, metrics?: Record<string, number | string | boolean>, details?: JSONValue): void`** (three arguments). PRD `DEC-016` (post to-issues correction) specifies `setStatus`; use it.
-- `MyCustomizeConductor` class body: `F:/MyWork/my-pi/vendor/accordion/conductors/my-customize-conductor/my-customize-conductor.ts:74`. Currently has **no** `attach(host)` and **no** host reference field — both are fresh additions.
+- `ConductorHost` interface: `F:/MyWork/my-pi/extensions/accordion/conductors/contract/conductor.ts`. The method is **`host.setStatus(text: string | null, metrics?: Record<string, number | string | boolean>, details?: JSONValue): void`** (three arguments). PRD `DEC-016` (post to-issues correction) specifies `setStatus`; use it.
+- `MyCustomizeConductor` class body: `F:/MyWork/my-pi/extensions/accordion/conductors/my-customize-conductor/my-customize-conductor.ts:74`. Currently has **no** `attach(host)` and **no** host reference field — both are fresh additions.
 - Instance-field counters `rolloverCount`, `tokensSavedByRollover`, `lastEstimatedGroupSaving`, `breakFrozenCount`: added by `#01` (walking skeleton). This issue **consumes** them.
 
 ### Blocking-edge input — from `#01` (walking skeleton)
@@ -102,7 +102,7 @@ Placement: alongside the constants file from `#01` (`conductors/my-customize-con
 
 ### Required edits
 
-1. **Modify** `F:/MyWork/my-pi/vendor/accordion/conductors/my-customize-conductor/my-customize-conductor.ts`:
+1. **Modify** `F:/MyWork/my-pi/extensions/accordion/conductors/my-customize-conductor/my-customize-conductor.ts`:
    - Add `private host: ConductorHost | null = null;`.
    - Add `attach(host: ConductorHost): void { this.host = host; }`.
    - At the end of `conduct(view)`, before `return plan`, compose the metrics + text and call `this.host?.setStatus(text, metrics, null)`. This applies to **all** `conduct()` passes (not only rollover passes).
@@ -141,7 +141,7 @@ return plan;
 
 ## Acceptance criteria
 
-Test file: extend `F:/MyWork/my-pi/vendor/accordion/app/src/lib/engine/conductor.compaction-naive.test.ts` (or a sibling file for host-integration tests). Working directory: `F:/MyWork/my-pi/vendor/accordion/app`.
+Test file: extend `F:/MyWork/my-pi/extensions/accordion/app/src/lib/engine/conductor.compaction-naive.test.ts` (or a sibling file for host-integration tests). Working directory: `F:/MyWork/my-pi/extensions/accordion/app`.
 
 - [ ] **AC-1** (`setStatus` fires on every `conduct()` pass with the correct metrics shape — `RB-007` primary, proves the `#01` counter-input blocking edge): after two `conduct()` passes on a 200 k session (one non-rollover, one rollover), a spy on the mock host's `setStatus` has been called exactly twice with metrics matching the shape above.
   - Run: `pnpm vitest run conductor.compaction-naive -t "attach and setStatus fire on every conduct pass"`
@@ -160,7 +160,7 @@ Test file: extend `F:/MyWork/my-pi/vendor/accordion/app/src/lib/engine/conductor
   - Expected: after two `attach` calls and one `conduct` pass, `host1.setStatus` has been called 0 times and `host2.setStatus` has been called exactly once.
 
 - [ ] **AC-5** (no `lastBrokerLatencyMs`, `lastSummaryError`, or `summaryErrors` fields are emitted — `DEC-007` × `DEC-016`): the metrics payload contains **only** the six fields specified above; grep of the diff for any of those forbidden field names returns empty.
-  - Run: `cd F:/MyWork/my-pi/vendor/accordion && git diff HEAD~1 HEAD -- conductors/my-customize-conductor/ | grep -E "lastBrokerLatencyMs|lastSummaryError|summaryErrors|pendingSummaryHashes|groupSummaryCache"`
+  - Run: `cd F:/MyWork/my-pi/extensions/accordion && git diff HEAD~1 HEAD -- conductors/my-customize-conductor/ | grep -E "lastBrokerLatencyMs|lastSummaryError|summaryErrors|pendingSummaryHashes|groupSummaryCache"`
   - Expected: empty output.
 
 ## Blocked by

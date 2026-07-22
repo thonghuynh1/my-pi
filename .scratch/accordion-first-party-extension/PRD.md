@@ -1,6 +1,6 @@
 ---
-status: ready-for-agent
-labels: ready-for-agent
+status: ready-for-human
+labels: ready-for-human
 grill: .scratch/grills/6f2a9c1d8e4b/ledger.md
 grounding: .scratch/grills/6f2a9c1d8e4b/grounding.md
 ---
@@ -212,7 +212,7 @@ Browser --HTTP/WS--> singleton broker --WS proxy--> per-session extension port
   - Change workspace membership and root Vitest imports/globs to `extensions/accordion/...`.
   - Add `extensions/accordion/**` to root `tsconfig.json` exclusions; nested gates remain mandatory.
   - Move lockfiles with their packages and avoid dependency-version changes unrelated to path viability.
-- **Test seam**: Root `npm run check` succeeds with zero TypeScript errors; nested app/runtime/broker gates succeed from their new paths; root install on a checkout without nested `node_modules` produces the browser build at `extensions/accordion/app/build/index.html`.
+- **Test seam**: Root `npm run check` retains only the documented unrelated `extensions/subagents.ts:1193:4` `TS2353` baseline and reports no Accordion diagnostic; nested app/runtime/broker gates succeed from their new paths; root install on a checkout without nested `node_modules` produces the browser build at `extensions/accordion/app/build/index.html`.
 - **Wiring**: Root `postinstall` remains the automatic setup entry. `pi install F:/MyWork/my-pi` continues to prepare Accordion without manual path registration.
 - **Grounding evidence**: `GROUND-001`, `GROUND-007`, `GROUND-008`.
 
@@ -270,7 +270,7 @@ Browser --HTTP/WS--> singleton broker --WS proxy--> per-session extension port
      - `npm run check --prefix extensions/accordion/app`
      - `npm test --prefix extensions/accordion/app`
      - `npm run build --prefix extensions/accordion/app`
-   - Expected result: zero Svelte/type errors and warnings, all app/engine/live/extension tests pass, and `extensions/accordion/app/build/index.html` exists.
+   - Expected result: zero Svelte/type errors, no warnings outside the existing 20 `MapHeader.svelte` accessibility warnings, all app/engine/live/extension tests pass, and `extensions/accordion/app/build/index.html` exists.
 
 3. **Broker behavior**
    - Commands:
@@ -283,8 +283,8 @@ Browser --HTTP/WS--> singleton broker --WS proxy--> per-session extension port
    - Expected result: Cargo completes successfully without changing the desktop launch contract.
 
 5. **Root package wiring**
-   - Command: `npm run check`.
-   - Expected result: zero TypeScript errors; ordinary root extensions remain checked and the specialized Accordion subtree is not compiled through the generic root project.
+   - Command: the AC-11 baseline wrapper in `.scratch/accordion-first-party-extension/issues/01-adopt-accordion-as-first-party-extension.md`.
+   - Expected result: the wrapper accepts only the documented unrelated `extensions/subagents.ts:1193:4` `TS2353` error and rejects any Accordion diagnostic or additional root error; the specialized Accordion subtree is not compiled through the generic root project.
    - Installation check: with nested dependency/build outputs absent, root `npm install` completes postinstall and creates the app browser build under the new path.
 
 6. **Migration hygiene**

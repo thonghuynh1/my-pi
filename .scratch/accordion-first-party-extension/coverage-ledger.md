@@ -27,7 +27,7 @@ The migration is intentionally one AFK implementation slice because `DEC-005` fo
 | `RB-004` | covered by issue | 01 | AC-02/AC-03: index loads existing registrations and smoke passes |
 | `RB-005` | covered by issue | 01 | AC-03/AC-06: detached broker path and singleton behavior exercised |
 | `RB-006` | covered by issue | 01 | AC-03/AC-06: endpoint, registry, stale-session, and proxy tests |
-| `RB-007` | covered by issue | 01 | AC-03: smoke retains direct URL and passthrough when broker path is unavailable/fails |
+| `RB-007` | covered by issue | 01 | AC-07: runtime smoke forces detached broker startup failure and retains the token-bearing direct URL |
 | `RB-008` | covered by issue | 01 | AC-08: package/contract inventory remains structurally unchanged except paths |
 | `RB-009` | covered by issue | 01 | AC-04/AC-09: install/build/workspace/test/path wiring uses new roots |
 | `RB-010` | covered by issue | 01 | AC-04/AC-11: root tsconfig exclusion plus no-new-root-diagnostics assertion; specialized gates own Accordion |
@@ -82,6 +82,23 @@ Validation date: current pre-migration checkout. Post-migration issues use the c
 | `cargo check --manifest-path vendor/accordion/app/src-tauri/Cargo.toml` | repo root | UNAVAILABLE: `cargo: command not found` | 02 HITL, retargeted path |
 | root-baseline Node wrapper around `npm run check` | repo root | PASS; wrapper verified exactly the one known `TS2353` and no Accordion diagnostic | 01 AC-11 |
 | obsolete-path `git grep` | repo root | Discriminator confirmed: finds current operational old paths before migration | 01 AC-01/AC-09, expected no operational matches after migration |
+
+## Post-migration verification
+
+Validation date: 2026-07-22.
+
+| Command | Result |
+|---|---|
+| AC-01, AC-02, AC-04, AC-08, and AC-09 structural checks | PASS |
+| Fresh root `npm install` after removing nested dependencies and the app build | PASS; restored all three dependency trees and rebuilt `extensions/accordion/app/build/index.html` |
+| `node scripts/postinstall.mjs` with only runtime dependencies missing | PASS; restored `extensions/accordion/extension/node_modules` without nested manifest or lockfile drift |
+| `node extensions/accordion/extension/adoption-smoke.mjs` | PASS; all eight crossing-edge markers printed and cleanup completed |
+| `node extensions/accordion/extension/smoke.mjs` | PASS; forced detached broker startup failure still reported the token-bearing direct URL |
+| `npm test --prefix extensions/accordion/app` | PASS; 959/959 tests |
+| Broker TypeScript check and tests | PASS; 20/20 tests |
+| App Svelte check | PASS; 0 errors and the existing 20 `MapHeader.svelte` warnings |
+| AC-11 root TypeScript baseline wrapper | PASS; only the documented unrelated `TS2353` remains |
+| Native Cargo check | PENDING; owned by Issue 02 because Cargo is unavailable in this environment |
 
 ## Review findings
 

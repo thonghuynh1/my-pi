@@ -1,6 +1,5 @@
 ---
-status: ready-for-agent
-labels: ready-for-agent
+status: closed
 type: AFK
 prd: ../PRD.md
 ---
@@ -193,50 +192,64 @@ Grounding evidence: `.scratch/grills/6f2a9c1d8e4b/grounding.md`, especially `GRO
 
 ## Acceptance criteria
 
-- [ ] **AC-01 — One source root with no compatibility copy.** The complete Accordion tree and broker exist only under `extensions/accordion/`; both old roots are absent.
+- [x] **AC-01 — One source root with no compatibility copy.** The complete Accordion tree and broker exist only under `extensions/accordion/`; both old roots are absent.
   - Run: `node -e "const fs=require('fs'); const must=['extensions/accordion/index.ts','extensions/accordion/extension/accordion.ts','extensions/accordion/app/package.json','extensions/accordion/conductors/index.ts','extensions/accordion/broker/src/index.ts','extensions/accordion/LICENSE']; const absent=['vendor/accordion','packages/accordion-broker']; if(must.some(p=>!fs.existsSync(p))||absent.some(p=>fs.existsSync(p))) process.exit(1); console.log('accordion topology: ok')"`
   - Expected: prints `accordion topology: ok`; neither old directory exists.
 
-- [ ] **AC-02 — Pi discovers Accordion exactly once through the stable first-party entry.** Root manifest retains `./extensions`, has no explicit Accordion entry, and `index.ts` default-exports the runtime.
+- [x] **AC-02 — Pi discovers Accordion exactly once through the stable first-party entry.** Root manifest retains `./extensions`, has no explicit Accordion entry, and `index.ts` default-exports the runtime.
   - Run: `node -e "const fs=require('fs'); const p=require('./package.json'); const e=p.pi.extensions; const idx=fs.readFileSync('extensions/accordion/index.ts','utf8'); if(!e.includes('./extensions')||e.some(x=>/accordion/i.test(x))||!idx.includes('./extension/accordion.ts')) process.exit(1); console.log('accordion discovery: ok')"`
   - Expected: prints `accordion discovery: ok`; no duplicate explicit registration can double-load hooks or commands.
 
-- [ ] **AC-03 — Walking skeleton crosses the real entry, command, broker, registry, static app, proxy, and session runtime.**
+- [x] **AC-03 — Walking skeleton crosses the real entry, command, broker, registry, static app, proxy, and session runtime.**
   - Run: `npm run build --prefix extensions/accordion/app && node extensions/accordion/extension/adoption-smoke.mjs`
   - Expected: exits 0 and prints exactly the success markers `index-entry ✓ broker-start ✓ watched-session ✓ broker-meta ✓ broker-static ✓ broker-proxy ✓ direct-url ✓ cleanup ✓`; the harness leaves no broker process or temporary registry behind.
 
-- [ ] **AC-04 — Root install/workspace/test/compiler wiring targets the new subsystem without absorbing it into generic root TypeScript.** Existing script names remain, each targets `extensions/accordion`, workspace/test paths are current, and root `tsconfig.json` excludes `extensions/accordion/**`.
+- [x] **AC-04 — Root install/workspace/test/compiler wiring targets the new subsystem without absorbing it into generic root TypeScript.** Existing script names remain, each targets `extensions/accordion`, workspace/test paths are current, and root `tsconfig.json` excludes `extensions/accordion/**`.
   - Run: `node -e "const fs=require('fs'); const p=require('./package.json'); const scripts=Object.entries(p.scripts).filter(([k])=>k.startsWith('accordion:')).map(([,v])=>v).join('\n'); const post=fs.readFileSync('scripts/postinstall.mjs','utf8'); const ws=fs.readFileSync('pnpm-workspace.yaml','utf8'); const vt=fs.readFileSync('vitest.config.ts','utf8'); const ts=require('./tsconfig.json'); const all=scripts+post+ws+vt; if(/vendor\/accordion|packages\/accordion-broker/.test(all)||!all.includes('extensions/accordion')||!(ts.exclude||[]).includes('extensions/accordion/**')) process.exit(1); console.log('accordion wiring: ok')"`
   - Expected: prints `accordion wiring: ok`; the unchanged pre-existing root `TS2353` is not expanded by Accordion diagnostics.
 
-- [ ] **AC-05 — Existing app, engine, broker-mode, session-slot, conductor, and extension integration tests still pass from the moved path.**
+- [x] **AC-05 — Existing app, engine, broker-mode, session-slot, conductor, and extension integration tests still pass from the moved path.**
   - Run: `npm test --prefix extensions/accordion/app`
   - Expected: exits 0; all moved Vitest suites pass, including `brokerMode`, `brokerSessions`, `sessionSlots`, mapping/engine, chunked-compaction, cache-tracker, and proactive-compression coverage.
 
-- [ ] **AC-06 — The moved broker preserves its typed contract and all HTTP/registry/WebSocket behavior.**
+- [x] **AC-06 — The moved broker preserves its typed contract and all HTTP/registry/WebSocket behavior.**
   - Run: `npm run check --prefix extensions/accordion/broker && npm test --prefix extensions/accordion/broker`
   - Expected: TypeScript reports zero errors and Vitest reports 20/20 passing tests, including watched/stale rejection, metadata/session routes, text/binary relay, early buffering, and close propagation.
 
-- [ ] **AC-07 — Existing runtime smoke and app quality gates remain at baseline or better.**
+- [x] **AC-07 — Existing runtime smoke and app quality gates remain at baseline or better.**
   - Run: `node extensions/accordion/extension/smoke.mjs && npm run check --prefix extensions/accordion/app && npm run build --prefix extensions/accordion/app`
   - Expected: runtime prints `SMOKE PASS`; Svelte check reports 0 errors and no warnings outside the existing `MapHeader.svelte` accessibility set (20 or fewer); build exits 0 and writes `extensions/accordion/app/build/index.html`.
 
-- [ ] **AC-08 — Adoption preserves identity and package/contract structure.** LICENSE, brand, docs, app, conductors, extension manifest, and broker manifest remain present; no new shared-contract package, Capability Visibility registration, or package consolidation is introduced.
+- [x] **AC-08 — Adoption preserves identity and package/contract structure.** LICENSE, brand, docs, app, conductors, extension manifest, and broker manifest remain present; no new shared-contract package, Capability Visibility registration, or package consolidation is introduced.
   - Run: `node -e "const fs=require('fs'); const must=['extensions/accordion/LICENSE','extensions/accordion/brand','extensions/accordion/docs','extensions/accordion/app/package.json','extensions/accordion/extension/package.json','extensions/accordion/broker/package.json','extensions/accordion/conductors']; if(must.some(p=>!fs.existsSync(p))) process.exit(1); const idx=fs.readFileSync('extensions/accordion/index.ts','utf8'); if(/piExtension|createManagedExtension/.test(idx)) process.exit(1); console.log('accordion identity and boundaries: ok')"`
   - Expected: prints `accordion identity and boundaries: ok`.
 
-- [ ] **AC-09 — No operational or active-tracker instruction points to deleted paths.** Historical references are explicitly annotated rather than silently rewritten as contemporary evidence.
+- [x] **AC-09 — No operational or active-tracker instruction points to deleted paths.** Historical references are explicitly annotated rather than silently rewritten as contemporary evidence.
   - Run: `! git grep -nE 'vendor/accordion|packages/accordion-broker' -- package.json scripts pnpm-workspace.yaml vitest.config.ts tsconfig.json README.md extensions packages docs .scratch/accordion-chunked-compaction`
   - Expected: exits 0 with no matches. Any old-path match elsewhere in `.scratch/` is in historical evidence containing a relocation note to `extensions/accordion/`.
 
-- [ ] **AC-10 — Root package setup remains automatic from the new paths.** The retargeted install/build scripts and broker package installation complete and produce the browser build consumed by direct and broker modes.
-  - Run: `npm run accordion:install && npm install --prefix extensions/accordion/broker && npm run accordion:build`
-  - Expected: exits 0; app, runtime, and broker dependencies resolve from `extensions/accordion/**`, and `extensions/accordion/app/build/index.html` exists. `scripts/postinstall.mjs` encodes the same three dependency/build checks, and no old path is recreated.
+- [x] **AC-10 — Root package setup remains automatic from the new paths.** The retargeted install/build scripts and broker package installation complete and produce the browser build consumed by direct and broker modes.
+  - Run: `npm run accordion:install && npm ci --prefix extensions/accordion/broker && npm run accordion:build && git diff --exit-code -- extensions/accordion/app/package.json extensions/accordion/app/package-lock.json extensions/accordion/extension/package.json extensions/accordion/extension/package-lock.json extensions/accordion/broker/package.json extensions/accordion/broker/package-lock.json`
+  - Expected: exits 0; app, runtime, and broker dependencies resolve from `extensions/accordion/**`, `extensions/accordion/app/build/index.html` exists, and installation does not rewrite a nested manifest or lockfile. `scripts/postinstall.mjs` encodes the same three dependency/build checks, and no old path is recreated.
 
-- [ ] **AC-11 — Generic root TypeScript gains no Accordion or migration error.** The only root compiler failure remains the verified unrelated pre-existing `subagents.ts` API drift.
+- [x] **AC-11 — Generic root TypeScript gains no Accordion or migration error.** The only root compiler failure remains the verified unrelated pre-existing `subagents.ts` API drift.
   - Run: `node -e "const {spawnSync}=require('child_process'); const r=spawnSync('npm',['run','check','--','--pretty','false'],{encoding:'utf8',shell:true}); const out=(r.stdout||'')+(r.stderr||''); const errors=out.split(/\\r?\\n/).filter(x=>/error TS\\d+/.test(x)); if(errors.length!==1||!errors[0].includes('extensions/subagents.ts(1193,4)')||!errors[0].includes('TS2353')||errors[0].includes('accordion')){console.error(out);process.exit(1)} console.log('root TypeScript baseline: unchanged')"`
   - Expected: wrapper exits 0 and prints `root TypeScript baseline: unchanged`; no compiler diagnostic references `extensions/accordion/`.
 
 ## Blocked by
 
-None - can start immediately.
+None.
+
+## Comments
+
+### Completion verification
+
+- Removed the ignored `vendor/accordion/` and `packages/accordion-broker/` remnants. AC-01 now passes.
+- Changed nested installation to `npm ci` so root postinstall consumes committed lockfiles without adding `my-pi` to nested manifests.
+- Updated postinstall to reconcile a missing runtime dependency tree even when the app dependency tree already exists.
+- Verified a fresh root install after deleting all nested dependencies and the app build. It restored all three dependency trees and rebuilt `extensions/accordion/app/build/index.html`.
+- Verified the partial-install case by deleting only `extensions/accordion/extension/node_modules`; postinstall restored it without manifest or lockfile drift.
+- App tests passed 959/959. Broker tests passed 20/20.
+- Adoption smoke and runtime smoke printed their expected success markers and cleaned up their temporary processes and files. The runtime smoke also forced detached broker startup failure and verified that `/accordion` retained the token-bearing direct URL.
+- App check reported 0 errors and the existing 20 `MapHeader.svelte` warnings. The root TypeScript baseline still has only the documented unrelated `TS2353` error.
+- Native Cargo verification remains tracked separately by Issue 02.

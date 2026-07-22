@@ -12,7 +12,7 @@
     "postinstall": "node scripts/postinstall.mjs",
     "session-cost-report": "node scripts/session-cost-report.mjs",
     "check": "tsc --noEmit",
-    "accordion:install": "npm install --prefix extensions/accordion/app && npm install --prefix extensions/accordion/extension",
+    "accordion:install": "npm ci --prefix extensions/accordion/app && npm ci --prefix extensions/accordion/extension",
     "accordion:build": "npm run build --prefix extensions/accordion/app",
     "accordion:update": "npm run accordion:build",
     "accordion:broker": "npm run start --prefix extensions/accordion/broker"

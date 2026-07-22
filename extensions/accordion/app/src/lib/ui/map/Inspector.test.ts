@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { cleanup, render, screen, within } from "@testing-library/svelte";
 import { describe, expect, it } from "vitest";
 import Inspector from "./Inspector.svelte";

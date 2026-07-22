@@ -29,7 +29,6 @@ process.env.ACCORDION_APP_PATH = path.join(HOME, "missing-accordion-app.exe");
 const REGISTRY_ROOT = path.join(HOME, ".accordion");
 const SESSIONS_DIR = path.join(REGISTRY_ROOT, "sessions");
 const FOCUS_PATH = path.join(REGISTRY_ROOT, "focus.json");
-const BROWSER_BROKER_PATH = path.join(REGISTRY_ROOT, "browser-broker.json");
 
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import("../index.ts");
@@ -101,12 +100,19 @@ const PORT = entry.port;
 	if (ret !== undefined) fails.push("context hook altered messages with no GUI attached");
 }
 
-// /accordion writes a one-shot focus request. Seed a fresh broker registry so the
-// smoke test exercises the notification path without spawning a detached broker process.
+// /accordion must preserve the direct URL when its detached broker child fails.
+// An invalid NODE_OPTIONS value affects only the spawned child process and forces
+// the bounded not-ready result without changing tracked files or runtime seams.
 fs.mkdirSync(REGISTRY_ROOT, { recursive: true });
-fs.writeFileSync(BROWSER_BROKER_PATH, JSON.stringify({ port: 9, pid: process.pid, startedAt: Date.now(), heartbeatAt: Date.now() }));
 if (accordionCmd) {
-	await Promise.resolve(accordionCmd("", ctx));
+	const previousNodeOptions = process.env.NODE_OPTIONS;
+	try {
+		process.env.NODE_OPTIONS = "--accordion-smoke-invalid-option";
+		await Promise.resolve(accordionCmd("", ctx));
+	} finally {
+		if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+		else process.env.NODE_OPTIONS = previousNodeOptions;
+	}
 	if (!fs.existsSync(FOCUS_PATH)) fails.push("/accordion did not write a focus request");
 	else {
 		const req = JSON.parse(fs.readFileSync(FOCUS_PATH, "utf8"));
@@ -115,6 +121,10 @@ if (accordionCmd) {
 	const note = notifications.at(-1);
 	if (note?.type !== "warning" || !note.message.includes("ACCORDION_APP_PATH does not point to an executable"))
 		fails.push("/accordion did not warn for an invalid explicit ACCORDION_APP_PATH");
+	if (!note?.message.includes("Broker dashboard unavailable: broker did not become ready in time"))
+		fails.push("/accordion did not report detached broker startup failure");
+	if (!/Direct session browser: http:\/\/127\.0\.0\.1:\d+\/\?token=[0-9a-f]+/.test(note?.message ?? ""))
+		fails.push("/accordion removed the direct session URL after broker startup failure");
 } else {
 	fails.push("accordion command was not registered");
 }

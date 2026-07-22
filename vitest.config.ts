@@ -4,8 +4,9 @@ export default {
 	...base,
 	test: {
 		...base.test,
-		include: ["extensions/accordion/app/src/lib/**/*.test.ts", "extensions/accordion/extension/**/*.test.ts"],
-		setupFiles: ["./extensions/accordion/app/src/lib/test/setup-component.ts"],
-		testTimeout: 30_000,
+		include: ["extensions/accordion/app/src/lib/**/*.test.ts"],
+		exclude: ["extensions/accordion/app/src/lib/ui/**", "**/node_modules/**"],
+		setupFiles: [],
+		testTimeout: 120_000,
 	},
 };

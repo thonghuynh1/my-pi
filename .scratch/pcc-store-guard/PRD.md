@@ -104,10 +104,10 @@ Additionally, dashboard users have no visual indicator that a block was compress
 - **Coverage**: DEC-001, US-001, RB-001
 - **Contract**: When `handleBeforeProviderRequest` compresses a message, the returned message object must include `_pccCompressed: true`.
 - **Decision constraints**: DEC-001 — flag set at compression origin only.
-- **Code anchors**: `vendor/accordion/extension/proactive-compress.ts` → `handleBeforeProviderRequest()`, line `return { ...message, content: compress(message.content, code) }`
+- **Code anchors**: `extensions/accordion/extension/proactive-compress.ts` → `handleBeforeProviderRequest()`, line `return { ...message, content: compress(message.content, code) }`
 - **Existing behavior**: Returns `{ ...message, content: compress(...) }` with no metadata flag.
 - **Required edits**: Add `_pccCompressed: true` to the spread: `return { ...message, content: compress(message.content, code), _pccCompressed: true }`.
-- **Test seam**: `vendor/accordion/extension/proactive-compress.test.ts` → `describe("proactive compression")`. Add assertion: compressed message has `_pccCompressed: true`; uncompressed messages do not.
+- **Test seam**: `extensions/accordion/extension/proactive-compress.test.ts` → `describe("proactive compression")`. Add assertion: compressed message has `_pccCompressed: true`; uncompressed messages do not.
 - **Wiring**: None — existing hook registration unchanged.
 - **Grounding evidence**: GROUND-006
 
@@ -127,8 +127,8 @@ Additionally, dashboard users have no visual indicator that a block was compress
   ```
 - **Decision constraints**: DEC-001, DEC-002
 - **Code anchors**:
-  - `vendor/accordion/app/src/lib/engine/types.ts` → `Block` interface (line 34)
-  - `vendor/accordion/conductors/contract/conductor.ts` → `ViewBlock` interface (line 57), `ClampReason` type (line 257)
+  - `extensions/accordion/app/src/lib/engine/types.ts` → `Block` interface (line 34)
+  - `extensions/accordion/conductors/contract/conductor.ts` → `ViewBlock` interface (line 57), `ClampReason` type (line 257)
 - **Existing behavior**: Neither type has a `proactivelyCompressed` field. `ClampReason` has no PCC variant.
 - **Required edits**:
   - Add `proactivelyCompressed: boolean` to `Block` interface (default `false` in block creation).
@@ -143,7 +143,7 @@ Additionally, dashboard users have no visual indicator that a block was compress
 - **Coverage**: DEC-001, US-001, RB-001
 - **Contract**: `linearize()` reads `_pccCompressed` from the source message and sets `proactivelyCompressed: true` on the output `WireBlock`/`Block`.
 - **Decision constraints**: DEC-001 — metadata passthrough from message to block.
-- **Code anchors**: `vendor/accordion/app/src/lib/live/mapping.ts` → `linearize()` (lines ~148–185), `push()` helper
+- **Code anchors**: `extensions/accordion/app/src/lib/live/mapping.ts` → `linearize()` (lines ~148–185), `push()` helper
 - **Existing behavior**: `push()` spreads `extra` fields into the block. `_pccCompressed` is not read from messages.
 - **Required edits**: In the `case "toolResult"` branch of `linearize()`, read `m._pccCompressed` and include `proactivelyCompressed: !!m._pccCompressed` in the block. Alternatively, add to `push()` helper: `proactivelyCompressed: !!(extra as any)._pccCompressed || false`.
 - **Test seam**: Add unit test for `linearize()` with a message carrying `_pccCompressed: true` → output block has `proactivelyCompressed: true`.
@@ -155,7 +155,7 @@ Additionally, dashboard users have no visual indicator that a block was compress
 - **Coverage**: DEC-001, US-001, RB-001
 - **Contract**: `buildView()` maps `Block.proactivelyCompressed` → `ViewBlock.proactivelyCompressed`.
 - **Decision constraints**: DEC-001
-- **Code anchors**: `vendor/accordion/app/src/lib/engine/store.svelte.ts` → `buildView()` (lines ~1020–1050)
+- **Code anchors**: `extensions/accordion/app/src/lib/engine/store.svelte.ts` → `buildView()` (lines ~1020–1050)
 - **Existing behavior**: Maps `held`, `protected`, `grouped`, `folded`, `foldedTokens`. No `proactivelyCompressed`.
 - **Required edits**: Add `proactivelyCompressed: b.proactivelyCompressed` to the `ViewBlock` object literal in `buildView()`.
 - **Test seam**: `store.foldgate.test.ts` — assert `ViewBlock.proactivelyCompressed` reflects `Block.proactivelyCompressed`.
@@ -167,7 +167,7 @@ Additionally, dashboard users have no visual indicator that a block was compress
 - **Coverage**: DEC-002, DEC-003, DEC-004, US-002, RB-002, RB-003
 - **Contract**: `substOne()` refuses fold/replace on PCC blocks with `ClampReason "proactively-compressed"`. Guard is absolute (no `breakFrozen` bypass). Group commands are unaffected (they go through `createGroup()`, not `substOne()`).
 - **Decision constraints**: DEC-002 (store enforcement), DEC-003 (grouping allowed), DEC-004 (no breakFrozen bypass)
-- **Code anchors**: `vendor/accordion/app/src/lib/engine/store.svelte.ts` → `substOne()` (line 1102)
+- **Code anchors**: `extensions/accordion/app/src/lib/engine/store.svelte.ts` → `substOne()` (line 1102)
 - **Existing behavior**: Guard chain: `unknown-id → human-override → grouped → protected → frozen → not-foldable`. No PCC guard.
 - **Required edits**: Add after the `grouped` guard:
   ```ts
@@ -190,7 +190,7 @@ Additionally, dashboard users have no visual indicator that a block was compress
 - **Coverage**: DEC-002, US-002
 - **Contract**: Remove `PROACTIVE_COMPRESS_MARKER` regex and `isProactivelyCompressed()` helper. The store now enforces PCC protection; conductor-side detection is redundant.
 - **Decision constraints**: DEC-002 — store enforcement replaces per-conductor guard.
-- **Code anchors**: `vendor/accordion/conductors/my-customize-conductor/my-customize-conductor.ts` → line 45 (`PROACTIVE_COMPRESS_MARKER`), line 135 (candidates filter), line 335 (`isProactivelyCompressed`)
+- **Code anchors**: `extensions/accordion/conductors/my-customize-conductor/my-customize-conductor.ts` → line 45 (`PROACTIVE_COMPRESS_MARKER`), line 135 (candidates filter), line 335 (`isProactivelyCompressed`)
 - **Existing behavior**: `candidates` filter uses `!isProactivelyCompressed(b)` to exclude PCC blocks from fold candidates.
 - **Required edits**:
   - Remove `PROACTIVE_COMPRESS_MARKER` const (line 45).
@@ -206,7 +206,7 @@ Additionally, dashboard users have no visual indicator that a block was compress
 - **Coverage**: DEC-005, DEC-006, US-003, RB-004, RB-005
 - **Contract**: Inspector renders a "PCC" pill badge for blocks with `proactivelyCompressed === true`. Badge visible standalone and inside expanded groups. Fold/unfold controls disabled for PCC blocks.
 - **Decision constraints**: DEC-005 (badge), DEC-006 (read-only)
-- **Code anchors**: `vendor/accordion/app/src/lib/ui/map/Inspector.svelte` (lines 256–265)
+- **Code anchors**: `extensions/accordion/app/src/lib/ui/map/Inspector.svelte` (lines 256–265)
 - **Existing behavior**: Renders `pill-warn folded` / `pill-ok live` / `pill-accent protected`. No PCC badge.
 - **Required edits**: Add after the `protected` pill:
   ```svelte

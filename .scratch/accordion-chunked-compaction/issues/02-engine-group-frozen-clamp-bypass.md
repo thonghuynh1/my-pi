@@ -28,7 +28,7 @@ The engine's frozen-region clamp for group substitutions is bypassed **when and 
 
 ### Decided implementation
 
-Modify the frozen check inside `groupCmd` at `F:/MyWork/my-pi/vendor/accordion/app/src/lib/engine/store.svelte.ts:1174-1176`. **Anchor drift note**: PRD `DEC-012` cites `substOne` at `store.svelte.ts:1113-1116`, but that method's `kind` parameter is typed `"fold" | "replace"` only — group commands are dispatched via `case "group"` at `store.svelte.ts:1077-1079` to the separate `groupCmd(ids, by, reports, digest)` method at line 1166. The contract (frozen clamp bypass for group with non-null digest) is intact; the current anchor is `groupCmd`. Use the current anchor.
+Modify the frozen check inside `groupCmd` at `F:/MyWork/my-pi/extensions/accordion/app/src/lib/engine/store.svelte.ts:1174-1176`. **Anchor drift note**: PRD `DEC-012` cites `substOne` at `store.svelte.ts:1113-1116`, but that method's `kind` parameter is typed `"fold" | "replace"` only — group commands are dispatched via `case "group"` at `store.svelte.ts:1077-1079` to the separate `groupCmd(ids, by, reports, digest)` method at line 1166. The contract (frozen clamp bypass for group with non-null digest) is intact; the current anchor is `groupCmd`. Use the current anchor.
 
 Left to the implementer: whether to extract a named helper `isChunkedCompactionSubst(cmd)` or inline the disjunct at the call site. Both preserve `RB-003`.
 
@@ -93,27 +93,27 @@ Single-file engine change. No new registrations. No dispatch path is added — `
 ## Acceptance criteria
 
 - [ ] **AC-1**: A `GroupCommand` whose `ids` include a block with `order < frozenFromIndex` and whose `digest` is a non-empty string is **applied** (not clamped) even when `hasHardContextPressure()` returns `false`.
-  - Run: `cd F:/MyWork/my-pi/vendor/accordion/app && pnpm vitest run store.svelte`
+  - Run: `cd F:/MyWork/my-pi/extensions/accordion/app && pnpm vitest run store.svelte`
   - Expected: a new test case named `"groupCmd bypasses frozen clamp when digest is non-empty"` passes; after `apply(cmd)`, the resulting `reports` array contains **no** `"frozen"` entry for the group and `store.groups` contains a new group covering the target ids.
 
 - [ ] **AC-2**: A `GroupCommand` with `digest: null` on a frozen range is **still clamped** when `hasHardContextPressure()` returns `false`.
-  - Run: `cd F:/MyWork/my-pi/vendor/accordion/app && pnpm vitest run store.svelte`
+  - Run: `cd F:/MyWork/my-pi/extensions/accordion/app && pnpm vitest run store.svelte`
   - Expected: a new test case named `"groupCmd still clamps frozen when digest is null (DROP)"` passes; `reports` contains one entry with `kind === "group"` and `reason === "frozen"`; `store.groups.length` is unchanged.
 
 - [ ] **AC-3**: A `GroupCommand` with `digest: ""` on a frozen range is **still clamped** when `hasHardContextPressure()` returns `false`.
-  - Run: `cd F:/MyWork/my-pi/vendor/accordion/app && pnpm vitest run store.svelte`
+  - Run: `cd F:/MyWork/my-pi/extensions/accordion/app && pnpm vitest run store.svelte`
   - Expected: a new test case named `"groupCmd still clamps frozen when digest is empty string (DROP)"` passes; identical shape to AC-2.
 
 - [ ] **AC-4**: A `FoldCommand` on a frozen block is **still clamped** (regression: no accidental spillover from the group bypass).
-  - Run: `cd F:/MyWork/my-pi/vendor/accordion/app && pnpm vitest run store.svelte`
+  - Run: `cd F:/MyWork/my-pi/extensions/accordion/app && pnpm vitest run store.svelte`
   - Expected: a new test case named `"substOne still clamps fold on frozen block"` passes; `reports` contains one entry with `kind === "fold"` and `reason === "frozen"`.
 
 - [ ] **AC-5**: A `ReplaceCommand` on a frozen block is **still clamped**.
-  - Run: `cd F:/MyWork/my-pi/vendor/accordion/app && pnpm vitest run store.svelte`
+  - Run: `cd F:/MyWork/my-pi/extensions/accordion/app && pnpm vitest run store.svelte`
   - Expected: a new test case named `"substOne still clamps replace on frozen block"` passes; `reports` contains one entry with `kind === "replace"` and `reason === "frozen"`.
 
 - [ ] **AC-6**: No changes to the wire protocol.
-  - Run: `cd F:/MyWork/my-pi/vendor/accordion && git diff --stat conductors/contract/`
+  - Run: `cd F:/MyWork/my-pi/extensions/accordion && git diff --stat conductors/contract/`
   - Expected: `0 files changed` (empty output). `CONDUCTOR_PROTOCOL_VERSION` at `conductors/contract/protocol.ts:32` remains `= 3`.
 
 ## Blocked by

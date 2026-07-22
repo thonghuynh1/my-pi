@@ -83,11 +83,11 @@ If PCC compresses during `context` instead of `before_provider_request`, the com
 
 ## Files involved
 
-- `vendor/accordion/extension/proactive-compress.ts` — PCC logic, `handleBeforeProviderRequest`, `shouldCompress`
-- `vendor/accordion/extension/accordion.ts` — event hook registration, `context` hook at line 1124, PCC install at line 1462
-- `vendor/accordion/extension/cache-tracker.ts` — `getFrozenFromIndex()`, prefix-match heuristic
-- `vendor/accordion/app/src/lib/live/mapping.ts` — `linearize()`, reads `_pccCompressed`
-- `vendor/accordion/app/src/lib/engine/store.svelte.ts` — `substOne()` guard, `buildView()` propagation
+- `extensions/accordion/extension/proactive-compress.ts` — PCC logic, `handleBeforeProviderRequest`, `shouldCompress`
+- `extensions/accordion/extension/accordion.ts` — event hook registration, `context` hook at line 1124, PCC install at line 1462
+- `extensions/accordion/extension/cache-tracker.ts` — `getFrozenFromIndex()`, prefix-match heuristic
+- `extensions/accordion/app/src/lib/live/mapping.ts` — `linearize()`, reads `_pccCompressed`
+- `extensions/accordion/app/src/lib/engine/store.svelte.ts` — `substOne()` guard, `buildView()` propagation
 
 ## Suggested skills for next session
 
@@ -103,4 +103,4 @@ Two unrelated bugs in `extensions/frontend-coach/picker.js` were fixed:
 1. `whenBodyReady` deferral: `addInitScript` runs before `<body>` exists, crashing `appendChild`. Fixed with a `MutationObserver` fallback.
 2. Custom input overlay: replaced `window.prompt()` (auto-dismissed by Playwright CDP) with an in-page HTML overlay. Named event handlers with `__piCoachCleanup` for safe re-injection.
 
-The accordion dashboard build was also stale (protocol version 6 vs extension's version 5). Rebuilt via `npm run build` in `vendor/accordion/app/`.
+The accordion dashboard build was also stale (protocol version 6 vs extension's version 5). Rebuilt via `npm run build` in `extensions/accordion/app/`.

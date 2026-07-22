@@ -1,3 +1,5 @@
+> Historical path note: Accordion was later relocated to `extensions/accordion/` and `extensions/accordion/broker/` by `.scratch/accordion-first-party-extension/issues/01-adopt-accordion-as-first-party-extension.md`.
+
 # Grill ledger — wayfinder ticket 14 (LLM necessity for group summaries)
 
 Map: `.scratch/accordion-chunked-compaction/MAP.md`

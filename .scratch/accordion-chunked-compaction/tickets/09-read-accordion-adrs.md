@@ -10,7 +10,7 @@ findings: ./09-findings.md
 
 ## Question
 
-Digest the following ADRs (path: `F:/MyWork/my-pi/vendor/accordion/docs/adr/`) and produce a findings note that pulls out anything that constrains or informs a chunked-compaction design:
+Digest the following ADRs (path: `F:/MyWork/my-pi/extensions/accordion/docs/adr/`) and produce a findings note that pulls out anything that constrains or informs a chunked-compaction design:
 
 - ADR 0007 / 0008 — conductor protocol tables (`ConductorView`, `Command` shapes, host capabilities).
 - ADR 0010 — attention-folder / epoch-based folding, cache-stability rationale.

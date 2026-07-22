@@ -48,7 +48,7 @@ The engine preserves chunked-compaction groups across conductor passes even when
 
 ## Test seam
 
-Test file: `vendor/accordion/extension/chunked-compaction-invariant.test.ts`.
+Test file: `extensions/accordion/extension/chunked-compaction-invariant.test.ts`.
 
 The invariant harness uses:
 
@@ -60,7 +60,7 @@ The invariant harness uses:
 - Real `buildUnreportedChunkedCompactionDiagnostic()` and `formatContextDiagnostic()`.
 - An in-memory append sink instead of filesystem writes.
 
-`vendor/accordion/extension/accordion.chunkedCompactionJsonl.test.ts` separately drives the real `accordionLive` hook, WebSocket plan path, filesystem writer, and repeated-old-group suppression.
+`extensions/accordion/extension/accordion.chunkedCompactionJsonl.test.ts` separately drives the real `accordionLive` hook, WebSocket plan path, filesystem writer, and repeated-old-group suppression.
 
 Each rollover corpus is sent below threshold on one turn before a later turn crosses the threshold. This ensures the rollover rewrites messages that were visible to the provider rather than compacting unseen messages on cold start.
 
@@ -80,9 +80,9 @@ interface InvariantResult {
 
 ## Required edits
 
-1. Add `vendor/accordion/extension/chunked-compaction-invariant.test.ts`.
-2. Add typed selection and build helpers in `vendor/accordion/extension/chunked-compaction-diagnostic.ts` for the first unreported chunked-compaction group.
-3. Update `vendor/accordion/extension/accordion.ts` to own and reset the per-session reported-group set.
+1. Add `extensions/accordion/extension/chunked-compaction-invariant.test.ts`.
+2. Add typed selection and build helpers in `extensions/accordion/extension/chunked-compaction-diagnostic.ts` for the first unreported chunked-compaction group.
+3. Update `extensions/accordion/extension/accordion.ts` to own and reset the per-session reported-group set.
 4. Preserve immutable chunked-compaction groups in `AccordionStore.clearConductorState()`.
 5. Extend `accordion.chunkedCompactionJsonl.test.ts` to run through the real writer and prove repeated groups do not produce repeated rollover fields.
 6. Amend `RB-010`, `DEC-018`, ADR-0004, and this issue to use numeric prefix-rewrite accounting.
@@ -90,7 +90,7 @@ interface InvariantResult {
 
 ## Acceptance criteria
 
-Working directory: `vendor/accordion/app`.
+Working directory: `extensions/accordion/app`.
 
 - [x] **AC-1. Single rollover.** A stable-provider session produces `rollovers === 1`, `prefixRewrites === 1`, `coldStarts === 1`, `cacheBreaks === 2`, and `ok === true`.
   - Run: `pnpm vitest run chunked-compaction-invariant -t "single rollover satisfies count(rollover) == cacheBreaks - coldStarts"`

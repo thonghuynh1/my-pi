@@ -13,15 +13,15 @@ map: ../MAP.md
 
 | Source | Line(s) | Nature |
 |---|---|---|
-| `F:/MyWork/my-pi/vendor/accordion/VISION.md` | 100–102 | **"Folding the folds"** — north-star spec: nested groups, episode→era tree, level-by-level unfold |
-| `F:/MyWork/my-pi/vendor/accordion/README.md` | 119, 128–130 | Roadmap checklist item `[ ] Hierarchical folding for million-turn sessions` |
-| `F:/MyWork/my-pi/vendor/accordion/conductors/README.md` | 235–237 | Auto-coalesce (flat C1.5) prerequisite; message-boundary alignment + straggler-cost modelling required |
-| `F:/MyWork/my-pi/vendor/accordion/docs/conductor-plan.md` | ~296–349 | **Milestone C2.5 Auto-Coalesce** — flat precursor; `groupSummary()` already at `app/src/lib/engine/store.svelte.ts:1546` |
-| `F:/MyWork/my-pi/vendor/accordion/docs/conductor-plan.md` | ~493–600 | **Milestone C4 The Archivist** — full design: wire stays flat, engine tree, summaries-of-summaries, exit criteria (1M-token synthetic session held under 150k budget as 3-level tree, any leaf recoverable byte-identical) |
-| `F:/MyWork/my-pi/vendor/accordion/docs/conductor-rework-roadmap.md` | 180–231 | C4 data model (`Group.children`, `groupEraDigest`, `findEraRuns`, `ancestorChain`), recoverable code in git branch `claude/busy-bose-bd815d:app/src/lib/engine/coalesce.ts`, **open contract question**: add `era` command vs host-automatic promotion |
-| `F:/MyWork/my-pi/vendor/accordion/docs/adr/0006-multiblock-folds.md` | 205 | Explicit exclusion: "No nested groups (folders-in-folders) this cut." |
-| `F:/MyWork/my-pi/vendor/accordion/docs/adr/0007-conductor-protocol.md` | 30 | "A hierarchical compactor" named among original motivations for the conductor contract |
-| `F:/MyWork/my-pi/vendor/accordion/docs/adr/0009-cold-score-conductor.md` | 38, 156 | "Auto-coalesce intentionally deferred" |
+| `F:/MyWork/my-pi/extensions/accordion/VISION.md` | 100–102 | **"Folding the folds"** — north-star spec: nested groups, episode→era tree, level-by-level unfold |
+| `F:/MyWork/my-pi/extensions/accordion/README.md` | 119, 128–130 | Roadmap checklist item `[ ] Hierarchical folding for million-turn sessions` |
+| `F:/MyWork/my-pi/extensions/accordion/conductors/README.md` | 235–237 | Auto-coalesce (flat C1.5) prerequisite; message-boundary alignment + straggler-cost modelling required |
+| `F:/MyWork/my-pi/extensions/accordion/docs/conductor-plan.md` | ~296–349 | **Milestone C2.5 Auto-Coalesce** — flat precursor; `groupSummary()` already at `app/src/lib/engine/store.svelte.ts:1546` |
+| `F:/MyWork/my-pi/extensions/accordion/docs/conductor-plan.md` | ~493–600 | **Milestone C4 The Archivist** — full design: wire stays flat, engine tree, summaries-of-summaries, exit criteria (1M-token synthetic session held under 150k budget as 3-level tree, any leaf recoverable byte-identical) |
+| `F:/MyWork/my-pi/extensions/accordion/docs/conductor-rework-roadmap.md` | 180–231 | C4 data model (`Group.children`, `groupEraDigest`, `findEraRuns`, `ancestorChain`), recoverable code in git branch `claude/busy-bose-bd815d:app/src/lib/engine/coalesce.ts`, **open contract question**: add `era` command vs host-automatic promotion |
+| `F:/MyWork/my-pi/extensions/accordion/docs/adr/0006-multiblock-folds.md` | 205 | Explicit exclusion: "No nested groups (folders-in-folders) this cut." |
+| `F:/MyWork/my-pi/extensions/accordion/docs/adr/0007-conductor-protocol.md` | 30 | "A hierarchical compactor" named among original motivations for the conductor contract |
+| `F:/MyWork/my-pi/extensions/accordion/docs/adr/0009-cold-score-conductor.md` | 38, 156 | "Auto-coalesce intentionally deferred" |
 
 ## Milestone sequencing (from conductor-plan.md 86–91)
 

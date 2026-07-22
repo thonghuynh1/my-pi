@@ -7,7 +7,7 @@ map: ../MAP.md
 
 # Findings: Survey the-conductor-v2 and code-skeleton
 
-All refs relative to `F:/MyWork/my-pi/vendor/accordion/conductors/`.
+All refs relative to `F:/MyWork/my-pi/extensions/accordion/conductors/`.
 
 ## 1. the-conductor-v2
 

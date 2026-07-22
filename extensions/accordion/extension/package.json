@@ -1,0 +1,19 @@
+{
+  "name": "@a-fig/accordion",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Accordion live link — a pi extension that streams context to the Accordion GUI and applies the fold plan the GUI returns.",
+  "scripts": {
+    "build:client": "node ./build-client.mjs",
+    "broker": "node --import tsx/esm broker/index.ts"
+  },
+  "dependencies": {
+    "typebox": "^1.1.24",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "jiti": "^2.7.0",
+    "tsx": "^4.0.0"
+  }
+}

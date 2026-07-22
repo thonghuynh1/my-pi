@@ -4,13 +4,13 @@ status: done
 ticket: 09-read-accordion-adrs
 map: ../MAP.md
 sources:
-  - F:/MyWork/my-pi/vendor/accordion/docs/adr/0007-conductor-protocol.md
-  - F:/MyWork/my-pi/vendor/accordion/docs/adr/0008-conductor-first-party-one-view.md
-  - F:/MyWork/my-pi/vendor/accordion/docs/adr/0010-attention-conductor.md
-  - F:/MyWork/my-pi/vendor/accordion/docs/adr/0016-code-skeleton-conductor.md
-  - F:/MyWork/my-pi/vendor/accordion/docs/conductor-protocol.md
-  - F:/MyWork/my-pi/vendor/accordion/docs/adr/0011-conductor-involvement-locks.md (skimmed)
-  - F:/MyWork/my-pi/vendor/accordion/docs/adr/0013-conductor-host-capabilities.md (skimmed)
+  - F:/MyWork/my-pi/extensions/accordion/docs/adr/0007-conductor-protocol.md
+  - F:/MyWork/my-pi/extensions/accordion/docs/adr/0008-conductor-first-party-one-view.md
+  - F:/MyWork/my-pi/extensions/accordion/docs/adr/0010-attention-conductor.md
+  - F:/MyWork/my-pi/extensions/accordion/docs/adr/0016-code-skeleton-conductor.md
+  - F:/MyWork/my-pi/extensions/accordion/docs/conductor-protocol.md
+  - F:/MyWork/my-pi/extensions/accordion/docs/adr/0011-conductor-involvement-locks.md (skimmed)
+  - F:/MyWork/my-pi/extensions/accordion/docs/adr/0013-conductor-host-capabilities.md (skimmed)
 ---
 
 # ADR findings — protocol + cache rationale

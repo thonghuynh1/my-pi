@@ -18,7 +18,7 @@ Status: ready-for-agent
 
 ### 1. `store.svelte.ts` — `substOne()` PCC guard
 
-- **File**: `vendor/accordion/app/src/lib/engine/store.svelte.ts`
+- **File**: `extensions/accordion/app/src/lib/engine/store.svelte.ts`
 - **Symbol**: `substOne()` (line 1102)
 - **Existing guard chain**: `unknown-id (1104) → human-override (1105) → grouped (1106) → protected (1109) → frozen (1110) → not-foldable (1121)`
 - **Edit**: Insert PCC guard after `grouped` and before `protected`:
@@ -32,7 +32,7 @@ Status: ready-for-agent
 
 ### 2. Walking-skeleton integration test — real wiring end-to-end
 
-- **File**: `vendor/accordion/app/src/lib/engine/store.foldgate.test.ts`
+- **File**: `extensions/accordion/app/src/lib/engine/store.foldgate.test.ts`
 - **Prior art**: `describe("conductor path — substOne kind gate (fold & replace)")`
 - **New describe block**: `describe("walking skeleton — PCC block is not double-folded end-to-end")`
 - **Test**:

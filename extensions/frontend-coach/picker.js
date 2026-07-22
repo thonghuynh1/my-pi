@@ -112,23 +112,45 @@
 	addEventListener("keydown", onKeydown);
 	addEventListener("mousemove", onMousemove, true);
 
-	// ---------- Custom input overlay (replaces window.prompt for CDP compat) ----------
+	// ---------- Custom input overlay (native <dialog> for bulletproof focus) ----------
 	let inputOverlay = null;
 	let inputResolve = null;
 
+	function _resolveOverlay(value) {
+		if (!inputOverlay || !inputOverlay.open) return;
+		inputOverlay.close();
+		const r = inputResolve; inputResolve = null; if (r) r(value);
+	}
+
+	// Guard: block host-page keyboard shortcuts while the dialog is open.
+	// Even with a native modal, window-level capturing listeners still fire.
+	for (const _evt of ["keydown", "keyup", "keypress"]) {
+		addEventListener(_evt, function _piOverlayGuard(e) {
+			if (!inputOverlay || !inputOverlay.open) return;
+			if (!inputOverlay.contains(e.target)) return;
+			e.stopImmediatePropagation();
+			if (_evt === "keydown" && e.key === "Enter") {
+				_resolveOverlay(inputOverlay._input.value.trim() || null);
+			}
+		}, true);
+	}
+
 	function createInputOverlay() {
-		const overlay = document.createElement("div");
-		Object.assign(overlay.style, {
-			position: "fixed", top: "0", left: "0", width: "100%", height: "100%",
-			background: "rgba(0,0,0,0.5)", zIndex: 2147483647,
-			display: "flex", alignItems: "center", justifyContent: "center",
-		});
-		const card = document.createElement("div");
-		Object.assign(card.style, {
-			background: "#1a1a1a", color: "#eee", borderRadius: "8px", padding: "16px",
-			width: "420px", maxWidth: "90vw", font: "13px/1.5 system-ui, sans-serif",
+		const dialog = document.createElement("dialog");
+		Object.assign(dialog.style, {
+			border: "none", borderRadius: "8px", padding: "16px",
+			background: "#1a1a1a", color: "#eee",
+			width: "420px", maxWidth: "90vw",
+			font: "13px/1.5 system-ui, sans-serif",
 			boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
 		});
+		dialog.setAttribute("data-pi-coach-overlay", "");
+
+		// Inject backdrop style
+		const style = document.createElement("style");
+		style.textContent = "dialog[data-pi-coach-overlay]::backdrop{background:rgba(0,0,0,0.5)}";
+		dialog._style = style;
+
 		const label = document.createElement("div");
 		Object.assign(label.style, { marginBottom: "8px", color: "#aaa", fontSize: "11px", fontFamily: "monospace" });
 		const input = document.createElement("input");
@@ -148,47 +170,41 @@
 		Object.assign(btnSend.style, { padding: "5px 12px", borderRadius: "4px", border: "none", background: "#0a0", color: "#fff", cursor: "pointer", fontWeight: "bold" });
 		btnRow.appendChild(btnCancel);
 		btnRow.appendChild(btnSend);
-		card.appendChild(label);
-		card.appendChild(input);
-		card.appendChild(btnRow);
-		overlay.appendChild(card);
+		dialog.appendChild(label);
+		dialog.appendChild(input);
+		dialog.appendChild(btnRow);
 
-		function resolve(value) {
-			overlay.style.display = "none";
-			if (inputResolve) { inputResolve(value); inputResolve = null; }
-		}
-		btnSend.onclick = () => resolve(input.value.trim() || null);
-		btnCancel.onclick = () => resolve(null);
-		input.onkeydown = (e) => {
-			e.stopPropagation();
-			if (e.key === "Enter") resolve(input.value.trim() || null);
-			if (e.key === "Escape") resolve(null);
-		};
-		overlay.onclick = (e) => { if (e.target === overlay) resolve(null); };
+		btnSend.onclick = () => _resolveOverlay(input.value.trim() || null);
+		btnCancel.onclick = () => _resolveOverlay(null);
+		// Native Escape handling: dialog fires "cancel" before closing.
+		dialog.addEventListener("cancel", (e) => {
+			e.preventDefault();
+			_resolveOverlay(null);
+		});
+		// Backdrop click: clicks on the dialog padding (outside card content)
+		dialog.addEventListener("click", (e) => {
+			if (e.target === dialog) _resolveOverlay(null);
+		});
 
-		// Isolate the overlay from the host page's event handlers.
-		// Without this, the app's global keyboard shortcuts (e.g. 'S' for save,
-		// 'N' for new) can intercept keystrokes meant for the input field, and
-		// page-level click handlers can swallow button clicks.
-		for (const evt of ["keydown", "keyup", "keypress", "click", "mousedown", "mouseup"]) {
-			overlay.addEventListener(evt, (e) => e.stopPropagation());
-		}
-
-		overlay._label = label;
-		overlay._input = input;
-		overlay.style.display = "none";
-		return overlay;
+		dialog._label = label;
+		dialog._input = input;
+		dialog._btnSend = btnSend;
+		dialog._btnCancel = btnCancel;
+		return dialog;
 	}
 
 	function showInput(selectorText) {
 		if (!inputOverlay) {
 			inputOverlay = createInputOverlay();
-			whenBodyReady(() => document.body.appendChild(inputOverlay));
+			whenBodyReady(() => {
+				document.head.appendChild(inputOverlay._style);
+				document.body.appendChild(inputOverlay);
+			});
 		}
 		inputOverlay._label.textContent = selectorText;
 		inputOverlay._input.value = "";
-		inputOverlay.style.display = "flex";
-		setTimeout(() => inputOverlay._input.focus(), 50);
+		inputOverlay.showModal();
+		inputOverlay._input.focus();
 		return new Promise((res) => { inputResolve = res; });
 	}
 
@@ -227,6 +243,8 @@
 		removeEventListener("click", onClick, true);
 		if (banner_?.parentNode) banner_.parentNode.removeChild(banner_);
 		if (box?.parentNode) box.parentNode.removeChild(box);
+		if (inputOverlay?.open) inputOverlay.close();
+		if (inputOverlay?._style?.parentNode) inputOverlay._style.parentNode.removeChild(inputOverlay._style);
 		if (inputOverlay?.parentNode) inputOverlay.parentNode.removeChild(inputOverlay);
 		window.__piCoach = false;
 		window.__piCoachBanner = null;

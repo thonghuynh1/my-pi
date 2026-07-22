@@ -4,12 +4,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 let home = "";
-let registry: typeof import("../src/registry.ts");
+let registry: typeof import("../registry.ts");
 
 beforeAll(async () => {
 	home = fs.mkdtempSync(path.join(os.tmpdir(), "accordion-registry-"));
 	process.env.ACCORDION_HOME = home;
-	registry = await import("../src/registry.ts");
+	registry = await import("../registry.ts");
 });
 
 beforeEach(() => {

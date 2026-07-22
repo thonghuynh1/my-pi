@@ -10,9 +10,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
-import { createBrokerServer } from "../src/server.ts";
-import { PROTOCOL_VERSION, REGISTRY_PROTOCOL } from "../src/types.ts";
-import type { BrokerStore, SessionEntry, WatchedSession } from "../src/types.ts";
+import { createBrokerServer } from "../server.ts";
+import { PROTOCOL_VERSION, REGISTRY_PROTOCOL } from "../types.ts";
+import type { BrokerStore, SessionEntry, WatchedSession } from "../types.ts";
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 

@@ -24,6 +24,10 @@ export default defineConfig({
 			{ find: /^\$lib\//, replacement: `${libDir}/` },
 			{ find: /^\$conductors$/, replacement: conductorsDir },
 			{ find: /^\$conductors\//, replacement: `${conductorsDir}/` },
+			// ws ships an ESM wrapper (wrapper.mjs) whose named exports vite's SSR
+			// transform drops (only 'default' survives). Pointing at the CJS index.js
+			// lets vite's CJS interop correctly expose WebSocket + WebSocketServer.
+			{ find: /^ws$/, replacement: path.resolve(__dirname, "node_modules/ws/index.js") },
 		],
 	},
 	test: {

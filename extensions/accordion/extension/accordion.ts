@@ -277,8 +277,8 @@ function countFoldMarkers(value: unknown): number {
 function resolveBrokerCwd(): string | null {
 	try {
 		const here = path.dirname(fileURLToPath(import.meta.url));
-		const brokerDir = path.resolve(here, "..", "broker");
-		if (fs.statSync(path.join(brokerDir, "src", "index.ts")).isFile()) return brokerDir;
+		const brokerDir = path.resolve(here, "broker");
+		if (fs.statSync(path.join(brokerDir, "index.ts")).isFile()) return brokerDir;
 	} catch {
 		return null;
 	}
@@ -291,7 +291,7 @@ async function ensureBroker(): Promise<BrokerEnsureResult> {
 	const brokerCwd = resolveBrokerCwd();
 	if (!brokerCwd) return { ok: false, reason: "not-found" };
 	try {
-		const child = spawn(process.execPath, ["--import", "tsx/esm", "src/index.ts"], {
+		const child = spawn(process.execPath, ["--import", "tsx/esm", "index.ts"], {
 			cwd: brokerCwd,
 			detached: true,
 			stdio: "ignore",

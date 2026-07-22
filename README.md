@@ -57,7 +57,7 @@ Run `/accordion` in any Pi session to add it to the dashboard and focus its entr
 
 ### Accordion Browser Broker
 
-The Accordion Browser Broker (`extensions/accordion/broker/`) is a singleton local HTTP/WebSocket service that backs the Global Accordion Dashboard. Run it manually for debugging or development:
+The Accordion Browser Broker (`extensions/accordion/extension/broker/`) is a singleton local HTTP/WebSocket service that backs the Global Accordion Dashboard. Run it manually for debugging or development:
 
 ```bash
 npm run accordion:broker

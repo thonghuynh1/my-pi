@@ -17,10 +17,6 @@ if (
 	run("npm run accordion:install");
 }
 
-if (!existsSync(join(root, "extensions", "accordion", "broker", "node_modules"))) {
-	run("npm ci --prefix extensions/accordion/broker");
-}
-
 if (!existsSync(join(root, "extensions", "accordion", "app", "build", "index.html"))) {
 	run("npm run accordion:build");
 }

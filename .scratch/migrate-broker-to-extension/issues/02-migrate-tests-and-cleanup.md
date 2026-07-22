@@ -1,3 +1,7 @@
+---
+status: closed
+---
+
 # Migrate broker tests and remove old broker package
 
 ## Parent

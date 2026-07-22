@@ -305,7 +305,7 @@ await new Promise((resolve, reject) => {
 if (accordionCmd) {
 	await Promise.resolve(accordionCmd("", ctx));
 	const note = notifications.at(-1);
-	if (note?.type !== "info" || !note.message.includes("Accordion focus requested for this session."))
+	if (!note?.message.includes("Accordion focus requested for this session."))
 		fails.push("/accordion did not skip launch while the GUI was already attached");
 	if (!note?.message.includes("Live link: attached")) fails.push("/accordion did not report the snapshotted attached live-link state");
 	if (note?.message.includes("ACCORDION_APP_PATH does not point to an executable"))

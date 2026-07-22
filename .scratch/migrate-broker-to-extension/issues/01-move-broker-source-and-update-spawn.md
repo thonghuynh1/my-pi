@@ -1,3 +1,7 @@
+---
+status: closed
+---
+
 # Move broker source into extension and update spawn path
 
 ## Parent

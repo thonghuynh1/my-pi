@@ -15,7 +15,7 @@
     "accordion:install": "npm ci --prefix extensions/accordion/app && npm ci --prefix extensions/accordion/extension",
     "accordion:build": "npm run build --prefix extensions/accordion/app",
     "accordion:update": "npm run accordion:build",
-    "accordion:broker": "npm run start --prefix extensions/accordion/broker"
+    "accordion:broker": "npm run broker --prefix extensions/accordion/extension"
   },
   "dependencies": {
     "@ogulcancelik/pi-herdr": "^0.2.5",

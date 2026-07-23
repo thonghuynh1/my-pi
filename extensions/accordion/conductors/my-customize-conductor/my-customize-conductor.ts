@@ -156,10 +156,13 @@ export class MyCustomizeConductor implements Conductor {
 		}
 
 		const preGroupTarget = chunkedCompaction.effectivePreGroupTokens(view, this.opts);
+		const preGroupFromIndex = preGroupTarget > 0
+			? chunkedCompaction.computePreGroupFromIndex(view, preGroupTarget, (block) => isChunkedPreGroupBoundary(block, pstackByBlockId))
+			: view.protectedFromIndex;
+		const preGroupBlocks = view.blocks.slice(preGroupFromIndex, view.protectedFromIndex);
+		const preGroupBlockIds = new Set(preGroupBlocks.map((b) => b.id));
 		let preGroupTokens = 0;
 		if (preGroupTarget > 0) {
-			const preGroupFromIndex = chunkedCompaction.computePreGroupFromIndex(view, preGroupTarget, (block) => isChunkedPreGroupBoundary(block, pstackByBlockId));
-			const preGroupBlocks = view.blocks.slice(preGroupFromIndex, view.protectedFromIndex);
 			preGroupTokens = preGroupBlocks.reduce((sum, block) => sum + block.tokens, 0);
 			const nextBlock = view.blocks[view.protectedFromIndex];
 			const preGroupEndsOnTurnBoundary = nextBlock?.kind === "user" || view.protectedFromIndex === view.blocks.length;
@@ -204,7 +207,7 @@ export class MyCustomizeConductor implements Conductor {
 		}
 
 		const allCandidates = view.blocks.filter(
-			(b) => !b.held && !b.protected && !b.grouped && b.foldedTokens < b.tokens && FOLDABLE_KINDS.has(b.kind),
+			(b) => !b.held && !b.protected && !b.grouped && b.foldedTokens < b.tokens && FOLDABLE_KINDS.has(b.kind) && !preGroupBlockIds.has(b.id),
 		);
 		const candidates = allCandidates.filter(
 			(b) => b.order >= view.frozenFromIndex && !b.proactivelyCompressed,
@@ -343,7 +346,7 @@ export class MyCustomizeConductor implements Conductor {
 		};
 
 		if (live > cap) {
-			for (const run of groupRuns(view.blocks, (block) => block.order >= view.frozenFromIndex)) {
+			for (const run of groupRuns(view.blocks, (block) => block.order >= view.frozenFromIndex && !preGroupBlockIds.has(block.id))) {
 				if (live <= cap) break;
 				emitGroup(run);
 			}

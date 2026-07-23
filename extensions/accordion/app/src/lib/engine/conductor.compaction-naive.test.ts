@@ -1846,6 +1846,81 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 	it("corpus content hash uses the SHA-256 digest shape", () => {
 		expect(corpusContentHash([])).toBe("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
 	});
+
+	it("pre-group blocks are excluded from fold candidates under budget pressure", () => {
+		const blocks = [
+			chunkedBlock("pg0", 0, 2_000),
+			chunkedBlock("pg1", 1, 2_000),
+			chunkedBlock("pg2", 2, 2_000),
+			chunkedBlock("pg3", 3, 2_000),
+			chunkedBlock("pg4", 4, 2_000),
+			chunkedBlock("tail", 5, 100, { kind: "user", protected: true }),
+		];
+		const view = rolloverView(blocks, 200_000);
+		view.liveTokens = 110_000;
+		const plan = new MyCustomizeConductor().conduct(view);
+		const preGroupIds = new Set(["pg0", "pg1", "pg2", "pg3", "pg4"]);
+		for (const cmd of plan) {
+			if (cmd.kind === "fold") {
+				for (const id of cmd.ids) expect(preGroupIds.has(id), `fold must not target pre-group block ${id}`).toBe(false);
+			} else if (cmd.kind === "replace") {
+				expect(preGroupIds.has(cmd.id), `replace must not target pre-group block ${cmd.id}`).toBe(false);
+			} else if (cmd.kind === "group" && !(cmd.digest ?? "").startsWith("⟨chunked-compaction ·")) {
+				for (const id of cmd.ids) expect(preGroupIds.has(id), `non-rollover group must not target pre-group block ${id}`).toBe(false);
+			}
+		}
+	});
+
+	it("conductor returns empty plan when only pre-group blocks would be candidates", () => {
+		const blocks = [
+			chunkedBlock("pg0", 0, 2_000),
+			chunkedBlock("pg1", 1, 2_000),
+			chunkedBlock("pg2", 2, 2_000),
+			chunkedBlock("tail", 3, 100, { kind: "user", protected: true }),
+		];
+		const view = rolloverView(blocks, 200_000);
+		view.liveTokens = 110_000;
+		const plan = new MyCustomizeConductor().conduct(view);
+		const foldOrReplace = plan.filter((cmd) => cmd.kind === "fold" || cmd.kind === "replace");
+		expect(foldOrReplace).toHaveLength(0);
+	});
+
+	it("blocks outside pre-group range remain fold candidates", () => {
+		const blocks = [
+			chunkedBlock("old0", 0, 3_000, { kind: "tool_result" }),
+			chunkedBlock("boundary", 1, 100, { kind: "user" }),
+			chunkedBlock("pg0", 2, 2_000),
+			chunkedBlock("pg1", 3, 2_000),
+			chunkedBlock("tail", 4, 100, { kind: "user", protected: true }),
+		];
+		const view = rolloverView(blocks, 200_000);
+		view.liveTokens = 110_000;
+		const plan = new MyCustomizeConductor().conduct(view);
+		const foldedIds = plan.flatMap((cmd) => cmd.kind === "fold" ? cmd.ids : cmd.kind === "replace" ? [cmd.id] : []);
+		expect(foldedIds).toContain("old0");
+		expect(foldedIds).not.toContain("pg0");
+		expect(foldedIds).not.toContain("pg1");
+	});
+
+	it("pre-group exemption is a no-op when context window is below the chunked compaction gate", () => {
+		const blocks = [
+			chunkedBlock("c0", 0, 2_000),
+			chunkedBlock("c1", 1, 2_000),
+			chunkedBlock("c2", 2, 2_000),
+			chunkedBlock("tail", 3, 100, { kind: "user", protected: true }),
+		];
+		const targetIds = new Set(["c0", "c1", "c2"]);
+		for (const contextWindow of [32_000, 64_000, null] as const) {
+			const view = rolloverView(blocks, contextWindow);
+			view.liveTokens = 110_000;
+			const plan = new MyCustomizeConductor().conduct(view);
+			const actedOnIds = plan.flatMap((cmd) =>
+				cmd.kind === "fold" ? cmd.ids : cmd.kind === "replace" ? [cmd.id] : cmd.kind === "group" ? cmd.ids : [],
+			);
+			const hit = actedOnIds.some((id) => targetIds.has(id));
+			expect(hit, `contextWindow=${contextWindow} should still act on pre-group-position blocks`).toBe(true);
+		}
+	});
 });
 
 describe("AccordionStore.dispose() — outgoing-store cleanup", () => {

@@ -372,6 +372,55 @@ function readSignals(text: string): string[] {
 	return signals;
 }
 
+/**
+ * Canonical identity for a specific MCP tool call, derived purely from the parsed
+ * call text. Key-order agnostic: equivalent JSON arguments produce the same fingerprint.
+ * Sensitive argument values never appear in `displayLabel`.
+ */
+export type CanonicalMcpIdentity = {
+	server: string;
+	tool: string;
+	fingerprint: string;
+	displayLabel: string;
+};
+
+/**
+ * Derive a canonical MCP identity from a `tool_call` block's text. Returns `undefined`
+ * when the call text can't be parsed or doesn't have a recognisable tool name.
+ */
+export function canonicalMcpIdentity(callText: string | undefined): CanonicalMcpIdentity | undefined {
+	const call = parseOuterCall(callText);
+	const server = str(call.server) ?? str(call.connect) ?? "mcp";
+	const tool = str(call.tool);
+	if (!tool) return undefined;
+	const args = parseNestedArgs(call.args);
+	const fingerprint = argFingerprint(args);
+	const safeDisplay = safeArgDisplay(args);
+	const displayLabel = safeDisplay ? `${server}/${tool}(${safeDisplay})` : `${server}/${tool}`;
+	return { server, tool, fingerprint, displayLabel };
+}
+
+/** Deterministic fingerprint of canonical args: key-sorted, sensitive values included for
+ *  differentiation (they are never shown in digest text). Strength ≥ six-character handles. */
+function argFingerprint(args: McpCall): string {
+	const keys = Object.keys(args).sort();
+	const canonical = keys.map((key) => `${key}=${JSON.stringify(args[key])}`).join(";");
+	return foldCode(canonical);
+}
+
+/** Non-sensitive key=value pairs suitable for display in digest text. */
+function safeArgDisplay(args: McpCall): string | undefined {
+	const parts: string[] = [];
+	for (const key of Object.keys(args).sort()) {
+		if (SENSITIVE_KEY_RE.test(key)) continue;
+		const v = args[key];
+		if (typeof v === "string") parts.push(`${key}="${clip(v, 40)}"`);
+		else if (typeof v === "number" || typeof v === "boolean") parts.push(`${key}=${v}`);
+		if (parts.length >= 2) break;
+	}
+	return parts.length > 0 ? parts.join(", ") : undefined;
+}
+
 export function genericRecallSummary(codes: string[] | undefined): string {
 	if (codes?.length === 1) {
 		const [code] = codes;

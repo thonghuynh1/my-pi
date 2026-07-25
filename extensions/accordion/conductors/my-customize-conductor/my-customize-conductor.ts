@@ -170,28 +170,58 @@ export class MyCustomizeConductor implements Conductor {
 			const fastPathFires = preGroupTokens >= preGroupTarget && preGroupEndsOnTurnBoundary && noOpen;
 			const escapeValveFires = preGroupTokens > preGroupTarget * PRE_GROUP_OVERFLOW_CAP;
 
+			// Helper: attempt to emit a GROUP command from a candidate block list.
+			const tryEmitGroup = (candidates: readonly ViewBlock[]): Command[] | null => {
+				const ids = chunkedCompaction.trimOpenToolPairs(candidates.map((b) => b.id), view.blocks);
+				if (ids.length < 2) return null;
+				const members = view.blocks.filter((b) => ids.includes(b.id));
+				const digestCost = chunkedCompaction.estimateDefaultGroupDigestCost(members);
+				const trimmedTokens = members.reduce((sum, b) => sum + b.tokens, 0);
+				const estimatedGroupSaving = trimmedTokens - digestCost;
+				const minSaving = Math.max(2_000, 0.05 * cap);
+				if (estimatedGroupSaving < minSaving) return null;
+				const turnRange: [number, number] = [
+					Math.min(...members.map((b) => b.turn)),
+					Math.max(...members.map((b) => b.turn)),
+				];
+				const mcpIndex = chunkedCompaction.buildMcpRetrievalIndex(members, callById);
+				const baseDigest = chunkedCompaction.composeDigest(
+					chunkedCompaction.digestHeader(chunkedCompaction.corpusContentHash(members), ids.length, turnRange),
+					chunkedCompaction.digestBody(members),
+					chunkedCompaction.digestMembersFooter(ids.map(foldCode)),
+				);
+				const digest = mcpIndex ? baseDigest + "\n\n" + mcpIndex : baseDigest;
+				this.rolloverCount += 1;
+				this.tokensSavedByRollover += estimatedGroupSaving;
+				this.lastEstimatedGroupSaving = estimatedGroupSaving;
+				return [{ kind: "group", ids, digest }];
+			};
+
 			if (fastPathFires || escapeValveFires) {
-				const ids = chunkedCompaction.trimOpenToolPairs(preGroupBlocks.map((block) => block.id), view.blocks);
-				if (ids.length >= 2) {
-					const members = view.blocks.filter((block) => ids.includes(block.id));
-					const digestCost = chunkedCompaction.estimateDefaultGroupDigestCost(members);
-					const trimmedTokens = members.reduce((sum, block) => sum + block.tokens, 0);
-					const estimatedGroupSaving = trimmedTokens - digestCost;
-					const minSaving = Math.max(2_000, 0.05 * cap);
-					if (estimatedGroupSaving >= minSaving) {
-						const turnRange: [number, number] = [
-							Math.min(...members.map((block) => block.turn)),
-							Math.max(...members.map((block) => block.turn)),
-						];
-						const digest = chunkedCompaction.composeDigest(
-							chunkedCompaction.digestHeader(chunkedCompaction.corpusContentHash(members), ids.length, turnRange),
-							chunkedCompaction.digestBody(members),
-							chunkedCompaction.digestMembersFooter(ids.map(foldCode)),
-						);
-						this.rolloverCount += 1;
-						this.tokensSavedByRollover += estimatedGroupSaving;
-						this.lastEstimatedGroupSaving = estimatedGroupSaving;
-						return this.finishConduct([{ kind: "group", ids, digest }], preGroupTokens, preGroupTarget, true);
+				// Use selectCompactionRange to form the contiguous member list (keeps complete turns
+				// together; includes user/MCP/recall blocks that the pre-group boundary excluded).
+				const range = chunkedCompaction.selectCompactionRange(view, preGroupFromIndex);
+				const candidates = range
+					? view.blocks.slice(range.fromIndex, range.toIndexExclusive)
+					: preGroupBlocks;
+				const cmds = tryEmitGroup(candidates);
+				if (cmds) return this.finishConduct(cmds, preGroupTokens, preGroupTarget, true);
+			}
+
+			// If the traditional pre-group trigger did not fire (e.g. because MCP results
+			// stopped the pre-group boundary walk), try a broader selectCompactionRange from
+			// the frozen boundary — it includes user/MCP/recall/pstack blocks in complete turns.
+			if (!fastPathFires && !escapeValveFires) {
+				const range = chunkedCompaction.selectCompactionRange(view, view.frozenFromIndex);
+				if (range) {
+					const rangeBlocks = view.blocks.slice(range.fromIndex, range.toIndexExclusive);
+					const rangeTokens = rangeBlocks.reduce((sum, b) => sum + b.tokens, 0);
+					const rangeNoOpen = chunkedCompaction.noOpenToolPairAcrossPreGroupTail(view, range.fromIndex);
+					const altFast = rangeTokens >= preGroupTarget && rangeNoOpen;
+					const altEscape = rangeTokens > preGroupTarget * PRE_GROUP_OVERFLOW_CAP;
+					if (altFast || altEscape) {
+						const cmds = tryEmitGroup(rangeBlocks);
+						if (cmds) return this.finishConduct(cmds, rangeTokens, preGroupTarget, true);
 					}
 				}
 			}

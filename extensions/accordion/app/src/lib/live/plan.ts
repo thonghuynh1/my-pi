@@ -212,6 +212,13 @@ export function resolveRecall(store: AccordionStore, codes: string[]): { restore
 		// `{#code FOLDED}` tag for.
 		const matches = store.blocks.filter((b) => store.isFolded(b) && wireFoldable(b) && isDurableId(b.id) && foldCode(b.id) === code);
 		for (const b of matches) {
+			// Chunked-compaction member: return only this member's original text, read-only.
+			// Do NOT call appendToTail, unfold, or unfoldGroup — the group stays folded.
+			if (isChunkedCompactionGroupMember(store, b)) {
+				restored.push({ code, label: blockLabel(b), text: store.get(b.id)?.text ?? b.text ?? "", ids: [b.id] });
+				hit = true;
+				continue;
+			}
 			// A member of a FOLDED group is represented by its group on the wire (the agent only
 			// holds the group code); skip per-block recall here so we don't double-report — the
 			// group branch above already returns the full range.

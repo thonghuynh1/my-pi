@@ -1,5 +1,5 @@
 import type { ConductorView, ViewBlock } from "../contract";
-import { foldCode } from "./mcp-summary";
+import { foldCode, isMcpResult, canonicalMcpIdentity } from "./mcp-summary";
 import {
 	CHUNKED_COMPACTION_PREFIX,
 	DEFAULT_PRE_GROUP_TOKENS,
@@ -222,6 +222,79 @@ function sha256(value: string): string {
 
 export function corpusContentHash(blocks: readonly ViewBlock[]): string {
 	return `sha256:${sha256(blocks.map(canonicalBlock).join("\n"))}`;
+}
+
+/**
+ * A contiguous sub-range of the pre-group window that contains only complete
+ * accordion turns and is bounded by hard barriers.
+ */
+export type SafeCompactionRange = {
+	fromIndex: number;
+	toIndexExclusive: number;
+	/** True when the last complete turn had to be excluded because it was too
+	 *  large and would have split a turn boundary. Always false at walking-skeleton depth. */
+	oversizedTurnSplit: boolean;
+};
+
+/**
+ * Select a contiguous sub-range of `[fromIndex, view.protectedFromIndex)` that:
+ *   - Contains only complete accordion turns (never splits a turn across the boundary).
+ *   - Stops before any hard barrier (held, grouped, proactivelyCompressed).
+ *   - Allows user / MCP / recall / pstack blocks — they may belong to an eligible turn.
+ *
+ * Returns `null` when the resulting range would be empty.
+ */
+export function selectCompactionRange(view: ConductorView, fromIndex: number): SafeCompactionRange | null {
+	const end = view.protectedFromIndex;
+	const blocks = view.blocks;
+	if (fromIndex >= end) return null;
+
+	// The current partial turn is the turn of the first protected block.
+	// All blocks with the same turn number must stay in the protected tail.
+	const currentTurn = end < blocks.length ? blocks[end].turn : Infinity;
+
+	// Hard barrier scan: the first held/grouped/proactivelyCompressed block caps the range.
+	let harderEnd = end;
+	for (let i = fromIndex; i < end; i++) {
+		const b = blocks[i];
+		if (b.held || b.grouped || b.proactivelyCompressed) {
+			harderEnd = i;
+			break;
+		}
+	}
+
+	// Trim from the soft end: exclude blocks that belong to the current partial turn.
+	let toIndexExclusive = harderEnd;
+	while (toIndexExclusive > fromIndex && blocks[toIndexExclusive - 1].turn === currentTurn) {
+		toIndexExclusive--;
+	}
+
+	if (toIndexExclusive <= fromIndex) return null;
+	return { fromIndex, toIndexExclusive, oversizedTurnSplit: false };
+}
+
+/**
+ * Build the final digest section that identifies every MCP tool result in the group.
+ * Format per entry: `<server>/<tool> · <fingerprint> · turn N · {#code} · recall({...})`.
+ * Returns an empty string when no MCP results are in `members`.
+ */
+export function buildMcpRetrievalIndex(
+	members: readonly ViewBlock[],
+	callById: ReadonlyMap<string, ViewBlock>,
+): string {
+	const entries: string[] = [];
+	for (const block of members) {
+		if (!isMcpResult(block)) continue;
+		const call = block.callId ? callById.get(block.callId) : undefined;
+		const identity = canonicalMcpIdentity(call?.text);
+		if (!identity) continue;
+		const memberCode = foldCode(block.id);
+		entries.push(
+			`${identity.server}/${identity.tool} · ${identity.fingerprint} · turn ${block.turn} · {#${memberCode}} · recall({"codes":["${memberCode}"]})`,
+		);
+	}
+	if (entries.length === 0) return "";
+	return `MCP retrieval index\n${entries.join("\n")}`;
 }
 
 export { DEFAULT_PRE_GROUP_TOKENS, PRE_GROUP_OVERFLOW_CAP, MIN_CONTEXT_WINDOW_FOR_CHUNKED_COMPACTION, foldCode };

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { IN_PROCESS_CONDUCTORS, MyCustomizeConductor } from "$conductors";
 import type { Command, ConductorView, ViewBlock } from "$conductors/contract";
 import { foldTag } from "./digest";
-import { compactPath, estSummaryTokens, foldCode, mcpSummary, normalizePstackName, pstackLabel } from "$conductors/my-customize-conductor/mcp-summary";
+import { compactPath, estSummaryTokens, foldCode, mcpSummary, normalizePstackName, pstackLabel, canonicalMcpIdentity } from "$conductors/my-customize-conductor/mcp-summary";
 import { estimateDefaultGroupDigestCost } from "$conductors/my-customize-conductor/my-customize-conductor";
 
 const POTETO_BEACON_LINES = [
@@ -1229,5 +1229,40 @@ describe("MyCustomizeConductor", () => {
 		const compacted = compactPath(long);
 		expect(compacted.length).toBeLessThanOrEqual(60);
 		expect(compacted).toContain("file.ts");
+	});
+});
+
+describe("canonicalMcpIdentity", () => {
+	it("canonical MCP identity ignores JSON key order", () => {
+		const callA = JSON.stringify({ tool: "skill-reference", server: "eng", args: { name: "poteto-mode", version: 1 } });
+		const callB = JSON.stringify({ server: "eng", args: { version: 1, name: "poteto-mode" }, tool: "skill-reference" });
+		const idA = canonicalMcpIdentity(callA);
+		const idB = canonicalMcpIdentity(callB);
+		expect(idA).not.toBeUndefined();
+		expect(idA!.fingerprint).toBe(idB!.fingerprint);
+		expect(idA!.server).toBe("eng");
+		expect(idA!.tool).toBe("skill-reference");
+	});
+
+	it("canonical MCP identity changes with arguments", () => {
+		const callA = JSON.stringify({ tool: "skill-reference", server: "eng", args: { name: "poteto-mode" } });
+		const callB = JSON.stringify({ tool: "skill-reference", server: "eng", args: { name: "how" } });
+		const idA = canonicalMcpIdentity(callA);
+		const idB = canonicalMcpIdentity(callB);
+		expect(idA!.fingerprint).not.toBe(idB!.fingerprint);
+	});
+
+	it("MCP retrieval identity redacts sensitive display values", () => {
+		const call = JSON.stringify({ tool: "query", server: "db", args: { token: "secret-value", table: "users" } });
+		const id = canonicalMcpIdentity(call);
+		expect(id).not.toBeUndefined();
+		// Sensitive value must not appear in display label.
+		expect(id!.displayLabel).not.toContain("secret-value");
+		// Non-sensitive arg appears.
+		expect(id!.displayLabel).toContain("users");
+		// Fingerprint still differentiates (token key present but value hidden from display).
+		const callDifferent = JSON.stringify({ tool: "query", server: "db", args: { token: "other-secret", table: "users" } });
+		const idDifferent = canonicalMcpIdentity(callDifferent);
+		expect(id!.fingerprint).not.toBe(idDifferent!.fingerprint);
 	});
 });

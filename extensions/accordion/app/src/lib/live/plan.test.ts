@@ -620,6 +620,39 @@ describe("resolveRecall", () => {
 		// READ-ONLY: the group is STILL folded
 		expect(s.groupById(g!.id)!.folded).toBe(true);
 	});
+
+	it("recalls one chunked group member by its member code", () => {
+		const { store, memberId, groupId } = makeChunkedMemberStore();
+		const code = foldCode(memberId);
+
+		const { restored, missing } = resolveRecall(store, [code]);
+
+		expect(missing).toEqual([]);
+		expect(restored).toHaveLength(1);
+		expect(restored[0].code).toBe(code);
+		expect(restored[0].ids).toEqual([memberId]);
+		expect(restored[0].text).toBe("original chunked member content");
+		// Group stays folded — per-member recall is read-only.
+		expect(store.groupById(groupId)!.folded).toBe(true);
+	});
+
+	it("member recall does not append or mutate fold state", () => {
+		const { store, memberId, groupId } = makeChunkedMemberStore();
+		const code = foldCode(memberId);
+		const beforeBlockCount = store.blocks.length;
+		const beforeDigest = store.groupById(groupId)!.digest;
+
+		const { restored } = resolveRecall(store, [code]);
+
+		// Read-only: no blocks appended (unlike resolveUnfold which calls appendToTail).
+		expect(store.blocks.length).toBe(beforeBlockCount);
+		// Group still folded, digest unchanged.
+		expect(store.groupById(groupId)!.folded).toBe(true);
+		expect(store.groupById(groupId)!.digest).toBe(beforeDigest);
+		// Result carries the member id, not the group's memberIds.
+		expect(restored).toHaveLength(1);
+		expect(restored[0].ids).toEqual([memberId]);
+	});
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

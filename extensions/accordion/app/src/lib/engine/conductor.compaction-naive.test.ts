@@ -42,6 +42,7 @@ import { corpusContentHash } from "$conductors/my-customize-conductor/chunked-co
 import { humanTokens } from "$conductors/my-customize-conductor/constants";
 import { AccordionStore } from "./store.svelte";
 import type { Block, ParsedSession } from "./types";
+import { resolveRecall } from "../live/plan";
 import type {
 	ConductorHost,
 	ConductorView,
@@ -1920,6 +1921,138 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 			const hit = actedOnIds.some((id) => targetIds.has(id));
 			expect(hit, `contextWindow=${contextWindow} should still act on pre-group-position blocks`).toBe(true);
 		}
+	});
+	it("keeps complete turns together at the protected boundary", () => {
+		// Two blocks in turn 1, one protected block in turn 2.
+		// selectCompactionRange must include only turn 1; turn 2 is the current partial turn.
+		const blocks = [
+			chunkedBlock("a0", 0, 2_000, { turn: 1 }),
+			chunkedBlock("a1", 1, 2_000, { turn: 1 }),
+			chunkedBlock("tail", 2, 100, { kind: "user", protected: true, turn: 2 }),
+		];
+		const view = rolloverView(blocks);
+
+		const range = chunkedCompaction.selectCompactionRange(view, 0);
+
+		expect(range).not.toBeNull();
+		// Both turn-1 blocks are included; the protected turn-2 block is excluded.
+		expect(range!.fromIndex).toBe(0);
+		expect(range!.toIndexExclusive).toBe(2);
+		// No selected block shares a turn with the protected tail.
+		const protectedTurn = view.blocks[view.protectedFromIndex].turn;
+		for (let i = range!.fromIndex; i < range!.toIndexExclusive; i++) {
+			expect(view.blocks[i].turn, `block ${i} must not share turn with protected tail`).not.toBe(protectedTurn);
+		}
+	});
+
+	it("includes MCP recall pstack and user blocks but stops at hard barriers", () => {
+		// User and MCP blocks may belong to an eligible turn; held blocks are hard barriers.
+		const blocks = [
+			chunkedBlock("user1", 0, 500, { kind: "user", turn: 1 }),
+			chunkedBlock("mcp1", 1, 5_000, { kind: "tool_result", toolName: "mcp", turn: 1 }),
+			chunkedBlock("held1", 2, 3_000, { held: true, turn: 2 }),
+			chunkedBlock("tail", 3, 100, { kind: "user", protected: true, turn: 3 }),
+		];
+		const view = rolloverView(blocks);
+
+		const range = chunkedCompaction.selectCompactionRange(view, 0);
+
+		expect(range).not.toBeNull();
+		// user1 and mcp1 are included (not hard barriers).
+		expect(range!.fromIndex).toBe(0);
+		expect(range!.toIndexExclusive).toBe(2);
+		// held1 and tail are excluded.
+		const ids = blocks.slice(range!.fromIndex, range!.toIndexExclusive).map((b) => b.id);
+		expect(ids).toContain("user1");
+		expect(ids).toContain("mcp1");
+		expect(ids).not.toContain("held1");
+		expect(ids).not.toContain("tail");
+	});
+
+	it("compacts a complete MCP-bearing turn and recalls its grouped member without unfolding", () => {
+		const mcpCallText = JSON.stringify({
+			tool: "skill-reference",
+			server: "engineering-skills",
+			args: { name: "poteto-mode" },
+		});
+
+		// Complete turn 1: user + MCP tool_call + tool_result (large enough to trigger rollover).
+		// Protected turn 2: user.
+		const viewBlocks: ViewBlock[] = [
+			chunkedBlock("u:t1", 0, 500, { kind: "user", turn: 1, text: "load poteto mode" }),
+			chunkedBlock("a:t1:p0", 1, 100, { kind: "tool_call", turn: 1, callId: "c1", toolName: "mcp", text: mcpCallText }),
+			chunkedBlock("r:c1", 2, 16_000, { kind: "tool_result", turn: 1, callId: "c1", toolName: "mcp", text: "MCP result: " + "x".repeat(60_000) }),
+			chunkedBlock("u:t2", 3, 100, { kind: "user", turn: 2, protected: true }),
+		];
+		const view = rolloverView(viewBlocks);
+
+		// Run conductor — must emit exactly one GROUP command.
+		const plan = new MyCustomizeConductor().conduct(view);
+		const groupCmds = plan.filter((cmd) => cmd.kind === "group");
+		expect(groupCmds).toHaveLength(1);
+		const groupCmd = groupCmds[0];
+		if (groupCmd.kind !== "group") return;
+
+		// All parts of the completed turn are members; the protected turn is not.
+		expect(groupCmd.ids).toContain("u:t1");
+		expect(groupCmd.ids).toContain("a:t1:p0");
+		expect(groupCmd.ids).toContain("r:c1");
+		expect(groupCmd.ids).not.toContain("u:t2");
+
+		// Digest is a chunked-compaction group; final section identifies the MCP call.
+		expect(groupCmd.digest).toMatch(/^⟨chunked-compaction ·/);
+		expect(groupCmd.digest).toContain("MCP retrieval index");
+		expect(groupCmd.digest).toContain("engineering-skills/skill-reference");
+
+		// Apply to AccordionStore.
+		const storeBlocks: Block[] = [
+			{ id: "u:t1", kind: "user", turn: 1, order: 0, tokens: 500, text: "load poteto mode", override: null, autoFolded: false, by: null, proactivelyCompressed: false },
+			{ id: "a:t1:p0", kind: "tool_call", turn: 1, order: 1, tokens: 100, text: mcpCallText, callId: "c1", toolName: "mcp", override: null, autoFolded: false, by: null, proactivelyCompressed: false },
+			{ id: "r:c1", kind: "tool_result", turn: 1, order: 2, tokens: 16_000, text: "MCP result: " + "x".repeat(60_000), callId: "c1", toolName: "mcp", override: null, autoFolded: false, by: null, proactivelyCompressed: false },
+			{ id: "u:t2", kind: "user", turn: 2, order: 3, tokens: 100, text: "continue", override: null, autoFolded: false, by: null, proactivelyCompressed: false },
+		];
+		const store = makeStore(storeBlocks);
+		store.setProtect(100);
+		store.setBudget(1_000_000);
+
+		const g = store.createGroup(
+			groupCmd.ids[0],
+			groupCmd.ids[groupCmd.ids.length - 1],
+			"you",
+			groupCmd.digest,
+		);
+		expect(g).not.toBeNull();
+		expect(g!.folded).toBe(true);
+		// All completed-turn members in group; protected turn not.
+		for (const id of groupCmd.ids) expect(g!.memberIds).toContain(id);
+		expect(g!.memberIds).not.toContain("u:t2");
+		// Mark the group as the immutable frozen prefix.
+		store.frozenFromIndex = storeBlocks.findIndex((b) => b.id === "u:t2");
+
+		// Read the member code from the emitted MCP retrieval index.
+		const sections = groupCmd.digest.split("\n\n");
+		const indexSection = sections.find((s) => s.startsWith("MCP retrieval index"));
+		expect(indexSection).toBeDefined();
+		const codeMatch = indexSection!.match(/\{#([a-z0-9]+)\}/);
+		expect(codeMatch).not.toBeNull();
+		const memberCode = codeMatch![1];
+		expect(memberCode).toBe(chunkedCompaction.foldCode("r:c1"));
+
+		// Recall the MCP result by its member code — read-only, group stays folded.
+		const beforeDigest = store.groupById(g!.id)!.digest;
+		const beforeFolded = store.groupById(g!.id)!.folded;
+		const beforeBlockCount = store.blocks.length;
+
+		const { restored, missing } = resolveRecall(store, [memberCode]);
+
+		expect(missing).toEqual([]);
+		expect(restored).toHaveLength(1);
+		expect(restored[0].ids).toEqual(["r:c1"]);
+		expect(restored[0].text).toContain("MCP result:");
+		// Group digest, folded state, and block count are all unchanged after recall.
+		expect(store.groupById(g!.id)!.folded).toBe(beforeFolded);
+		expect(store.groupById(g!.id)!.digest).toBe(beforeDigest);
+		expect(store.blocks.length).toBe(beforeBlockCount);
 	});
 });
 

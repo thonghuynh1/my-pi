@@ -20,6 +20,18 @@ The browser-independent folding engine hosted by each Pi session extension whose
 
 An incremental Accordion plan update that reuses an active session’s block index, conductor state, and prior plan instead of recomputing the full history.
 
+## Complete Accordion Turn
+
+A user message together with all following assistant message parts and balanced tool-call/tool-result activity up to, but not including, the next user message.
+
+## MCP Retrieval Index
+
+The final section of a deterministic Accordion group digest that maps recognizable MCP identities to exact grouped-member recall codes without changing canonical message order.
+
+## Canonical MCP Identity
+
+A stable MCP invocation identity composed from server, tool, and a deterministic fingerprint of canonical arguments, with safe identifying arguments displayed for agent recognition.
+
 ## Capability Visibility
 
 A `my-pi` configuration layer that controls which managed custom extension tools are exposed to the agent and which managed commands are registered for human slash-command use.

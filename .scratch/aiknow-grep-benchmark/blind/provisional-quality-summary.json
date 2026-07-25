@@ -1,0 +1,24 @@
+{
+  "status": "PROVISIONAL_AI_ASSISTED_REQUIRES_HUMAN_APPROVAL",
+  "overall_means": {
+    "aiknow": 9.444444444444445,
+    "grep": 9.444444444444445
+  },
+  "aiknow_minus_grep": 0.0,
+  "global_plus_0_5_gate": false,
+  "scenario_means": {
+    "architecture": {
+      "aiknow": 10,
+      "grep": 8.666666666666666
+    },
+    "impact": {
+      "aiknow": 8.666666666666666,
+      "grep": 10
+    },
+    "lifecycle": {
+      "aiknow": 9.666666666666666,
+      "grep": 9.666666666666666
+    }
+  },
+  "scenario_floor_gate": false
+}

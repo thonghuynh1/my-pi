@@ -1,0 +1,114 @@
+{
+  "records": 18,
+  "tool_isolation_pass": true,
+  "tool_isolation_failures": [],
+  "means": {
+    "aiknow": {
+      "tool_calls": 47.111111111111114,
+      "duration_seconds": 168.21666666666667,
+      "total_cost_usd": 0.10072711111111111,
+      "sum_request_input_tokens": 268645.22222222225,
+      "assistant_api_calls": 17.555555555555557
+    },
+    "grep": {
+      "tool_calls": 26.444444444444443,
+      "duration_seconds": 86.47222222222223,
+      "total_cost_usd": 0.11181755555555556,
+      "sum_request_input_tokens": 284208.3333333333,
+      "assistant_api_calls": 7.666666666666667
+    }
+  },
+  "aiknow_over_grep_ratios": {
+    "tool_calls": 1.7815126050420171,
+    "duration_seconds": 1.9453260520398328,
+    "total_cost_usd": 0.9008166080062959,
+    "sum_request_input_tokens": 0.9452404828226557,
+    "assistant_api_calls": 2.289855072463768
+  },
+  "aiKnow_ceilings": [
+    {
+      "name": "lifecycle-aiknow-r1",
+      "tool_calls": 53,
+      "duration_seconds": 191.801,
+      "total_cost_usd": 0.1055,
+      "sum_request_input_tokens": 238429,
+      "assistant_api_calls": 15,
+      "pass": false
+    },
+    {
+      "name": "lifecycle-aiknow-r2",
+      "tool_calls": 40,
+      "duration_seconds": 152.201,
+      "total_cost_usd": 0.08244,
+      "sum_request_input_tokens": 163394,
+      "assistant_api_calls": 13,
+      "pass": false
+    },
+    {
+      "name": "lifecycle-aiknow-r3",
+      "tool_calls": 39,
+      "duration_seconds": 158.573,
+      "total_cost_usd": 0.073694,
+      "sum_request_input_tokens": 143934,
+      "assistant_api_calls": 11,
+      "pass": false
+    },
+    {
+      "name": "architecture-aiknow-r1",
+      "tool_calls": 48,
+      "duration_seconds": 182.031,
+      "total_cost_usd": 0.114608,
+      "sum_request_input_tokens": 361216,
+      "assistant_api_calls": 16,
+      "pass": false
+    },
+    {
+      "name": "architecture-aiknow-r2",
+      "tool_calls": 42,
+      "duration_seconds": 169.784,
+      "total_cost_usd": 0.086709,
+      "sum_request_input_tokens": 183089,
+      "assistant_api_calls": 13,
+      "pass": false
+    },
+    {
+      "name": "architecture-aiknow-r3",
+      "tool_calls": 50,
+      "duration_seconds": 179.929,
+      "total_cost_usd": 0.104016,
+      "sum_request_input_tokens": 312852,
+      "assistant_api_calls": 18,
+      "pass": false
+    },
+    {
+      "name": "impact-aiknow-r1",
+      "tool_calls": 37,
+      "duration_seconds": 127.287,
+      "total_cost_usd": 0.100829,
+      "sum_request_input_tokens": 338406,
+      "assistant_api_calls": 28,
+      "pass": false
+    },
+    {
+      "name": "impact-aiknow-r2",
+      "tool_calls": 51,
+      "duration_seconds": 183.521,
+      "total_cost_usd": 0.10337,
+      "sum_request_input_tokens": 248061,
+      "assistant_api_calls": 20,
+      "pass": false
+    },
+    {
+      "name": "impact-aiknow-r3",
+      "tool_calls": 64,
+      "duration_seconds": 168.823,
+      "total_cost_usd": 0.135378,
+      "sum_request_input_tokens": 428426,
+      "assistant_api_calls": 24,
+      "pass": false
+    }
+  ],
+  "efficiency_axis_pass": false,
+  "cost_axis_pass": false,
+  "quality_axis": "PENDING_BLINDED_HUMAN_SCORING"
+}

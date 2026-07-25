@@ -1,92 +1,82 @@
 ## 1. Executive summary
 
-On startup, `handleStaleRun` reads `.ralph-loop/runs/active.json`, rejects an active owner, fails closed without a TTY, normalizes crash artifacts, then offers only actions valid for the persisted state. Ordinary stale runs may resume, roll back when a snapshot exists, abandon, or cancel. Partial Force-Kill Undo runs cannot resume; they may finish rollback only after durable process-drain evidence and a snapshot are present.  
-Evidence: `src/core/utils/stale-run-recovery.ts:392-438`; `docs/adr/0006-durable-loop-run-tracker-and-stale-run-recovery.md:32-41,54-57`.
+On startup, `handleStaleRun()` reads the active tracker, rejects live ownership, requires interactive input for stale recovery, normalizes crash-only state, and offers actions based on tracker state. A normal stale run can resume, rollback if a snapshot exists, abandon, or cancel. A partially completed Force-Kill Undo is restricted to Finish Rollback, abandon, or cancel.
 
-For normal resume, interrupted writer phases are cleaned and replayed from safe boundaries. The new process adopts the existing tracker ownership, constructs a `LoopRun`, builds scheduler state from the persisted task table, and continues writing the same tracker through atomic, revision-incrementing updates before notifying subscribers.  
-Evidence: `src/core/utils/stale-run-recovery.ts:264-302`; `src/core/loop-run/resume-plan.ts:35-77`; `src/core/loop-run/loop-run.ts:4-7,96-102`.
+For resume, recovery first repairs unsafe workspace boundaries, then adopts the existing tracker ownership. `ralphLoop()` constructs a `LoopRun` over that same tracker, builds scheduler state from persisted tasks, and thereafter routes durable lifecycle writes through `LoopRun`, which writes atomically before synchronously notifying subscribers.
 
 ## 2. Detailed flow / architecture / impact analysis
 
 1. **Detection and action selection**
-   - Missing tracker: proceed with a fresh run.
-   - Non-stale tracker: abort to prevent two owners.
-   - Default non-TTY startup: abort rather than silently choosing recovery.
-   - `normalizeCrashRules()` runs before the recovery menu. It finds task `liveSteering` records still marked `submitted`, persists them as `unknown-after-crash`, and refreshes in-memory state. Already-terminal steering statuses are unchanged; task phases are unaffected.
-   - Ordinary stale run actions are `resume`, `abandon`, and `cancel`; `rollback` is inserted only when `rollbackSnapshotId` exists. A missing snapshot disables loop-start rollback but does not disable tracker-based resume.
-   - A partial panic undo is identified by `panicUndo.phase !== "rollback-completed"`. It suppresses ordinary `resume` and `rollback`; it offers `finishRollback` only when phase is `processes-drained` and a snapshot exists, always retaining `abandon` and `cancel`.
-   - Evidence: `src/core/utils/stale-run-recovery.ts:112-164,392-438`; `src/core/loop-run/state.ts:112-123`; `docs/adr/0006-durable-loop-run-tracker-and-stale-run-recovery.md:32-40,54-57`.
+   - `handleStaleRun()` proceeds if no tracker exists; aborts if the owner is still active; and fails fast without a TTY rather than selecting a default recovery action. `StaleRun.fromTracker()` confirms staleness using owner PID and heartbeat.
+   - For an ordinary stale run, actions are `resume`, `abandon`, and `cancel`; `rollback` is inserted only when `rollbackSnapshotId` exists. Missing snapshots therefore disable loop-start rollback but do not inherently prevent tracker-based resume.
+   - For a partial panic undo, `resume` and ordinary `rollback` are not offered. The choices are `abandon` and `cancel`, plus `finishRollback` only when the panic-undo phase is `processes-drained` and a rollback snapshot exists.
+   - `cancel` aborts startup. `abandon` archives the stale tracker and permits a fresh run. `rollback` restores the snapshot, archives the tracker, cleans workspaces, and starts fresh.
 
-2. **Selected action**
-   - `cancel` aborts startup without changing the run.
-   - `abandon` archives the stale tracker and starts a new run.
-   - Ordinary `rollback` adopts the recorded snapshot, restores Git state, archives the tracker only on success, cleans up, and releases the lock.
-   - `resume` calls `prepareResume`; if recovery cannot safely continue, the developer may abandon. After preparation succeeds, the new process calls `tracker.adoptOwnership()`.
-   - Evidence: `src/core/utils/stale-run-recovery.ts:166-303`.
+2. **Crash normalization**
+   - `normalizeCrashRules()` scans task live-steering records for `submitted` entries. If any exist, it calls `normalizeLiveSteeringPostCrash()`, which changes those records to `unknown-after-crash` while preserving terminal records.
+   - This occurs in `handleStaleRun()` after stale detection and before available actions are calculated or prompted. The normalization itself is persisted through the tracker’s normal revisioned atomic update.
 
-3. **Crash normalization**
-   - `normalizeCrashRules()` is a narrow pre-choice repair. It does nothing for state-only `StaleRun` instances or when no `submitted` records exist.
-   - The pure state rule maps only `submitted → unknown-after-crash`; it does not infer whether the steering command reached the agent.
-   - Evidence: `src/core/utils/stale-run-recovery.ts:157-164,428-431`; `src/core/loop-run/state.ts:112-123`.
+3. **Resume preparation**
+   - `prepareResume()` handles persisted phases:
+     - `implementing`: deletes/recreates the task worktree boundary.
+     - `merge-pending`/`merging`: aborts an in-progress merge, requires a clean primary workspace, resets to `preMergeHead`, and cleans the task worktree.
+     - `verify-pending`/`verifying`: leaves the task for verification replay.
+     - `mark-done-pending`: leaves completion marking to the resume plan.
+     - `done`: validates `integratedHead` remains reachable from `HEAD`; the developer may trust it or restart the task.
+     - interrupted or failed whole-run review is rerun.
+   - After preparation succeeds, `execute("resume")` calls `tracker.adoptOwnership()`, changing status to `running`, replacing the owner PID/heartbeat, and incrementing the tracker revision.
 
-4. **Resume preparation and replay planning**
-   - `implementing`: delete/recreate the task worktree, discarding interrupted writer output.
-   - `merge-pending`/`merging`: abort an in-progress merge, require a clean primary workspace, reset to `preMergeHead`, then clean the task worktree.
-   - `verify-pending`/`verifying`: verification is rerun.
-   - `mark-done-pending`: completion marking is retried.
-   - `done`: its `integratedHead` must remain reachable from `HEAD`; otherwise the developer chooses restart or trust.
-   - Interrupted/failed/blocked whole-run review is rerun.
-   - `buildResumePlan` marks existing `done` tasks terminal, processes `mark-done-pending` tasks by calling `isDone` when available or `markDone` otherwise, records `done` through `LoopRun`, and then builds:
-     - `replayQueue`: nonterminal tasks;
-     - `terminalIds`: completed tasks plus newly completed pending-mark tasks;
-     - `resumeIterations`: persisted `scheduler.iterationsStarted`;
-     - `resumeSkippedIds`: persisted skipped IDs.
-   - Evidence: `src/core/utils/stale-run-recovery.ts:307-371,454-501`; `src/core/loop-run/resume-plan.ts:35-77`; `src/core/ralph-loop.ts:386-387,687-745`.
+4. **Persisted task table to scheduler state**
+   - `buildResumePlan()` initially places `done` tasks in `terminalIds`.
+   - For every `mark-done-pending` task, it calls `issueSource.isDone()` when available. If incomplete, it retries `markDone()` using the persisted issue ID, title, and body; then records the durable phase transition to `done` and adds the issue to `terminalIds`.
+   - It rereads the tracker after those writes. All nonterminal tasks become `replayQueue`; scheduler iteration count and skipped IDs come from the refreshed persisted scheduler snapshot. Thus failed tasks are replayable, while completed tasks are terminal.
 
-5. **Sole tracker ownership and scheduler control**
-   - After resume preparation, `adoptOwnership()` changes the existing logical run to `status: "running"`, records the new PID and heartbeat, and increments the revision; it does not create a new run ID or tracker.
-   - `ralphLoop` then constructs `LoopRun` over that same tracker. `startOrResume()` reads the existing tracker and adopts its existing rollback snapshot rather than creating a new snapshot/tracker.
-   - The scheduler consumes `replayQueue` first, seeds claimed/terminal IDs from the plan, restores iteration/skipped state, and only then fetches new issues.
-   - Tracker updates use `update()`: read current state, increment `revision`, write a temporary file, then atomically rename it into place.
-   - `LoopRun` is the authoritative writer. Its lifecycle methods persist first and emit facts second. Subscribers are invoked synchronously in registration order only after the durable write succeeds.
-   - Evidence: `src/core/utils/loop-run-tracker.ts:122-164,344-365`; `src/core/loop-run/loop-run.ts:4-7,46-50,96-151,276-310,607-610`; `src/core/ralph-loop.ts:344-386`.
+5. **Sole tracker ownership and event ordering**
+   - The resumed process creates `LoopRun` with the existing `LoopRunTracker`, then calls `startOrResume()`. Existing rollback snapshots are adopted rather than creating a new run snapshot.
+   - Tracker updates increment `revision` from the current value and use temporary-file write plus rename replacement. This preserves monotonic, crash-safe state.
+   - `LoopRun` is the authoritative lifecycle writer. Its phase/meta operations persist through the tracker first, and emit events only after the write succeeds. Subscribers execute synchronously in registration order, so observers cannot precede durable state.
+   - The scheduler then operates using `replayQueue`, `terminalIds`, restored iteration count, and restored skipped IDs while the same logical tracker continues advancing.
 
-6. **Why partial Force-Kill Undo is special**
-   - Force-Kill Undo may have killed writers but not completed repository restoration. Treating that state as an ordinary stale run could resume against an ambiguous or partially restored workspace.
-   - `Finish Rollback` requires fresh confirmation, `panicUndo.phase === "processes-drained"`, a recorded snapshot, and successful snapshot restoration. A stale PID alone is insufficient proof that active writers were drained.
-   - Failed finish rollback records `rollback-failed` and keeps the active tracker for another explicit attempt. Successful rollback records `rollback-completed`, archives the run as interrupted with terminal reason `panic-undo`, and retains forensic panic state.
-   - Evidence: `src/core/utils/stale-run-recovery.ts:132-148,224-262`; `src/core/loop-run/loop-run.ts:195-258`; `docs/adr/0006-durable-loop-run-tracker-and-stale-run-recovery.md:52-57`.
+6. **Partial Force-Kill Undo and Finish Rollback**
+   - A panic-undo record whose phase is not `rollback-completed` represents an unfinished destructive transaction, not ordinary stale work; resuming tasks could conflict with live writers or leave repository state ambiguous.
+   - Finish Rollback requires explicit confirmation, `panicUndo.phase === "processes-drained"`, and a recorded rollback snapshot. It adopts and executes the snapshot rollback, records rollback failure if needed, or records `rollback-completed`, marks the run interrupted with reason `panic-undo`, and archives it.
+   - The tracker records panic-undo facts durably before corresponding Loop Run events in normal Loop Run operation.
 
-7. **Dirty merge safety check**
-   - During merge recovery, any remaining `git.isDirty()` result blocks the reset to `preMergeHead`, because that reset could overwrite manual primary-workspace edits.
-   - The recovery loop asks the developer to clean the workspace and retry or abandon. An in-progress merge is aborted before this check, so merge-conflict dirt is not treated as manual work.
-   - Evidence: `src/core/utils/stale-run-recovery.ts:469-501`; `docs/adr/0006-durable-loop-run-tracker-and-stale-run-recovery.md:35-40`.
+7. **Dirty primary workspace safety gate**
+   - Merge recovery first aborts any in-progress merge, then checks `git.isDirty()`. Uncommitted primary-workspace changes block recovery because resetting to `preMergeHead` could overwrite developer edits.
+   - Interactive recovery offers retry after the workspace is cleaned or abandon. Non-interactive recovery throws immediately.
 
-## 3. Evidence table with columns Claim | Symbol | File:line
+## 3. Evidence table
 
 | Claim | Symbol | File:line |
 |---|---|---|
-| Stale detection uses owner PID and heartbeat | `LoopRunTracker.isStale` | `src/core/utils/loop-run-tracker.ts:155-164` |
-| Recovery is fail-closed in non-TTY startup | `handleStaleRun` | `src/core/utils/stale-run-recovery.ts:404-418` |
-| Crash normalization precedes action selection | `handleStaleRun` | `src/core/utils/stale-run-recovery.ts:428-431` |
-| Submitted steering becomes unknown-after-crash | `normalizeSteeringPostCrash` | `src/core/loop-run/state.ts:112-123` |
-| Partial panic undo suppresses resume | `StaleRun.getAvailableActions` | `src/core/utils/stale-run-recovery.ts:132-148` |
-| Finish rollback requires drained processes and snapshot | `StaleRun.canFinishRollback` | `src/core/utils/stale-run-recovery.ts:128-138` |
-| Mark-done-pending is reconciled through the issue source | `buildResumePlan` | `src/core/loop-run/resume-plan.ts:48-63` |
-| Replay and scheduler state come from persisted tasks/scheduler | `buildResumePlan` | `src/core/loop-run/resume-plan.ts:65-77` |
-| Resume adopts existing tracker ownership | `adoptOwnership` | `src/core/utils/loop-run-tracker.ts:150-164` |
-| Existing snapshot is adopted instead of recaptured | `LoopRun.startOrResume` | `src/core/loop-run/loop-run.ts:117-151` |
-| Tracker revisions are monotonic and writes atomic | `LoopRunTracker.update`, `atomicWrite` | `src/core/utils/loop-run-tracker.ts:122-137,344-365` |
-| Subscribers observe only after writes, in registration order | `LoopRun.subscribe`, `emit` | `src/core/loop-run/loop-run.ts:76-102,607-610` |
-| Dirty primary workspace blocks merge reset | `prepareMergingResume` | `src/core/utils/stale-run-recovery.ts:478-501` |
+| Stale detection rejects live ownership and requires interactive recovery | `handleStaleRun` | `src/core/utils/stale-run-recovery.ts:398-423` |
+| Normal stale actions depend on snapshot presence | `StaleRun.getAvailableActions` | `src/core/utils/stale-run-recovery.ts:141-154` |
+| Partial panic undo restricts actions and gates Finish Rollback | `isPartialPanicUndo`, `canFinishRollback` | `src/core/utils/stale-run-recovery.ts:128-147` |
+| Crash normalization changes submitted steering records | `normalizeCrashRules` / `normalizeSteeringPostCrash` | `src/core/utils/stale-run-recovery.ts:157-167`; `src/core/loop-run/state.ts:112-122` |
+| Normalization precedes prompting | `handleStaleRun` | `src/core/utils/stale-run-recovery.ts:428-440` |
+| Resume adopts the stale tracker’s ownership | `execute("resume")` | `src/core/utils/stale-run-recovery.ts:287-303` |
+| Implementation and merge recovery boundaries | `prepareResume`, `prepareMergingResume` | `src/core/utils/stale-run-recovery.ts:306-377,468-502` |
+| Dirty primary workspace blocks merge recovery | `prepareMergingResume` | `src/core/utils/stale-run-recovery.ts:474-492` |
+| `mark-done-pending` is completed idempotently and made terminal | `buildResumePlan` | `src/core/loop-run/resume-plan.ts:34-75` |
+| Replay queue and scheduler progress are restored from persisted state | `buildResumePlan` | `src/core/loop-run/resume-plan.ts:76-91` |
+| Existing tracker is reused by the new `LoopRun` | `ralphLoop`, `startOrResume` | `src/core/ralph-loop.ts:334-386`; `src/core/loop-run/loop-run.ts:105-151` |
+| Revisions are monotonic and writes are atomic | `LoopRunTracker.update`, `atomicWrite` | `src/core/utils/loop-run-tracker.ts:132-144,375-389` |
+| Durable write precedes event emission | `recordTaskPhase`, `emit` | `src/core/loop-run/loop-run.ts:276-289,607-611` |
+| Subscribers run synchronously in registration order | `subscribe` and class contract | `src/core/loop-run/loop-run.ts:75-101` |
+| Finish Rollback requires confirmation and records terminal panic-undo state | `execute("finishRollback")` | `src/core/utils/stale-run-recovery.ts:224-285` |
 
 ## 4. Tests and documentation
 
-- Recovery action availability, partial panic-undo restrictions, ownership adoption, merge recovery, dirty-worktree blocking, and crash normalization: `test/stale-run-recovery.test.ts:451-730,1272-1335,1573-1760`.
-- `mark-done-pending` handling and persisted task-body propagation: `test/resume-plan.test.ts:1-91`.
-- Atomic revision updates and stale heartbeat detection: `test/loop-run-tracker.test.ts:436-545`.
-- Architecture and policy: `docs/adr/0006-durable-loop-run-tracker-and-stale-run-recovery.md:19-57`; sole-writer/event ordering: `docs/adr/0007-loop-run-coordinator-and-fact-events.md:16-19,32-35`.
+- `test/stale-run-recovery.test.ts:455-492` verifies ownership adoption on resume.
+- `test/stale-run-recovery.test.ts:704-734` verifies dirty merge recovery is blocked.
+- `test/stale-run-recovery.test.ts:1276-1376` verifies partial panic-undo action availability.
+- `test/stale-run-recovery.test.ts:1391-1481` verifies Finish Rollback confirmation and failure behavior.
+- `test/resume-plan.test.ts:17-99` verifies persisted task body propagation, idempotent completion checks, and `done` advancement.
+- `test/recovery-integration.test.ts:258-305` verifies the primary-workspace safety gate.
+- `docs/adr/0006-durable-loop-run-tracker-and-stale-run-recovery.md:32-43` defines recovery actions, safe/unsafe restart rules, ownership, atomic revisions, and dirty-merge protection.
+- `docs/adr/0007-loop-run-coordinator-and-fact-events.md:33-36` defines sole-writer, write-then-emit, panic-undo, and resume-plan responsibilities.
 
 ## 5. Uncertainties
 
-- The ordinary resume path clearly hands ownership to `LoopRun` before scheduler replay. The startup `finishRollback` branch still performs its rollback tracker writes directly in `StaleRun.execute`; ADR-0007 states that partial-undo lifecycle advancement should first be adopted into a `LoopRun`. This appears to be an implementation/architecture mismatch worth validating separately.
+- The implementation performs Finish Rollback directly through startup recovery methods, while ADR-0007 describes adopting the stale run into a `LoopRun` before completing partial panic undo. The normal resume path clearly adopts ownership before `LoopRun` execution; the Finish Rollback path’s conformance to that ADR wording is not fully evident from the current code.

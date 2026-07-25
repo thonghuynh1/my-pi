@@ -1,77 +1,107 @@
 ## 1. Executive summary
 
-`UsageTotals` is defined in `src/core/loop-run/state.ts:244-253` and is produced by two separate accumulation paths:
+Add `executionCount: number` to `UsageTotals`, initialized to `0` and incremented once per `UsageLedgerEntry` in every applicable bucket:
 
-- Durable ledger summaries: `src/core/loop-run/usage.ts:27-84`
-- Ephemeral Ink dashboard projections: `src/core/loop-run/ink-worker-projection.ts:29-76`
+- `run`
+- `byIssue[issueId]`
+- `byPhase[phase]`
 
-Add `executionCount: number` to both zero-value constructors and increment it only in ledger-entry accumulation. Do not increment it in `accumulateStreamingUsage`.
+Streaming usage must preserve the existing count; it is ephemeral and not ledger-backed. The UI should derive average cost as `costUsd / executionCount`, while retaining unknown-cost behavior.
 
-The UI currently renders committed and in-progress cost in `src/core/loop-run/ink-view.ts:87-103` and worker cost in `src/core/loop-run/ink-view.ts:356-362`. Add average-cost formatting using `costUsd / executionCount`, returning `"unknown"` when cost is unknown or the count is zero.
+Required production files:
+
+- `src/core/loop-run/state.ts`
+- `src/core/loop-run/usage.ts`
+- `src/core/loop-run/ink-worker-projection.ts`
+- `src/core/loop-run/ink-state.ts`
+- `src/core/loop-run/ink-view.ts`
+
+Primary tests requiring updates/additions:
+
+- `test/usage.test.ts`
+- `test/loop-run.test.ts`
+- `test/ink-state.test.ts`
+- `test/ink-ui.test.ts`
 
 ## 2. Detailed flow / architecture / impact analysis
 
-1. `UsageLedgerEntry` represents one completed execution and is persisted in `RunSnapshot.usageLedger` (`src/core/loop-run/state.ts:233-242`, `:298-299`).
-2. `LoopRun.recordUsage` appends one entry, then recomputes the entire summary with `buildUsageSummary` (`src/core/loop-run/loop-run.ts:506-533`).
-3. `buildUsageSummary` initializes run, issue, and phase buckets with `zeroTotals`, then calls `accumulateInto` once for each ledger entry (`src/core/loop-run/usage.ts:27-64`, `:67-84`).
-4. `executionCount` must therefore be incremented in `accumulateInto`; this automatically updates run, issue, and phase buckets.
-5. The Ink projection separately accumulates committed entries through `accumulateUsage` (`src/core/loop-run/ink-worker-projection.ts:52-64`).
-6. Streaming updates use `accumulateStreamingUsage` (`src/core/loop-run/ink-worker-projection.ts:66-78`) and are not ledger-backed. That function must preserve `executionCount` unchanged.
-7. `displayRunUsage` starts from zero totals and adds only streaming usage (`src/core/loop-run/ink-worker-projection.ts:253-263`), so its count should remain zero for ephemeral usage.
-8. Required implementation files:
-   - **`src/core/loop-run/state.ts:244-253`** — add `executionCount: number` to `UsageTotals`.
-   - **`src/core/loop-run/usage.ts:27-39`** — initialize `executionCount: 0` in `zeroTotals`.
-   - **`src/core/loop-run/usage.ts:41-64`** — increment `target.executionCount` once per ledger entry.
-   - **`src/core/loop-run/ink-worker-projection.ts:29-43`** — initialize the field in `zeroUsageTotals`.
-   - **`src/core/loop-run/ink-worker-projection.ts:52-64`** — increment count for committed ledger entries.
-   - **`src/core/loop-run/ink-worker-projection.ts:66-78`** — carry the existing count forward; do not increment it for streaming usage.
-   - **`src/core/loop-run/ink-state.ts:262-265`** — add a formatter for average cost, or extend the existing cost-formatting helpers.
-   - **`src/core/loop-run/ink-view.ts:87-103`** — render average cost alongside committed and in-progress cost. In-progress totals have no count, so average should be unavailable unless explicitly based on committed count.
-   - **`src/core/loop-run/ink-view.ts:356-362`** — render worker average cost alongside worker total cost.
-   - **`src/core/utils/loop-run-tracker.ts:47-54`** — consider normalizing or rebuilding legacy persisted summaries missing `executionCount`; current normalization only repairs task fields.
-9. `src/core/loop-run/index.ts:25-31` already exports `UsageTotals`, so no export change is required.
+1. `UsageTotals` is the shared contract for persisted summaries and UI projections (`state.ts:244-254`). Add `executionCount: number`.
+
+2. `buildUsageSummary()` is the authoritative ledger-derived aggregation (`usage.ts:67-96`):
+   - Add `executionCount: 0` in `zeroTotals()` (`usage.ts:27-38`).
+   - Increment `target.executionCount` in `accumulateInto()` (`usage.ts:41-58`) for every ledger entry.
+   - Because the same function feeds run, issue, and phase buckets (`usage.ts:80-94`), counts will automatically be correct for all three.
+   - Entries with null usage still count, because they are ledger records.
+
+3. `LoopRun.recordUsage()` already appends exactly one ledger entry per completed execution and recomputes the summary (`loop-run.ts:484-541`). No count-specific change is required there; its behavior is covered by the updated summary builder.
+
+4. The Ink projection duplicates aggregation for committed entries (`ink-worker-projection.ts:29-64`):
+   - Initialize `executionCount` in `zeroUsageTotals()` (`ink-worker-projection.ts:29-40`).
+   - Increment it in `accumulateUsage()` (`ink-worker-projection.ts:52-64`).
+   - Do not increment it in `accumulateStreamingUsage()` (`ink-worker-projection.ts:66-78`), ensuring ephemeral updates do not inflate counts.
+   - `displayRunUsage()` combines only streaming values over a fresh zero total (`ink-worker-projection.ts:253-264`), so its count remains zero for streaming-only usage.
+
+5. Cost formatting currently exposes only total cost:
+   - `formatUsageCost()` is the shared run/worker formatter (`ink-state.ts:262-265`).
+   - Extend it, or add a dedicated formatter, to display total and average cost. Return `"unknown"` when `hasUnknownCost` is true; otherwise calculate average only when `executionCount > 0`.
+   - `formatDisplayCost()` handles worker committed plus streaming cost (`ink-worker-projection.ts:292-295`). Its average must use committed `worker.usage.executionCount`; streaming usage must not affect the denominator.
+
+6. Run-summary rendering is in `renderRunUsageLines()` (`ink-view.ts:87-104`). Add average cost alongside total cost for committed run usage. In-progress usage should not show an execution average, or should explicitly show no average/count, because it has no ledger-backed executions.
+
+7. The persisted tracker is initialized through `buildUsageSummary([])` (`loop-run-tracker.ts:111-114`), so adding the field to `zeroTotals()` automatically initializes new snapshots correctly.
 
 ## 3. Evidence table with columns Claim | Symbol | File:line
 
 | Claim | Symbol | File:line |
 |---|---|---|
-| `UsageTotals` contains all aggregate fields | `UsageTotals` | `src/core/loop-run/state.ts:244-253` |
-| Ledger entries identify one execution | `UsageLedgerEntry` | `src/core/loop-run/state.ts:233-242` |
-| Run, issue, and phase buckets share `UsageTotals` | `UsageSummary` | `src/core/loop-run/state.ts:255-259` |
-| Durable summaries are initialized with zero totals | `zeroTotals` | `src/core/loop-run/usage.ts:27-39` |
-| Each ledger entry is accumulated into buckets | `accumulateInto`, `buildUsageSummary` | `src/core/loop-run/usage.ts:41-84` |
-| Recording usage appends to the ledger and recomputes summary | `recordUsage` | `src/core/loop-run/loop-run.ts:506-533` |
-| Ink committed usage accumulates ledger entries | `accumulateUsage` | `src/core/loop-run/ink-worker-projection.ts:52-64` |
-| Streaming usage is accumulated separately | `accumulateStreamingUsage` | `src/core/loop-run/ink-worker-projection.ts:66-78` |
-| Streaming display starts from zero and only includes ephemeral values | `displayRunUsage` | `src/core/loop-run/ink-worker-projection.ts:253-263` |
-| Run summary renders total cost | `renderRunUsageLines` | `src/core/loop-run/ink-view.ts:87-103` |
-| Worker dashboard renders total cost | worker cost render | `src/core/loop-run/ink-view.ts:356-362` |
-| Persisted snapshots are read without usage-summary normalization | `normalizeRunSnapshot`, `read` | `src/core/utils/loop-run-tracker.ts:47-54`, `:112-116` |
+| `UsageTotals` is the shared totals shape | `UsageTotals` | `src/core/loop-run/state.ts:244-254` |
+| Summaries contain run, issue, and phase buckets | `UsageSummary` | `src/core/loop-run/state.ts:256-260` |
+| Ledger entries represent executions | `UsageLedgerEntry` | `src/core/loop-run/state.ts:233-242` |
+| Summary is recomputed from the full ledger | `buildUsageSummary` | `src/core/loop-run/usage.ts:67-96` |
+| All buckets use the same accumulation path | `accumulateInto` | `src/core/loop-run/usage.ts:41-58,80-94` |
+| One ledger entry is appended per `recordUsage` call | `recordUsage` | `src/core/loop-run/loop-run.ts:484-541` |
+| Committed UI usage accumulation exists separately | `accumulateUsage` | `src/core/loop-run/ink-worker-projection.ts:52-64` |
+| Streaming accumulation is separate | `accumulateStreamingUsage` | `src/core/loop-run/ink-worker-projection.ts:66-78` |
+| Streaming display starts from zero totals | `displayRunUsage` | `src/core/loop-run/ink-worker-projection.ts:253-264` |
+| Worker cost includes streaming cost | `formatDisplayCost` | `src/core/loop-run/ink-worker-projection.ts:287-295` |
+| Run cost is rendered in the summary | `renderRunUsageLines` | `src/core/loop-run/ink-view.ts:87-104` |
+| Shared cost formatting is centralized | `formatUsageCost` | `src/core/loop-run/ink-state.ts:262-265` |
+| Empty tracker summaries are initialized through the builder | `LoopRunTracker.create` | `src/core/utils/loop-run-tracker.ts:111-114` |
 
 ## 4. Tests and documentation
 
-Tests requiring expected-object updates:
+Tests that will break because exact `UsageTotals` object expectations gain a required field:
 
-- `test/usage.test.ts:23-37` — add `executionCount: 0` to the empty summary expectation.
-- `test/loop-run-tracker.test.ts:58-158` — add the field to every zeroed bucket in the initialization expectation.
-- `test/loop-run-tracker.test.ts:160-229` and `:264-318` — update manually constructed `UsageTotals` fixtures.
+- `test/usage.test.ts:21-38` — empty summary exact object.
+- `test/usage.test.ts:133-143` — live-steering zero-total object expectation.
 
-New tests should cover:
+Existing tests to update with count assertions:
 
-- Empty ledger gives count `0`.
-- Two ledger entries produce run count `2`.
-- Counts are independently correct in `byIssue` and `byPhase`.
-- Entries with null token/cost fields still count as executions.
-- Streaming usage changes cost/tokens but leaves `executionCount` unchanged.
-- Average cost is correct for known cost and positive count.
-- Average cost is `"unknown"` when cost is unknown or count is zero.
-- Legacy persisted snapshots either normalize or rebuild missing counts.
+- `test/usage.test.ts:40-49` — run count should be `2`.
+- `test/usage.test.ts:78-87` — issue counts should be `2` and `1`.
+- `test/usage.test.ts:89-100` — phase counts should match entries.
+- `test/usage.test.ts:110-121` — null/known values still count both entries.
+- `test/loop-run.test.ts:549-570` — persisted run, issue, and phase counts.
+- `test/loop-run.test.ts:518-533` — missing usage still produces count `1`.
 
-Existing projection/UI coverage is in `test/ink-state.test.ts:233-340` and `test/ink-ui.test.ts:116-146`; extend those tests for count preservation and average-cost rendering.
+New test cases:
 
-No documentation currently surfaced by the relevant symbols requires modification.
+- Empty ledger gives count `0` in every phase bucket.
+- Entries with all-null usage still increment counts.
+- One entry increments run, matching issue, and matching phase exactly once.
+- An entry without `issueId` increments run and phase but no issue bucket.
+- Streaming usage leaves `executionCount` unchanged:
+  - `test/ink-state.test.ts:303-333`
+  - `test/ink-ui.test.ts:121-148`
+- A committed entry followed by streaming usage keeps the same count.
+- Average cost is `costUsd / executionCount`.
+- Unknown cost displays `"unknown"` even when count is nonzero.
+- Zero executions do not produce `NaN` or `Infinity`.
+
+Relevant documentation establishes that the ledger is execution-based and summaries are ledger-derived: `docs/adr/0009-inline-usage-ledger-in-loop-run-tracker.md:24-30`.
 
 ## 5. Uncertainties
 
-- The request does not specify whether an in-progress average should use committed executions only or remain unavailable. The safer interpretation is that streaming usage contributes no count, so an in-progress-only average is unavailable.
-- Persisted old snapshots may lack the new field. Because `normalizeRunSnapshot` currently does not normalize usage summaries, backward compatibility requires an explicit migration or recomputation from `usageLedger`.
+- The exact UI text for average cost is not specified. A format such as `cost $1.00 · avg $0.50/execution` is consistent with the existing run-summary format.
+- It is unclear whether the average should appear on worker Details cards as well as the run summary. `formatDisplayCost()` is the worker-specific cost path, so supporting both is the safest interpretation.
+- For zero executions, the UI should use a stable placeholder such as `n/a`; the repository currently has no established convention for this case.

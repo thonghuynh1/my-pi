@@ -1,76 +1,78 @@
 ## 1. Executive summary
 
-The implemented pipeline is complete through parsing and durable tracker persistence, but **not through criterion fact emission or criterion-specific dashboard projection**:
+The implemented pipeline stops short of the requested end-to-end flow:
 
-`runAgentExecution()` stdout → `runVerification()` parses criteria → `TaskPipeline` calls `LoopRun.recordCriterionVerdicts()` → tracker persists criteria and evidence.
-
-`recordCriterionVerdicts()` emits no event. `LoopRunEvent` has no criterion-verdict event, and the Ink dashboard projection has no criterion-verdict field or reducer. Only subsequent task phase/meta events reach the dashboard.
+- Raw verifier stdout is returned by `runAgentExecution()` and parsed by `runVerification()`.
+- `TaskPipeline.executeTask()` passes parsed criteria to `LoopRun.recordCriterionVerdicts()`.
+- `LoopRun` persists criteria and evidence atomically, with stable criterion identities.
+- No per-criterion fact event is emitted.
+- The Live Dashboard projection only consumes phase, metadata, usage, and log events; it has no criterion-verdict projection.
+- A task reaches `done` only after an explicit verifier `PASS`, successful issue-source completion marking, and a durable `mark-done-pending → done` transition.
 
 ## 2. Detailed flow / architecture / impact analysis
 
-1. **Raw verifier stdout**
-   - `runVerification()` receives `execResult.output` from `runAgentExecution()` and assigns it to `raw`.
-   - It parses `<criterion>` blocks with `parseCriterionVerdicts()`, normalizing statuses to `met`, `unmet`, or `regressed`; malformed statuses become `unmet`.
-   - The overall `<verdict>` tag independently controls `passed`.
+1. **Agent boundary — raw stdout**
+   - `runAgentExecution()` delegates to the configured agent client and returns its output string (`src/core/runs/runner.ts:92-115`).
+   - `runVerification()` stores that output as `raw` and parses `<criterion>` blocks using `parseCriterionVerdicts()` (`src/core/actions/verifier.ts:234-281`).
 
-2. **Task-pipeline boundary**
-   - `TaskPipeline.executeTask()` calls `runVerification()`, stores `v.criteria`, then invokes `loopRun.recordCriterionVerdicts(issue.id, v.criteria)`.
+2. **Verifier parsing and stability**
+   - Criterion attributes are parsed from `id` and `status`; invalid statuses normalize to `unmet` (`src/core/actions/verifier.ts:114-149`).
+   - Missing IDs initially receive ordinal IDs such as `criterion-1` (`src/core/actions/verifier.ts:114-149`).
+   - Explicit IDs are preserved. During persistence, `LoopRun.resolveCriterionIdentity()` replaces positional identities only when an explicit ID exists; otherwise it reuses the prior identity for that ordinal, or freezes `criterion-{ordinal}` on first observation (`src/core/loop-run/loop-run.ts:619-636`).
+   - This prevents wording changes between attempts from changing criterion identity.
 
-3. **Stable criterion identity**
-   - Explicit `id` values are preserved.
-   - Missing IDs receive positional IDs such as `criterion-1`.
-   - `LoopRun.resolveCriterionIdentity()` stores identities in `criterionIdentities`; later attempts reuse the stored ordinal identity, even if wording changes.
-   - This is ordinal persistence, not text hashing.
+3. **Task-pipeline boundary**
+   - After verification, `TaskPipeline.executeTask()` stores `v.criteria` and calls `loopRun.recordCriterionVerdicts(issue.id, v.criteria)` (`src/core/utils/task-pipeline.ts:371-378`).
+   - Verifier execution errors are retried once. A second error breaks without setting `verified`; malformed output without a verdict tag yields `inconclusive` and `passed: false` (`src/core/actions/verifier.ts:281-312`; `src/core/utils/task-pipeline.ts:375-385`).
 
-4. **Durable Loop Run Tracker**
-   - `recordCriterionVerdicts()` creates evidence artifacts for captured stdout, then writes `criteria`, `criterionIdentities`, and `evidenceRef` into the task record.
-   - `LoopRunTracker.update()` increments the revision and performs an atomic write.
-   - This satisfies write-before-observation only insofar as persistence is concerned.
+4. **Tracker persistence boundary**
+   - `recordCriterionVerdicts()` resolves stable IDs, writes non-empty criterion stdout to an evidence artifact, then updates the task’s inline `criteria` and `criterionIdentities` via `tracker.update()` (`src/core/loop-run/loop-run.ts:322-362`).
+   - Evidence paths are content-hash-based and written using temp-file-plus-rename (`src/core/loop-run/loop-run.ts:639-672`).
+   - `LoopRunTracker.update()` increments the revision and performs the atomic state write (`src/core/utils/loop-run-tracker.ts:121-134`).
+   - This satisfies write-before-use for persisted criterion state, but `recordCriterionVerdicts()` does **not** emit a corresponding fact event.
 
-5. **Fact-event boundary**
-   - No criterion-verdict fact is emitted. `recordCriterionVerdicts()` ends after `tracker.update()`.
-   - ADR-0007's write-then-emit discipline is implemented for task phase/meta methods, but not for criterion verdicts because there is no corresponding event or emit call.
-   - The available event union contains `taskPhaseChanged` and `taskMetaChanged`, but no criterion-verdict event.
+5. **ADR-0007 event boundary**
+   - ADR-0007 requires the coordinator to write durably first, then synchronously emit facts (`docs/adr/0007-loop-run-coordinator-and-fact-events.md:17-21`).
+   - `recordTaskPhase()` implements that discipline: tracker writes occur before `emit()` (`src/core/loop-run/loop-run.ts:275-300`).
+   - Criterion persistence has no event type in `LoopRunEvent` and no `emit()` call (`src/core/loop-run/loop-run.ts:322-362`; `src/core/loop-run/events.ts:27-81`).
+   - Therefore there is no emitted per-criterion fact for downstream subscribers.
 
-6. **Live Dashboard**
-   - Ink state handles `taskPhaseChanged`, `taskMetaChanged`, usage, streaming usage, and run completion.
-   - `WorkerDashboardRow` contains phase, metadata, and usage only; it has no criteria/verdict projection.
-   - Therefore criterion verdicts are not reflected directly in the Live Dashboard. The dashboard may show the later `failed` or `done` phase, but not the per-criterion verdict.
+6. **Completion boundary**
+   - The scheduler records `mark-done-pending`, calls `issueSource.markDone()`, and records `done` only after that call succeeds (`src/core/ralph-loop.ts:541-548`).
+   - Verification failure records `failed`, not `done` (`src/core/ralph-loop.ts:548-557`).
+   - Thus a malformed or crashed verifier cannot silently mark a task done through the normal path: missing verdicts and execution errors produce `passed: false`, and completion requires explicit `PASS`.
 
-7. **Protection against false completion**
-   - Missing `<verdict>` produces `inconclusive` and `passed: false`.
-   - Verifier execution errors produce `errored` and `passed: false`; after a retry, the task remains unverified and is marked failed.
-   - Task completion requires both `taskResult.success` and `taskResult.verified`; only then is the issue marked done.
-   - However, a verifier output containing `<verdict>PASS</verdict>` with malformed or missing criterion blocks can still set `passed: true`. The parser defaults malformed statuses to `unmet`, but completion does not independently require all persisted criteria to be `met`. This is a remaining correctness gap.
+7. **Dashboard boundary**
+   - `applyLoopRunEventToInkState()` handles phase, metadata, usage, streaming usage, and log-related events, but no criterion event (`src/core/loop-run/ink-state.ts:161-192`).
+   - `WorkerDashboardRow` contains phase, title, timestamps, and usage only; it has no criterion/verdict field (`src/core/loop-run/ink-worker-projection.ts:8-28`).
+   - Consequently, persisted criterion verdicts are not reflected in the Live Dashboard worker projection. Only the resulting phase transition, such as `verifying`, `failed`, or `done`, is visible.
 
 ## 3. Evidence table
 
 | Claim | Symbol | File:line |
 |---|---|---|
-| Verifier stdout becomes `raw` and is parsed into criteria | `runVerification`, `parseCriterionVerdicts` | `src/core/actions/verifier.ts:234-281` |
-| Malformed criterion statuses normalize to `unmet` | `normalizeCriterionStatus` | `src/core/actions/verifier.ts:83-88` |
-| Missing overall verdict is inconclusive and not passed | `runVerification` | `src/core/actions/verifier.ts:283-300` |
-| Pipeline forwards parsed criteria to the Loop Run | `executeTask` | `src/core/utils/task-pipeline.ts:371-379` |
-| Explicit IDs are preserved; omitted IDs use frozen ordinals | `recordCriterionVerdicts`, `resolveCriterionIdentity` | `src/core/loop-run/loop-run.ts:314-345; 620-636` |
-| Evidence stdout is written and referenced from tracker state | `recordCriterionVerdicts` | `src/core/loop-run/loop-run.ts:346-365` |
-| Tracker update increments revision and atomically writes | `LoopRunTracker.update` | `src/core/utils/loop-run-tracker.ts:132-140` |
-| Criterion persistence emits no fact event | `recordCriterionVerdicts` | `src/core/loop-run/loop-run.ts:322-365` |
-| Event union has no criterion-verdict event | `LoopRunEvent` | `src/core/loop-run/events.ts:99-124` |
-| Dashboard reducer handles phases/meta, not criteria | `applyLoopRunEventToInkState` | `src/core/loop-run/ink-state.ts:158-202` |
-| Worker projection has no criterion verdict fields | `WorkerDashboardRow` | `src/core/loop-run/ink-worker-projection.ts:8-19` |
-| Done requires successful, verified task | `handleTaskCompletion` | `src/core/ralph-loop.ts:135-148` |
-| ADR-0007 requires durable write before synchronous fact emission | ADR-0007 decision | `docs/adr/0007-loop-run-coordinator-and-fact-events.md:17-20` |
+| Agent output becomes a returned stdout string | `runAgentExecution` | `src/core/runs/runner.ts:92-115` |
+| Verifier parses raw output into criterion records | `runVerification`, `parseCriterionVerdicts` | `src/core/actions/verifier.ts:234-312` |
+| Invalid criterion status defaults to `unmet` | `normalizeCriterionStatus` | `src/core/actions/verifier.ts:114-149` |
+| Parsed criteria enter Loop Run persistence | `executeTask` | `src/core/utils/task-pipeline.ts:371-378` |
+| Positional criterion identities are frozen across attempts | `resolveCriterionIdentity` | `src/core/loop-run/loop-run.ts:619-636` |
+| Criterion stdout is written before tracker state update | `recordCriterionVerdicts` | `src/core/loop-run/loop-run.ts:322-362` |
+| Evidence writes use temp file plus rename | `writeCriterionEvidenceArtifact` | `src/core/loop-run/loop-run.ts:639-672` |
+| Tracker updates are revisioned and atomically written | `LoopRunTracker.update` | `src/core/utils/loop-run-tracker.ts:121-134` |
+| ADR requires write-then-emit | ADR-0007 decision | `docs/adr/0007-loop-run-coordinator-and-fact-events.md:17-21` |
+| Criterion verdicts have no fact event | `LoopRunEvent` | `src/core/loop-run/events.ts:27-81` |
+| Dashboard consumes phase/metadata/usage, not criteria | `applyLoopRunEventToInkState` | `src/core/loop-run/ink-state.ts:161-192` |
+| Worker projection has no criterion state | `WorkerDashboardRow` | `src/core/loop-run/ink-worker-projection.ts:8-28` |
+| Done requires pending phase, source marking, then done phase | scheduler completion path | `src/core/ralph-loop.ts:541-548` |
 
 ## 4. Tests and documentation
 
-- Verifier parsing, malformed status fallback, missing verdict handling, and explicit IDs: `test/verifier.test.ts:98-179`.
-- Positional identity freezing and evidence persistence: `test/loop-run.test.ts:400-489`.
-- Legacy tracker compatibility: `test/loop-run-tracker.test.ts:27-56`.
-- ADR-0007 defines the sole-writer and write-then-emit architecture: `docs/adr/0007-loop-run-coordinator-and-fact-events.md:17-20`.
-
-No cited test establishes a criterion-verdict fact event or dashboard criterion projection.
+- Verifier parsing, malformed statuses, missing verdicts, and explicit IDs: `test/verifier.test.ts:98-179`.
+- Stable positional identities and evidence references: `test/loop-run.test.ts:400-483`.
+- ADR-0007 documents sole-writer and write-then-emit semantics: `docs/adr/0007-loop-run-coordinator-and-fact-events.md:17-21`.
+- The tests validate persistence and identity stability, but do not demonstrate a per-criterion fact event or dashboard criterion projection.
 
 ## 5. Uncertainties
 
-- The dashboard may intentionally expose only aggregate task phase rather than individual criteria; the current source provides no criterion-specific projection contract.
-- The malformed-`PASS` completion gap is directly implied by the control flow, but no test was found covering that exact combination.
+- The verifier source comment says execution errors “fail open,” but the current implementation returns `passed: false` and the task pipeline fails closed after the bounded retry (`src/core/actions/verifier.ts:58-66`; `src/core/utils/task-pipeline.ts:375-385`).
+- The requested criterion-event/dashboard stages may be planned functionality rather than an implemented path; current source evidence shows they do not exist.

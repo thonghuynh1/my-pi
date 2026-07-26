@@ -9,11 +9,11 @@
     "broker": "node --import tsx/esm broker/index.ts"
   },
   "dependencies": {
+    "tsx": "^4.0.0",
     "typebox": "^1.1.24",
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "jiti": "^2.7.0",
-    "tsx": "^4.0.0"
+    "jiti": "^2.7.0"
   }
 }

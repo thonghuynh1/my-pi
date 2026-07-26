@@ -86,6 +86,8 @@ export class MyCustomizeConductor implements Conductor {
 	private rolloverCount = 0;
 	private tokensSavedByRollover = 0;
 	private lastEstimatedGroupSaving = 0;
+	/** Pre-group blocks needing restore, set per-conduct and consumed by finishConduct. */
+	private pendingPreGroupRestore: string[] = [];
 
 	constructor(opts: chunkedCompaction.MyCustomizeConductorOpts = {}) {
 		this.opts = { preGroupTokens: opts.preGroupTokens ?? DEFAULT_PRE_GROUP_TOKENS };
@@ -115,6 +117,13 @@ export class MyCustomizeConductor implements Conductor {
 				? `chunked · rollover · ${this.rolloverCount} rollover(s) · ${humanTokens(this.tokensSavedByRollover)} saved · pregroup ${preGroupTokens} → 0`
 				: `chunked · ${preGroupFillPct}% pregroup · ${this.rolloverCount} rollovers · ${humanTokens(this.tokensSavedByRollover)} saved`;
 			this.host.setStatus(text, metrics, null);
+		}
+		// Prepend restore for pre-group blocks that were folded while in the frozen prefix
+		// (clearConductorState preserves those folds, but the pre-group contract is "full until grouped").
+		const restoreIds = this.pendingPreGroupRestore;
+		this.pendingPreGroupRestore = [];
+		if (restoreIds.length > 0) {
+			return [{ kind: "restore", ids: restoreIds }, ...plan];
 		}
 		return plan;
 	}
@@ -161,6 +170,13 @@ export class MyCustomizeConductor implements Conductor {
 			: view.protectedFromIndex;
 		const preGroupBlocks = view.blocks.slice(preGroupFromIndex, view.protectedFromIndex);
 		const preGroupBlockIds = new Set(preGroupBlocks.map((b) => b.id));
+		// Pre-group blocks that are currently folded (e.g. from a prior pass when they were in
+		// the frozen prefix) must be actively restored — clearConductorState preserves folds in
+		// the frozen range, but the pre-group contract is "never fold until grouped".
+		const preGroupRestoreIds = preGroupBlocks
+			.filter((b) => b.folded && !b.held && b.order < view.frozenFromIndex)
+			.map((b) => b.id);
+		this.pendingPreGroupRestore = preGroupRestoreIds;
 		let preGroupTokens = 0;
 		if (preGroupTarget > 0) {
 			preGroupTokens = preGroupBlocks.reduce((sum, block) => sum + block.tokens, 0);

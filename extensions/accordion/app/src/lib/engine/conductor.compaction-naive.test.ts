@@ -1922,6 +1922,27 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 			expect(hit, `contextWindow=${contextWindow} should still act on pre-group-position blocks`).toBe(true);
 		}
 	});
+	it("restores folded pre-group blocks that are in the frozen prefix", () => {
+		// A block that was folded when in the frozen prefix enters the pre-group range.
+		// The conductor must emit a restore for it (clearConductorState preserves frozen folds).
+		const blocks = [
+			chunkedBlock("pg0", 0, 2_000, { folded: true }),
+			chunkedBlock("pg1", 1, 2_000, { folded: true }),
+			chunkedBlock("pg2", 2, 2_000),
+			chunkedBlock("tail", 3, 100, { kind: "user", protected: true }),
+		];
+		const view = rolloverView(blocks, 200_000);
+		// Put frozenFromIndex above the folded blocks so they are in the frozen prefix
+		view.frozenFromIndex = 2;
+		const plan = new MyCustomizeConductor().conduct(view);
+		const restoreCmd = plan.find((cmd) => cmd.kind === "restore");
+		expect(restoreCmd).toBeDefined();
+		expect(restoreCmd!.ids).toContain("pg0");
+		expect(restoreCmd!.ids).toContain("pg1");
+		// pg2 is above frozenFromIndex, so clearConductorState handles it — no restore needed
+		expect(restoreCmd!.ids).not.toContain("pg2");
+	});
+
 	it("keeps complete turns together at the protected boundary", () => {
 		// Two blocks in turn 1, one protected block in turn 2.
 		// selectCompactionRange must include only turn 1; turn 2 is the current partial turn.

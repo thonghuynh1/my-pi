@@ -218,15 +218,20 @@ describe("MyCustomizeConductor", () => {
 		expect(second).toBe(first);
 	});
 
-	it("does not rewrite a frozen prefix when only the soft budget is exceeded", () => {
+	it("rewrites a frozen pre-group with a recoverable group when the soft budget is exceeded", () => {
 		const blocks = [
 			vb("u:0", "user", 0, 200, 200, { text: "task" }),
 			vb("r:1", "tool_result", 1, 1_500, 40, { toolName: "bash", text: "output 1" }),
 			vb("r:2", "tool_result", 2, 1_500, 40, { toolName: "bash", text: "output 2" }),
 		];
 		const view = makeView(blocks, 500, 3_200, { frozenFromIndex: 3, contextWindow: 200_000 });
+
 		const result = new MyCustomizeConductor().conduct(view);
-		expect(result).toEqual([]);
+
+		expect(result).toHaveLength(1);
+		expect(result[0]).toMatchObject({ kind: "group", ids: ["u:0", "r:1", "r:2"] });
+		if (result[0].kind !== "group") return;
+		expect(result[0].digest).toMatch(/^⟨chunked-compaction ·/);
 	});
 
 	it("rewrites a frozen prefix only when the real context window overflows", () => {

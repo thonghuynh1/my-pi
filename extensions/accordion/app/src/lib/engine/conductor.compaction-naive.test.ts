@@ -1910,6 +1910,48 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		expect(actedOnIds).not.toContain("tool2");
 	});
 
+	it("pre-group zone crosses recall result blocks without exposing earlier blocks to folding", () => {
+		const blocks = [
+			chunkedBlock("tool0", 0, 4_000, { kind: "tool_result" }),
+			chunkedBlock("recall1", 1, 4_000, { kind: "tool_result", toolName: "recall" }),
+			chunkedBlock("tool2", 2, 4_000, { kind: "tool_result" }),
+			chunkedBlock("tail", 3, 100, { kind: "user", protected: true }),
+		];
+		const view = rolloverView(blocks);
+		view.liveTokens = 110_000;
+
+		const plan = new MyCustomizeConductor().conduct(view);
+		const actedOnIds = plan.flatMap((cmd) =>
+			cmd.kind === "fold" ? cmd.ids : cmd.kind === "replace" ? [cmd.id] : [],
+		);
+
+		expect(actedOnIds).not.toContain("tool0");
+		expect(actedOnIds).not.toContain("recall1");
+		expect(actedOnIds).not.toContain("tool2");
+	});
+
+	it("pre-group zone crosses pstack blocks without exposing earlier blocks to folding", () => {
+		const blocks = [
+			chunkedBlock("tool0", 0, 4_000, { kind: "tool_result" }),
+			chunkedBlock("pstack1", 1, 4_000, {
+				text: '{#abc123 FOLDED} tool_result:mcp skill-pstack(name="architect")',
+			}),
+			chunkedBlock("tool2", 2, 4_000, { kind: "tool_result" }),
+			chunkedBlock("tail", 3, 100, { kind: "user", protected: true }),
+		];
+		const view = rolloverView(blocks);
+		view.liveTokens = 110_000;
+
+		const plan = new MyCustomizeConductor().conduct(view);
+		const actedOnIds = plan.flatMap((cmd) =>
+			cmd.kind === "fold" ? cmd.ids : cmd.kind === "replace" ? [cmd.id] : [],
+		);
+
+		expect(actedOnIds).not.toContain("tool0");
+		expect(actedOnIds).not.toContain("pstack1");
+		expect(actedOnIds).not.toContain("tool2");
+	});
+
 	it("pre-group zone still stops at held blocks", () => {
 		const blocks = [
 			chunkedBlock("tool0", 0, 5_000, { kind: "tool_result" }),
@@ -1929,7 +1971,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		expect(actedOnIds).not.toContain("tool2");
 	});
 
-	it("conductor returns empty plan when only pre-group blocks would be candidates", () => {
+	it("conductor emits a group and no folds when only pre-group blocks would be candidates and over budget", () => {
 		const blocks = [
 			chunkedBlock("pg0", 0, 2_000),
 			chunkedBlock("pg1", 1, 2_000),
@@ -1941,9 +1983,104 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const plan = new MyCustomizeConductor().conduct(view);
 		const foldOrReplace = plan.filter((cmd) => cmd.kind === "fold" || cmd.kind === "replace");
 		expect(foldOrReplace).toHaveLength(0);
+		expect(plan[0].kind).toBe("group");
 	});
 
-	it("blocks outside pre-group range remain fold candidates", () => {
+	it("early rollover emits a chunked-compaction group when liveTokens exceeds cap and pre-group has enough saving", () => {
+		// Pre-group zone: 2 blocks × 6_000 tokens = 12_000 < preGroupTarget (15_000) so the fast path does not fire.
+		// No non-pre-group candidates exist, so the main fold loop leaves live unchanged.
+		// DEC-002 early rollover then fires because live (110_000) > cap (100_000).
+		const blocks = [
+			chunkedBlock("pg0", 0, 6_000),
+			chunkedBlock("pg1", 1, 6_000),
+			chunkedBlock("tail", 2, 100, { kind: "user", protected: true }),
+		];
+		const view = rolloverView(blocks, 200_000);
+		view.liveTokens = 110_000;
+		const plan = new MyCustomizeConductor().conduct(view);
+		expect(plan[0].kind).toBe("group");
+		if (plan[0].kind !== "group") return;
+		expect(plan[0].digest).toMatch(/^⟨chunked-compaction ·/);
+	});
+
+	it("early rollover groups a pre-group zone in the frozen prefix", () => {
+		const blocks = [
+			chunkedBlock("pg0", 0, 6_000),
+			chunkedBlock("pg1", 1, 6_000),
+			chunkedBlock("tail", 2, 100, { kind: "user", protected: true }),
+		];
+		const view = rolloverView(blocks, 200_000);
+		view.liveTokens = 110_000;
+		view.frozenFromIndex = 2;
+
+		const plan = new MyCustomizeConductor().conduct(view);
+
+		expect(plan).toHaveLength(1);
+		expect(plan[0]).toMatchObject({ kind: "group", ids: ["pg0", "pg1"] });
+	});
+
+	it("early rollover is skipped when liveTokens does not exceed cap", () => {
+		const blocks = [
+			chunkedBlock("pg0", 0, 6_000),
+			chunkedBlock("pg1", 1, 6_000),
+			chunkedBlock("tail", 2, 100, { kind: "user", protected: true }),
+		];
+		const view = rolloverView(blocks, 200_000);
+		view.liveTokens = 90_000; // below cap (100_000) — no early rollover
+		const plan = new MyCustomizeConductor().conduct(view);
+		const groupCmds = plan.filter((cmd) => cmd.kind === "group");
+		expect(groupCmds).toHaveLength(0);
+	});
+
+	it("early rollover is skipped when pre-group saving is below the minimum threshold", () => {
+		// 2 blocks × 100 tokens = 200 total. Saving ≈ 170 < max(2_000, 0.05 × 100_000) = 5_000.
+		const blocks = [
+			chunkedBlock("pg0", 0, 100),
+			chunkedBlock("pg1", 1, 100),
+			chunkedBlock("tail", 2, 100, { kind: "user", protected: true }),
+		];
+		const view = rolloverView(blocks, 200_000);
+		view.liveTokens = 110_000;
+		const plan = new MyCustomizeConductor().conduct(view);
+		const groupCmds = plan.filter((cmd) => cmd.kind === "group");
+		expect(groupCmds).toHaveLength(0);
+	});
+
+	it("early rollover group includes non-foldable block kinds such as user", () => {
+		// user is not in FOLDABLE_KINDS so it would never be a fold candidate.
+		// Grouping via DEC-002 must still include it.
+		const blocks = [
+			chunkedBlock("tr0", 0, 4_000, { kind: "tool_result" }),
+			chunkedBlock("u1", 1, 4_000, { kind: "user" }),
+			chunkedBlock("t2", 2, 4_000),
+			chunkedBlock("tail", 3, 100, { kind: "user", protected: true }),
+		];
+		const view = rolloverView(blocks, 200_000);
+		view.liveTokens = 110_000;
+		const plan = new MyCustomizeConductor().conduct(view);
+		expect(plan[0].kind).toBe("group");
+		if (plan[0].kind !== "group") return;
+		expect(plan[0].ids).toContain("u1");
+	});
+
+	it("early rollover trims a tool_call that has an open partner in the protected tail", () => {
+		// tc0 (callId X) has its matching tool_result in the protected tail.
+		// trimOpenToolPairs must remove tc0 so the group stays pair-balanced.
+		const blocks = [
+			chunkedBlock("tc0", 0, 4_000, { kind: "tool_call", callId: "X" }),
+			chunkedBlock("tr1", 1, 4_000, { kind: "tool_result", callId: "Y" }),
+			chunkedBlock("t2", 2, 4_000),
+			chunkedBlock("protected_tr", 3, 100, { kind: "tool_result", callId: "X", protected: true }),
+		];
+		const view = rolloverView(blocks, 200_000);
+		view.liveTokens = 110_000;
+		const plan = new MyCustomizeConductor().conduct(view);
+		expect(plan[0].kind).toBe("group");
+		if (plan[0].kind !== "group") return;
+		expect(plan[0].ids).not.toContain("tc0");
+	});
+
+	it("pre-group zone crosses user blocks and keeps earlier blocks out of fold candidates", () => {
 		const blocks = [
 			chunkedBlock("old0", 0, 3_000, { kind: "tool_result" }),
 			chunkedBlock("boundary", 1, 100, { kind: "user" }),

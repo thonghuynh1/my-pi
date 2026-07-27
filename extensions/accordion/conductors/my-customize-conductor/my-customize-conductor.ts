@@ -182,6 +182,34 @@ export class MyCustomizeConductor implements Conductor {
 			.map((b) => b.id);
 		this.pendingPreGroupRestore = preGroupRestoreIds;
 		let preGroupTokens = 0;
+		// Helper: attempt to emit a GROUP command from a candidate block list.
+		// Defined at method scope so the early rollover check (DEC-002) after the main fold
+		// loop can call it in addition to the pre-group fast path inside the block below.
+		const tryEmitGroup = (candidates: readonly ViewBlock[]): Command[] | null => {
+			const ids = chunkedCompaction.trimOpenToolPairs(candidates.map((b) => b.id), view.blocks);
+			if (ids.length < 2) return null;
+			const members = view.blocks.filter((b) => ids.includes(b.id));
+			const digestCost = chunkedCompaction.estimateDefaultGroupDigestCost(members);
+			const trimmedTokens = members.reduce((sum, b) => sum + b.tokens, 0);
+			const estimatedGroupSaving = trimmedTokens - digestCost;
+			const minSaving = Math.max(2_000, 0.05 * cap);
+			if (estimatedGroupSaving < minSaving) return null;
+			const turnRange: [number, number] = [
+				Math.min(...members.map((b) => b.turn)),
+				Math.max(...members.map((b) => b.turn)),
+			];
+			const mcpIndex = chunkedCompaction.buildMcpRetrievalIndex(members, callById);
+			const baseDigest = chunkedCompaction.composeDigest(
+				chunkedCompaction.digestHeader(chunkedCompaction.corpusContentHash(members), ids.length, turnRange),
+				chunkedCompaction.digestBody(members),
+				chunkedCompaction.digestMembersFooter(ids.map(foldCode)),
+			);
+			const digest = mcpIndex ? baseDigest + "\n\n" + mcpIndex : baseDigest;
+			this.rolloverCount += 1;
+			this.tokensSavedByRollover += estimatedGroupSaving;
+			this.lastEstimatedGroupSaving = estimatedGroupSaving;
+			return [{ kind: "group", ids, digest }];
+		};
 		if (preGroupTarget > 0) {
 			preGroupTokens = preGroupBlocks.reduce((sum, block) => sum + block.tokens, 0);
 			const nextBlock = view.blocks[view.protectedFromIndex];
@@ -189,33 +217,6 @@ export class MyCustomizeConductor implements Conductor {
 			const noOpen = chunkedCompaction.noOpenToolPairAcrossPreGroupTail(view, preGroupFromIndex);
 			const fastPathFires = preGroupTokens >= preGroupTarget && preGroupEndsOnTurnBoundary && noOpen;
 			const escapeValveFires = preGroupTokens > preGroupTarget * PRE_GROUP_OVERFLOW_CAP;
-
-			// Helper: attempt to emit a GROUP command from a candidate block list.
-			const tryEmitGroup = (candidates: readonly ViewBlock[]): Command[] | null => {
-				const ids = chunkedCompaction.trimOpenToolPairs(candidates.map((b) => b.id), view.blocks);
-				if (ids.length < 2) return null;
-				const members = view.blocks.filter((b) => ids.includes(b.id));
-				const digestCost = chunkedCompaction.estimateDefaultGroupDigestCost(members);
-				const trimmedTokens = members.reduce((sum, b) => sum + b.tokens, 0);
-				const estimatedGroupSaving = trimmedTokens - digestCost;
-				const minSaving = Math.max(2_000, 0.05 * cap);
-				if (estimatedGroupSaving < minSaving) return null;
-				const turnRange: [number, number] = [
-					Math.min(...members.map((b) => b.turn)),
-					Math.max(...members.map((b) => b.turn)),
-				];
-				const mcpIndex = chunkedCompaction.buildMcpRetrievalIndex(members, callById);
-				const baseDigest = chunkedCompaction.composeDigest(
-					chunkedCompaction.digestHeader(chunkedCompaction.corpusContentHash(members), ids.length, turnRange),
-					chunkedCompaction.digestBody(members),
-					chunkedCompaction.digestMembersFooter(ids.map(foldCode)),
-				);
-				const digest = mcpIndex ? baseDigest + "\n\n" + mcpIndex : baseDigest;
-				this.rolloverCount += 1;
-				this.tokensSavedByRollover += estimatedGroupSaving;
-				this.lastEstimatedGroupSaving = estimatedGroupSaving;
-				return [{ kind: "group", ids, digest }];
-			};
 
 			if (fastPathFires || escapeValveFires) {
 				// Use selectCompactionRange to form the contiguous member list (keeps complete turns
@@ -366,6 +367,16 @@ export class MyCustomizeConductor implements Conductor {
 				if (live <= hardCap) break;
 				applyCandidate(b, true);
 			}
+		}
+
+		// Early rollover: flush pre-group zone under budget pressure (DEC-002).
+		if (live > cap && preGroupBlocks.length >= 2) {
+			const range = chunkedCompaction.selectCompactionRange(view, preGroupFromIndex);
+			const earlyCandidates = range
+				? view.blocks.slice(range.fromIndex, range.toIndexExclusive)
+				: preGroupBlocks;
+			const cmds = tryEmitGroup(earlyCandidates);
+			if (cmds) return this.finishConduct(cmds, preGroupTokens, preGroupTarget, true);
 		}
 
 		// Group only the non-frozen suffix, and only after all rich replacements and folds are planned.

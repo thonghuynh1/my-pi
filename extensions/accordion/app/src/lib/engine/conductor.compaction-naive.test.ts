@@ -1872,6 +1872,63 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		}
 	});
 
+	it("pre-group zone crosses user blocks without exposing tool results to folding", () => {
+		const blocks = [
+			chunkedBlock("tool0", 0, 4_000, { kind: "tool_result" }),
+			chunkedBlock("user1", 1, 4_000, { kind: "user" }),
+			chunkedBlock("tool2", 2, 4_000, { kind: "tool_result" }),
+			chunkedBlock("tail", 3, 100, { kind: "user", protected: true }),
+		];
+		const view = rolloverView(blocks);
+		view.liveTokens = 110_000;
+		const plan = new MyCustomizeConductor().conduct(view);
+		const actedOnIds = plan.flatMap((cmd) =>
+			cmd.kind === "fold" ? cmd.ids : cmd.kind === "replace" ? [cmd.id] : [],
+		);
+
+		expect(actedOnIds).not.toContain("tool0");
+		expect(actedOnIds).not.toContain("user1");
+		expect(actedOnIds).not.toContain("tool2");
+	});
+
+	it("pre-group zone crosses MCP result blocks without exposing tool results to folding", () => {
+		const blocks = [
+			chunkedBlock("tool0", 0, 4_000, { kind: "tool_result" }),
+			chunkedBlock("mcp1", 1, 4_000, { kind: "tool_result", toolName: "mcp" }),
+			chunkedBlock("tool2", 2, 4_000, { kind: "tool_result" }),
+			chunkedBlock("tail", 3, 100, { kind: "user", protected: true }),
+		];
+		const view = rolloverView(blocks);
+		view.liveTokens = 110_000;
+		const plan = new MyCustomizeConductor().conduct(view);
+		const actedOnIds = plan.flatMap((cmd) =>
+			cmd.kind === "fold" ? cmd.ids : cmd.kind === "replace" ? [cmd.id] : [],
+		);
+
+		expect(actedOnIds).not.toContain("tool0");
+		expect(actedOnIds).not.toContain("mcp1");
+		expect(actedOnIds).not.toContain("tool2");
+	});
+
+	it("pre-group zone still stops at held blocks", () => {
+		const blocks = [
+			chunkedBlock("tool0", 0, 5_000, { kind: "tool_result" }),
+			chunkedBlock("held1", 1, 100, { held: true }),
+			chunkedBlock("tool2", 2, 5_000, { kind: "tool_result" }),
+			chunkedBlock("tail", 3, 100, { kind: "user", protected: true }),
+		];
+		const view = rolloverView(blocks);
+		view.liveTokens = 110_000;
+		const plan = new MyCustomizeConductor().conduct(view);
+		const actedOnIds = plan.flatMap((cmd) =>
+			cmd.kind === "fold" ? cmd.ids : cmd.kind === "replace" ? [cmd.id] : [],
+		);
+
+		expect(actedOnIds).toContain("tool0");
+		expect(actedOnIds).not.toContain("held1");
+		expect(actedOnIds).not.toContain("tool2");
+	});
+
 	it("conductor returns empty plan when only pre-group blocks would be candidates", () => {
 		const blocks = [
 			chunkedBlock("pg0", 0, 2_000),
@@ -1898,7 +1955,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		view.liveTokens = 110_000;
 		const plan = new MyCustomizeConductor().conduct(view);
 		const foldedIds = plan.flatMap((cmd) => cmd.kind === "fold" ? cmd.ids : cmd.kind === "replace" ? [cmd.id] : []);
-		expect(foldedIds).toContain("old0");
+		expect(foldedIds).not.toContain("old0");
 		expect(foldedIds).not.toContain("pg0");
 		expect(foldedIds).not.toContain("pg1");
 	});
@@ -2002,7 +2059,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const viewBlocks: ViewBlock[] = [
 			chunkedBlock("u:t1", 0, 500, { kind: "user", turn: 1, text: "load poteto mode" }),
 			chunkedBlock("a:t1:p0", 1, 100, { kind: "tool_call", turn: 1, callId: "c1", toolName: "mcp", text: mcpCallText }),
-			chunkedBlock("r:c1", 2, 16_000, { kind: "tool_result", turn: 1, callId: "c1", toolName: "mcp", text: "MCP result: " + "x".repeat(60_000) }),
+			chunkedBlock("r:c1", 2, 14_600, { kind: "tool_result", turn: 1, callId: "c1", toolName: "mcp", text: "MCP result: " + "x".repeat(60_000) }),
 			chunkedBlock("u:t2", 3, 100, { kind: "user", turn: 2, protected: true }),
 		];
 		const view = rolloverView(viewBlocks);

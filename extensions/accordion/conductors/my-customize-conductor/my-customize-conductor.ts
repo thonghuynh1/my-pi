@@ -52,6 +52,10 @@ function isChunkedPreGroupBoundary(block: ViewBlock, pstackByBlockId: Map<string
 	return block.proactivelyCompressed || isGroupBoundary(block, pstackByBlockId);
 }
 
+function isAccumulationBoundary(block: ViewBlock): boolean {
+	return block.held || block.grouped || block.proactivelyCompressed;
+}
+
 /** Fraction of cap below which the current fold plan is held stable (epoch hold band). */
 const HOLD_BAND = 0.9;
 const POTETO_MODE_NAME = "poteto-mode";
@@ -166,7 +170,7 @@ export class MyCustomizeConductor implements Conductor {
 
 		const preGroupTarget = chunkedCompaction.effectivePreGroupTokens(view, this.opts);
 		const preGroupFromIndex = preGroupTarget > 0
-			? chunkedCompaction.computePreGroupFromIndex(view, preGroupTarget, (block) => isChunkedPreGroupBoundary(block, pstackByBlockId))
+			? chunkedCompaction.computePreGroupFromIndex(view, preGroupTarget, isAccumulationBoundary)
 			: view.protectedFromIndex;
 		const preGroupBlocks = view.blocks.slice(preGroupFromIndex, view.protectedFromIndex);
 		const preGroupBlockIds = new Set(preGroupBlocks.map((b) => b.id));

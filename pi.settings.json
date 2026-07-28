@@ -52,6 +52,11 @@
         "tool-panel": "enabled",
         "tools": "enabled"
       }
+    },
+    "aiknow": {
+      "tools": {
+        "aiknow_search": "agent-visible"
+      }
     }
   }
 }

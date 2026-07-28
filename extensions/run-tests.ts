@@ -18,6 +18,9 @@ const RunTestsParams = Type.Object({
 	lines: Type.Optional(
 		Type.Number({ description: "Number of tail lines to show on failure (default 40)" }),
 	),
+	cwd: Type.Optional(
+		Type.String({ description: "Working directory to run tests from. Defaults to process.cwd(). Pass this when the test project root (jest.config.js, package.json) lives in a subdirectory." }),
+	),
 });
 
 type RunTestsInput = Static<typeof RunTestsParams>;
@@ -208,6 +211,7 @@ export default function runTestsExtension(pi: ExtensionAPI) {
 			"When running tests, use run_tests instead of bash. run_tests returns compact output that saves context tokens.",
 			"Do NOT use bash to run test commands (npm test, vitest, jest, dotnet test, go test, pytest). Use run_tests instead.",
 			"If run_tests returns a fallback message suggesting bash, THEN use bash with the exact command it provides.",
+			"When the test project root (containing jest.config.js, package.json, or vitest.config.ts) is a subdirectory, pass cwd. Example: run_tests({ command: 'npx jest', cwd: 'C:/GitRepos/MyProject/Web' })",
 		],
 		parameters: RunTestsParams,
 		async execute(
@@ -216,7 +220,7 @@ export default function runTestsExtension(pi: ExtensionAPI) {
 			signal: AbortSignal | undefined,
 			onUpdate: any,
 		) {
-			const cwd = process.cwd();
+			const cwd = params.cwd ?? process.cwd();
 			const tailLines = params.lines ?? 40;
 
 			const command = params.command ?? detectTestCommand(cwd);

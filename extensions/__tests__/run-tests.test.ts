@@ -53,7 +53,7 @@ function getRunTestsTool(pi: FakePi) {
 	const tool = pi.tools.get("run_tests") as {
 		execute: (
 			toolCallId: string,
-			params: { command?: string; lines?: number },
+			params: { command?: string; lines?: number; cwd?: string },
 			signal: AbortSignal | undefined,
 			onUpdate: (update: unknown) => void,
 		) => Promise<{ content: Array<{ type: string; text: string }> }>;
@@ -70,6 +70,16 @@ const repeatedDotnetFailureOutput = readFileSync(
 	path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "run-tests-dotnet-repeat.txt"),
 	"utf8",
 );
+
+test("run_tests forwards explicit cwd to pi.exec", async () => {
+	const pi = createFakePi({ code: 0, stdout: "1 test passed", stderr: "" });
+	runTestsExtension(pi as any);
+	const tool = getRunTestsTool(pi);
+
+	await tool.execute("call-cwd", { command: "npm test", cwd: "C:/GitRepos/Tickets/Web" }, undefined, () => {});
+
+	assert.equal(pi.execCalls[0]?.cwd, "C:/GitRepos/Tickets/Web");
+});
 
 test("run_tests applies a 15 minute execution timeout", async () => {
 	const pi = createFakePi({ code: 0, stdout: "1 test passed", stderr: "" });

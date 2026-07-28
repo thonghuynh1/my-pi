@@ -1,6 +1,6 @@
 {
   "benchmark": "retrieval-efficiency-independent-axis",
-  "aiknow_revision": "16becf059ed4eedc6d34a9ff6cca9f3f678bf6b1",
+  "aiknow_revision": "6140aed9f573a30818a33c5f6efc3c9684e23313",
   "target_repository": "F:/MyWork/PrecioHackathon/hackathon-ralph-loop",
   "target_revision": "5e67bfcbcd16ebf9e93a32651687862b59e409b8",
   "model": "openai-codex/gpt-5.6-luna",
@@ -25,14 +25,47 @@
     }
   ],
   "execution_order": [
-    "lifecycle-aiknow-r1", "lifecycle-grep-r1",
-    "lifecycle-grep-r2", "lifecycle-aiknow-r2",
-    "lifecycle-aiknow-r3", "lifecycle-grep-r3",
-    "architecture-grep-r1", "architecture-aiknow-r1",
-    "architecture-aiknow-r2", "architecture-grep-r2",
-    "architecture-grep-r3", "architecture-aiknow-r3",
-    "impact-aiknow-r1", "impact-grep-r1",
-    "impact-grep-r2", "impact-aiknow-r2",
-    "impact-aiknow-r3", "impact-grep-r3"
+    "lifecycle-aiknow-r1",
+    "lifecycle-grep-r1",
+    "lifecycle-grep-r2",
+    "lifecycle-aiknow-r2",
+    "lifecycle-aiknow-r3",
+    "lifecycle-grep-r3",
+    "architecture-grep-r1",
+    "architecture-aiknow-r1",
+    "architecture-aiknow-r2",
+    "architecture-grep-r2",
+    "architecture-grep-r3",
+    "architecture-aiknow-r3",
+    "impact-aiknow-r1",
+    "impact-grep-r1",
+    "impact-grep-r2",
+    "impact-aiknow-r2",
+    "impact-aiknow-r3",
+    "impact-grep-r3"
+  ],
+  "methods": [
+    "aiknow",
+    "grep",
+    "tokensave",
+    "graphify",
+    "hybrid"
+  ],
+  "impact_only_execution_order": [
+    "impact-aiknow-r1",
+    "impact-grep-r1",
+    "impact-tokensave-r1",
+    "impact-graphify-r1",
+    "impact-hybrid-r1",
+    "impact-grep-r2",
+    "impact-aiknow-r2",
+    "impact-graphify-r2",
+    "impact-tokensave-r2",
+    "impact-hybrid-r2",
+    "impact-aiknow-r3",
+    "impact-grep-r3",
+    "impact-tokensave-r3",
+    "impact-graphify-r3",
+    "impact-hybrid-r3"
   ]
 }

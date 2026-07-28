@@ -1,127 +1,31 @@
 {
-  "run_fingerprint": "2808be769acb73f2",
-  "records": 18,
+  "scope": "impact_only",
+  "method_fingerprints": {
+    "aiknow": "600af556b8bb80cc",
+    "grep": "f4da717e09a8a128",
+    "tokensave": "9fdf207fefea9c11",
+    "graphify": "dda863497c36a886",
+    "hybrid": "f6efdd126496bc23"
+  },
+  "records": 3,
+  "methods": [
+    "hybrid"
+  ],
   "tool_isolation_pass": true,
   "tool_isolation_failures": [],
   "means": {
-    "aiknow": {
-      "tool_calls": 4.222222222222222,
-      "duration_seconds": 43.52044444444444,
-      "total_cost_usd": 0.010001888888888888,
-      "sum_request_input_tokens": 10996.555555555555,
-      "assistant_api_calls": 5.0
-    },
-    "grep": {
-      "tool_calls": 25.0,
-      "duration_seconds": 85.58433333333333,
-      "total_cost_usd": 0.11901655555555554,
-      "sum_request_input_tokens": 315238.3333333333,
-      "assistant_api_calls": 7.555555555555555
+    "hybrid": {
+      "count": 3,
+      "tool_calls": 30.333333333333332,
+      "duration_seconds": 88.29266666666666,
+      "total_cost_usd": 0.09758266666666666,
+      "sum_request_input_tokens": 238335.33333333334,
+      "assistant_api_calls": 9.666666666666666,
+      "output_tokens": 4010.0
     }
   },
-  "aiknow_over_grep_ratios": {
-    "tool_calls": 0.1688888888888889,
-    "duration_seconds": 0.5085094753842538,
-    "total_cost_usd": 0.08403779492862339,
-    "sum_request_input_tokens": 0.03488330698642473,
-    "assistant_api_calls": 0.6617647058823529
+  "per_method": {
+    "hybrid": {}
   },
-  "gates": {
-    "eff_mean_calls_le_80pct_grep": true,
-    "eff_no_trial_gt_25_calls": true,
-    "eff_mean_duration_le_120pct_grep": true,
-    "eff_no_trial_gt_360s": true,
-    "cost_mean_le_80pct_grep": true,
-    "cost_no_trial_gt_1_50_usd": true,
-    "cost_tokens_le_120pct_grep": true,
-    "cost_api_calls_le_120pct_grep": true,
-    "cost_no_trial_gt_3M_tokens": true,
-    "cost_no_trial_gt_50_api_calls": true
-  },
-  "aiknow_ceilings": [
-    {
-      "name": "lifecycle-aiknow-r1",
-      "tool_calls": 3,
-      "duration_seconds": 32.195,
-      "total_cost_usd": 0.005942,
-      "sum_request_input_tokens": 8760,
-      "assistant_api_calls": 4,
-      "pass": true
-    },
-    {
-      "name": "lifecycle-aiknow-r2",
-      "tool_calls": 6,
-      "duration_seconds": 45.784,
-      "total_cost_usd": 0.012254,
-      "sum_request_input_tokens": 11331,
-      "assistant_api_calls": 5,
-      "pass": true
-    },
-    {
-      "name": "lifecycle-aiknow-r3",
-      "tool_calls": 5,
-      "duration_seconds": 52.988,
-      "total_cost_usd": 0.012051,
-      "sum_request_input_tokens": 14079,
-      "assistant_api_calls": 6,
-      "pass": true
-    },
-    {
-      "name": "architecture-aiknow-r1",
-      "tool_calls": 3,
-      "duration_seconds": 31.614,
-      "total_cost_usd": 0.008463,
-      "sum_request_input_tokens": 8360,
-      "assistant_api_calls": 4,
-      "pass": true
-    },
-    {
-      "name": "architecture-aiknow-r2",
-      "tool_calls": 3,
-      "duration_seconds": 36.05,
-      "total_cost_usd": 0.009428,
-      "sum_request_input_tokens": 8341,
-      "assistant_api_calls": 4,
-      "pass": true
-    },
-    {
-      "name": "architecture-aiknow-r3",
-      "tool_calls": 5,
-      "duration_seconds": 52.248,
-      "total_cost_usd": 0.011807,
-      "sum_request_input_tokens": 13287,
-      "assistant_api_calls": 6,
-      "pass": true
-    },
-    {
-      "name": "impact-aiknow-r1",
-      "tool_calls": 5,
-      "duration_seconds": 57.491,
-      "total_cost_usd": 0.012585,
-      "sum_request_input_tokens": 13623,
-      "assistant_api_calls": 6,
-      "pass": true
-    },
-    {
-      "name": "impact-aiknow-r2",
-      "tool_calls": 4,
-      "duration_seconds": 42.483,
-      "total_cost_usd": 0.009365,
-      "sum_request_input_tokens": 10566,
-      "assistant_api_calls": 5,
-      "pass": true
-    },
-    {
-      "name": "impact-aiknow-r3",
-      "tool_calls": 4,
-      "duration_seconds": 40.831,
-      "total_cost_usd": 0.008122,
-      "sum_request_input_tokens": 10622,
-      "assistant_api_calls": 5,
-      "pass": true
-    }
-  ],
-  "efficiency_axis_pass": true,
-  "cost_axis_pass": true,
   "quality_axis": "PENDING_BLINDED_HUMAN_SCORING"
 }

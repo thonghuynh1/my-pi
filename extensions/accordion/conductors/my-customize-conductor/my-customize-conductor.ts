@@ -101,6 +101,43 @@ export class MyCustomizeConductor implements Conductor {
 		this.host = host;
 	}
 
+	/**
+	 * Return the previous non-rollover groups that can still be replayed after the host's
+	 * conductor reset. Normally `clearConductorState()` removes mutable-suffix groups before
+	 * this conductor gets its next view. That is correct for a complete replacement plan, but
+	 * it is a bad fit for the pre-group fast/early-return paths: those paths intentionally return
+	 * a rollover group and would otherwise make an older, still-valid suffix group flash open.
+	 *
+	 * Groups already visible in the view are owned by the store (chunked groups are preserved
+	 * there), so they must not be replayed. A group that moved into the frozen prefix is only
+	 * replayable when it carries an explicit digest; the host rejects an implicit digest there.
+	 */
+	private replayablePreviousGroups(
+		view: ConductorView,
+		excludedIds: ReadonlySet<string> = new Set(),
+		priorPlan: Command[] | null = this.lastPlan,
+	): Command[] {
+		const groups = (priorPlan ?? []).filter((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
+		if (groups.length === 0) return [];
+		const byId = new Map(view.blocks.map((block) => [block.id, block]));
+		return groups.filter((group) => {
+			if (group.ids.length === 0 || group.ids.some((id) => excludedIds.has(id))) return false;
+			return group.ids.every((id) => {
+				const block = byId.get(id);
+				if (!block || block.held || block.protected || block.grouped) return false;
+				return block.order >= view.frozenFromIndex || typeof group.digest === "string" && group.digest.length > 0;
+			});
+		});
+	}
+
+	private rememberReplayableGroups(groups: Command[]): void {
+		this.lastPlan = groups.length > 0 ? groups : null;
+		this.lastSavings.clear();
+		this.lastSemanticKey = null;
+		this.lastFrozenGroupEpochKey = null;
+		this.lastViewKey = null;
+	}
+
 	private finishConduct(
 		plan: Command[],
 		preGroupTokens: number,
@@ -137,6 +174,9 @@ export class MyCustomizeConductor implements Conductor {
 		// then calibrated to real tokens), not the raw budget — else the true request overflows.
 		const cap = availableCap(view);
 		const hardCap = contextWindowCap(view);
+		// Preserve the previous plan for early-return paths. The normal replan path clears
+		// lastPlan before reaching those paths, but valid suffix groups may still need replay.
+		const priorPlan = this.lastPlan;
 		// Build lookups used for semantic state, the epoch hold check, and savings recording.
 		const byId = new Map(view.blocks.map((b) => [b.id, b]));
 		const callById = new Map<string, ViewBlock>();
@@ -226,7 +266,12 @@ export class MyCustomizeConductor implements Conductor {
 					? view.blocks.slice(range.fromIndex, range.toIndexExclusive)
 					: preGroupBlocks;
 				const cmds = tryEmitGroup(candidates);
-				if (cmds) return this.finishConduct(cmds, preGroupTokens, preGroupTarget, true);
+				if (cmds) {
+					const newIds = new Set(cmds.flatMap((command) => command.kind === "group" ? command.ids : []));
+					const retained = this.replayablePreviousGroups(view, newIds);
+					this.rememberReplayableGroups(retained);
+					return this.finishConduct([...retained, ...cmds], preGroupTokens, preGroupTarget, true);
+				}
 			}
 
 			// If the traditional pre-group trigger did not fire (e.g. because MCP results
@@ -242,13 +287,26 @@ export class MyCustomizeConductor implements Conductor {
 					const altEscape = rangeTokens > preGroupTarget * PRE_GROUP_OVERFLOW_CAP;
 					if (altFast || altEscape) {
 						const cmds = tryEmitGroup(rangeBlocks);
-						if (cmds) return this.finishConduct(cmds, rangeTokens, preGroupTarget, true);
+						if (cmds) {
+							const newIds = new Set(cmds.flatMap((command) => command.kind === "group" ? command.ids : []));
+							const retained = this.replayablePreviousGroups(view, newIds);
+							this.rememberReplayableGroups(retained);
+							return this.finishConduct([...retained, ...cmds], rangeTokens, preGroupTarget, true);
+						}
 					}
 				}
 			}
 		}
 
 		if (view.liveTokens <= cap) {
+			// A previous suffix group may have been removed by the host reset even though the
+			// current baseline is now under budget (for example, preserved frozen folds absorb
+			// the pressure). Keep that group stable instead of briefly exposing the whole range.
+			const retained = this.replayablePreviousGroups(view);
+			if (retained.length > 0) {
+				this.rememberReplayableGroups(retained);
+				return this.finishConduct(retained, preGroupTokens, preGroupTarget, false);
+			}
 			this.lastPlan = null;
 			this.lastSavings.clear();
 			this.lastSemanticKey = null;
@@ -376,7 +434,12 @@ export class MyCustomizeConductor implements Conductor {
 				? view.blocks.slice(range.fromIndex, range.toIndexExclusive)
 				: preGroupBlocks;
 			const cmds = tryEmitGroup(earlyCandidates);
-			if (cmds) return this.finishConduct(cmds, preGroupTokens, preGroupTarget, true);
+			if (cmds) {
+				const newIds = new Set(cmds.flatMap((command) => command.kind === "group" ? command.ids : []));
+				const retained = this.replayablePreviousGroups(view, newIds, priorPlan);
+				this.rememberReplayableGroups(retained);
+				return this.finishConduct([...retained, ...cmds], preGroupTokens, preGroupTarget, true);
+			}
 		}
 
 		// Group only the non-frozen suffix, and only after all rich replacements and folds are planned.

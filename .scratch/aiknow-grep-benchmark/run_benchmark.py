@@ -1,13 +1,27 @@
-"""Production-parity benchmark runner.
+"""Production-parity benchmark runner (multi-method, impact-scope aware).
 
-Executes nine aiKnow + nine grep sessions using the official adapter,
-then writes retrieval-efficiency-results.json, objective-summary.json,
-and the blinded reviewer packet.
+Executes retrieval-benchmark sessions across four discovery methods
+(aiKnow, grep, tokensave, graphify), then writes
+retrieval-efficiency-results.json, objective-summary.json, and the blinded
+reviewer packet.
 
-Completed-run reuse is keyed by a fingerprint covering: target revision,
-aiKnow revision, official adapter path+content hash, model, thinking level,
-aiKnow prompt text, tool whitelists, and all scenario questions.
-A prior run recorded under a different fingerprint is not reused.
+Methods:
+  aiknow     Official aiKnow Pi adapter (F:/MyWork/aiKnow/integrations/pi/aiknow)
+  grep       Built-in read/grep/find/ls only
+  tokensave  Local Pi adapter that wraps `tokensave tool <name> --json`
+  graphify   Local Pi adapter that wraps graphify's BFS/explain/affected CLI
+
+Scope:
+  Set BENCHMARK_SCOPE=impact_only (env) to run only the 12 impact-scenario
+  sessions (3 reps x 4 methods). Otherwise the full execution_order runs
+  (18 sessions -- lifecycle + architecture + impact for aiknow + grep only;
+  new methods currently only participate in impact_only).
+
+Reuse:
+  Session records are keyed by a per-method fingerprint covering the method's
+  own inputs (prompt, tool allowlist, extension path + content hash, model,
+  thinking, target revision, all scenario questions). Changing one method's
+  prompt does NOT invalidate other methods' recorded sessions.
 """
 
 import hashlib
@@ -32,8 +46,15 @@ PROMPTS = ROOT / "prompts"
 BLIND = ROOT / "blind"
 BLIND_ANSWERS = BLIND / "answers"
 
-ADAPTER_DIR = Path("F:/MyWork/aiKnow/integrations/pi/aiknow")
-EXTENSION = ADAPTER_DIR / "index.ts"
+AIKNOW_ADAPTER_DIR = Path("F:/MyWork/aiKnow/integrations/pi/aiknow")
+AIKNOW_EXTENSION = AIKNOW_ADAPTER_DIR / "index.ts"
+TOKENSAVE_ADAPTER_DIR = ROOT / "extensions" / "tokensave"
+TOKENSAVE_EXTENSION = TOKENSAVE_ADAPTER_DIR / "index.ts"
+GRAPHIFY_ADAPTER_DIR = ROOT / "extensions" / "graphify"
+GRAPHIFY_EXTENSION = GRAPHIFY_ADAPTER_DIR / "index.ts"
+
+# Tokensave binary lives under ~/tools/tokensave for this benchmark host.
+TOKENSAVE_BIN_DIR = Path(os.environ.get("TOKENSAVE_BIN_DIR", str(Path.home() / "tools" / "tokensave")))
 
 PI = shutil.which("pi.cmd" if os.name == "nt" else "pi")
 if not PI:
@@ -42,7 +63,20 @@ if not PI:
 for directory in (SESSIONS, ANSWERS, LOGS, PROMPTS, BLIND, BLIND_ANSWERS):
     directory.mkdir(parents=True, exist_ok=True)
 
-# ── Prompt text ───────────────────────────────────────────────────────────────
+# ── Scope selection ──────────────────────────────────────────────────────────
+
+SCOPE = os.environ.get("BENCHMARK_SCOPE", "impact_only").strip()
+if SCOPE == "impact_only":
+    EXECUTION_ORDER = CONFIG["impact_only_execution_order"]
+    EXPECTED_COUNT = len(EXECUTION_ORDER)
+elif SCOPE == "full":
+    EXECUTION_ORDER = CONFIG["execution_order"]
+    EXPECTED_COUNT = len(EXECUTION_ORDER)
+else:
+    raise SystemExit(f"Unknown BENCHMARK_SCOPE={SCOPE!r} (expected 'impact_only' or 'full')")
+print(f"Scope: {SCOPE} ({EXPECTED_COUNT} sessions)", flush=True)
+
+# ── Prompt text ──────────────────────────────────────────────────────────────
 
 COMMON = """You are performing one read-only repository exploration benchmark. Do not edit files or run commands that change repository or index state. Keep the complete investigation to at most 25 total tool calls. Stop when every requested part has sufficient evidence. Do not mention the discovery method in the final answer.
 
@@ -56,51 +90,149 @@ Return exactly these sections:
 Be concise but complete. Every important claim should cite an exact repository-relative file and line or narrow line range. Distinguish directly evidenced facts from inference.
 """
 
-# Production: no fixed tier/budget/depth/details — let the adapter choose defaults.
 AIKNOW = """Use aiKnow as the only repository discovery and reading mechanism. Do not use built-in read, grep, find, ls, bash, subagents, or other discovery tools. Start with one aiknow_search to orient; follow targeted aiknow_read calls on relevant ranges only. Do not call aiknow_sync: the index is confirmed warm.
 """
 
 GREP = """Use only built-in grep, read, find, and ls for repository discovery and reading. Do not use aiKnow, bash, subagents, or other discovery tools. Prefer targeted searches and line ranges; avoid duplicate or full-file reads.
 """
 
-# Production-active tools (matches what the official adapter registers).
-AIKNOW_TOOLS = "aiknow_search,aiknow_read,aiknow_status,aiknow_capabilities,aiknow_sync"
+TOKENSAVE = """Use tokensave as the only repository discovery and reading mechanism. Do not use built-in read, grep, find, ls, bash, subagents, or other discovery tools. Start with tokensave_context (broad task) or tokensave_search (specific symbol) to orient; follow with tokensave_body / tokensave_read for source detail. The tokensave index is warm.
+"""
+
+GRAPHIFY = """Use graphify as the only repository discovery and reading mechanism. Do not use built-in read, grep, find, ls, bash, subagents, or other discovery tools. Start with graphify_query for a symbol or concept; use graphify_explain to zoom in on a node's neighbors; use graphify_affected for impact analysis; use graphify_read to inspect source once the graph points at a file. The graph is up to date.
+"""
+
+HYBRID = """Use aiknow_search for discovery and built-in read/grep/find/ls for verification. Recommended pattern:
+
+1. First call: aiknow_search with intent='impact' and query=<the key type, class, or function name from the question> -- this returns a Definition -> Callers -> Tests -> Callees tree naming exact file:line locations to investigate. If the seed looks wrong (points at a test constant instead of the real declaration), retry with a more specific query.
+2. Then use read/grep/find/ls to open those file:line ranges, verify claims (especially assertion style: exact-equality vs partial-match), and cover anything the tree missed.
+3. Do NOT use aiknow_read, bash, subagents, or other retrieval tools.
+
+Stop calling aiknow_search after 1-2 calls total. Everything else is read/grep. The aiKnow index is warm.
+"""
+
+# Production-active tool surfaces (must match each extension's registered names).
+AIKNOW_TOOLS = "aiknow_search,aiknow_read,aiknow_impact,aiknow_status,aiknow_capabilities,aiknow_sync"
 GREP_TOOLS = "read,grep,find,ls"
+TOKENSAVE_TOOLS = "tokensave_search,tokensave_context,tokensave_body,tokensave_read"
+GRAPHIFY_TOOLS = "graphify_query,graphify_explain,graphify_affected,graphify_read"
+HYBRID_TOOLS = "aiknow_search,read,grep,find,ls"
+
+# Exclusions keep each method truly isolated when pi ships new default tools.
 GREP_EXCLUDE_TOOLS = (
     "aiknow_search,aiknow_read,aiknow_impact,aiknow_file_map,"
-    "aiknow_neighbors,aiknow_status,aiknow_capabilities,aiknow_sync"
+    "aiknow_neighbors,aiknow_status,aiknow_capabilities,aiknow_sync,"
+    "tokensave_search,tokensave_context,tokensave_body,tokensave_read,"
+    "graphify_query,graphify_explain,graphify_affected,graphify_read"
 )
+NON_BUILTIN_EXCLUDE = "read,grep,find,ls,bash,subagent"
 
-# ── Fingerprint ───────────────────────────────────────────────────────────────
 
-def adapter_content_hash() -> str:
+def adapter_content_hash(adapter_dir: Path) -> str:
     h = hashlib.sha256()
-    for f in sorted(ADAPTER_DIR.glob("*.ts")):
+    for f in sorted(adapter_dir.glob("*.ts")):
         h.update(f.read_bytes())
     return h.hexdigest()[:16]
 
 
-def compute_run_fingerprint() -> str:
+# ── Method registry ──────────────────────────────────────────────────────────
+
+METHODS = {
+    "aiknow": {
+        "prompt": AIKNOW,
+        "tools": AIKNOW_TOOLS,
+        "extension": AIKNOW_EXTENSION,
+        "adapter_dir": AIKNOW_ADAPTER_DIR,
+        "extra_exclude": (
+            "tokensave_search,tokensave_context,tokensave_body,tokensave_read,"
+            "graphify_query,graphify_explain,graphify_affected,graphify_read"
+        ),
+    },
+    "grep": {
+        "prompt": GREP,
+        "tools": GREP_TOOLS,
+        "extension": None,
+        "adapter_dir": None,
+        "extra_exclude": GREP_EXCLUDE_TOOLS,
+    },
+    "tokensave": {
+        "prompt": TOKENSAVE,
+        "tools": TOKENSAVE_TOOLS,
+        "extension": TOKENSAVE_EXTENSION,
+        "adapter_dir": TOKENSAVE_ADAPTER_DIR,
+        "extra_exclude": (
+            "aiknow_search,aiknow_read,aiknow_impact,aiknow_file_map,"
+            "aiknow_neighbors,aiknow_status,aiknow_capabilities,aiknow_sync,"
+            "graphify_query,graphify_explain,graphify_affected,graphify_read"
+        ),
+    },
+    "graphify": {
+        "prompt": GRAPHIFY,
+        "tools": GRAPHIFY_TOOLS,
+        "extension": GRAPHIFY_EXTENSION,
+        "adapter_dir": GRAPHIFY_ADAPTER_DIR,
+        "extra_exclude": (
+            "aiknow_search,aiknow_read,aiknow_impact,aiknow_file_map,"
+            "aiknow_neighbors,aiknow_status,aiknow_capabilities,aiknow_sync,"
+            "tokensave_search,tokensave_context,tokensave_body,tokensave_read"
+        ),
+    },
+    "hybrid": {
+        "prompt": HYBRID,
+        "tools": HYBRID_TOOLS,
+        # Load the aiKnow extension so aiknow_search is available, but keep
+        # built-in read/grep/find/ls enabled and block every other retrieval
+        # tool (including aiknow_read) so this method is aiknow_search + grep.
+        "extension": AIKNOW_EXTENSION,
+        "adapter_dir": AIKNOW_ADAPTER_DIR,
+        "extra_exclude": (
+            "aiknow_read,aiknow_impact,aiknow_file_map,"
+            "aiknow_neighbors,aiknow_status,aiknow_capabilities,aiknow_sync,"
+            "tokensave_search,tokensave_context,tokensave_body,tokensave_read,"
+            "graphify_query,graphify_explain,graphify_affected,graphify_read"
+        ),
+    },
+}
+
+ALLOWED_TOOL_NAMES = {
+    method: set(METHODS[method]["tools"].split(","))
+    for method in METHODS
+}
+
+# The hybrid method may legally call any tool in its allowlist (aiknow_search
+# plus the built-ins). Isolation still catches misuse of aiknow_read etc.
+
+# ── Fingerprint (per method) ─────────────────────────────────────────────────
+
+def method_fingerprint(method: str) -> str:
+    """Hash only the inputs that affect this method's session outputs.
+
+    Changing one method's prompt/tools/extension does NOT invalidate any
+    other method's recorded sessions.
+    """
+    m = METHODS[method]
     h = hashlib.sha256()
+    h.update(method.encode())
     h.update(CONFIG["target_revision"].encode())
-    h.update(CONFIG["aiknow_revision"].encode())
-    h.update(str(EXTENSION).encode())
-    h.update(adapter_content_hash().encode())
     h.update(CONFIG["model"].encode())
     h.update(CONFIG["thinking"].encode())
-    h.update(AIKNOW.encode())
-    h.update(AIKNOW_TOOLS.encode())
-    h.update(GREP.encode())
-    h.update(GREP_TOOLS.encode())
+    h.update(m["prompt"].encode())
+    h.update(m["tools"].encode())
+    if m.get("extension"):
+        h.update(str(m["extension"]).encode())
+        h.update(adapter_content_hash(m["adapter_dir"]).encode())
+    if method in ("aiknow", "hybrid"):
+        h.update(CONFIG["aiknow_revision"].encode())
     for s in CONFIG["scenarios"]:
         h.update(s["question"].encode())
     return h.hexdigest()[:16]
 
 
-RUN_FINGERPRINT = compute_run_fingerprint()
-print(f"Run fingerprint: {RUN_FINGERPRINT}", flush=True)
+METHOD_FINGERPRINTS = {m: method_fingerprint(m) for m in METHODS}
+for m, fp in METHOD_FINGERPRINTS.items():
+    print(f"  fingerprint[{m}] = {fp}", flush=True)
 
-# ── Session execution ─────────────────────────────────────────────────────────
+# ── Session execution ────────────────────────────────────────────────────────
 
 scenario_by_id = {s["id"]: s for s in CONFIG["scenarios"]}
 results_path = ROOT / "run-status.json"
@@ -108,15 +240,20 @@ status: list[dict] = []
 if results_path.exists():
     status = json.loads(results_path.read_text(encoding="utf-8"))
 
-# Only reuse sessions that match the current fingerprint.
+# Only reuse sessions that match the current per-method fingerprint.
 completed = {
     item["name"]
     for item in status
     if item.get("exit_code") == 0
     and item.get("session_file")
-    and item.get("run_fingerprint") == RUN_FINGERPRINT
+    and item.get("method") in METHOD_FINGERPRINTS
+    and item.get("method_fingerprint") == METHOD_FINGERPRINTS[item["method"]]
 }
-incompatible = {item["name"] for item in status} - completed
+incompatible = {
+    item["name"] for item in status
+    if item.get("method") in METHOD_FINGERPRINTS
+    and item.get("method_fingerprint") != METHOD_FINGERPRINTS[item["method"]]
+}
 if incompatible:
     print(
         f"NOTE: {len(incompatible)} prior record(s) have a different fingerprint "
@@ -129,28 +266,48 @@ def current_jsonl() -> set[Path]:
     return {p.resolve() for p in SESSIONS.glob("*.jsonl")}
 
 
-for name in CONFIG["execution_order"]:
+def parse_session_name(name: str) -> tuple[str, str, int]:
+    """<scenario>-<method>-r<n> -> (scenario, method, n)."""
+    scenario_id, method, repetition = name.rsplit("-", 2)
+    return scenario_id, method, int(repetition[1:])
+
+
+for name in EXECUTION_ORDER:
     if name in completed:
         print(f"SKIP {name}: already completed (fingerprint match)", flush=True)
         continue
-    scenario_id, method, repetition = name.rsplit("-", 2)
+    scenario_id, method, repetition = parse_session_name(name)
+    if method not in METHODS:
+        print(f"SKIP {name}: unknown method {method!r}", flush=True)
+        continue
     scenario = scenario_by_id[scenario_id]
-    method_text = AIKNOW if method == "aiknow" else GREP
-    prompt = COMMON + "\n" + method_text + "\nBenchmark question:\n" + scenario["question"]
+    m = METHODS[method]
+    prompt = COMMON + "\n" + m["prompt"] + "\nBenchmark question:\n" + scenario["question"]
     before = current_jsonl()
     cmd = [
         PI, "--model", CONFIG["model"], "--thinking", CONFIG["thinking"],
         "--mode", "text", "--print", "--session-dir", str(SESSIONS), "--name", name,
     ]
-    if method == "aiknow":
-        cmd += ["--extension", str(EXTENSION), "--tools", AIKNOW_TOOLS]
+    cmd += ["--tools", m["tools"]]
+    if method == "grep" or method == "hybrid":
+        cmd += ["--exclude-tools", m["extra_exclude"]]
     else:
-        cmd += ["--tools", GREP_TOOLS, "--exclude-tools", GREP_EXCLUDE_TOOLS]
+        # Non-grep/hybrid methods disable all built-in read/grep/find/ls/bash/subagent
+        # AND every other method's tools to keep isolation strict.
+        exclude = NON_BUILTIN_EXCLUDE
+        if m["extra_exclude"]:
+            exclude = exclude + "," + m["extra_exclude"]
+        cmd += ["--exclude-tools", exclude]
+    if m.get("extension"):
+        cmd += ["--extension", str(m["extension"])]
     prompt_path = PROMPTS / f"{name}.md"
     prompt_path.write_text(prompt, encoding="utf-8")
     cmd.append(f"@{prompt_path}")
     env = os.environ.copy()
     env["AIKNOW_CLI"] = "F:/MyWork/aiKnow/dist/cli.js"
+    # Put tokensave binary on PATH for tokensave sessions and their extension.
+    if method == "tokensave":
+        env["PATH"] = str(TOKENSAVE_BIN_DIR) + os.pathsep + env.get("PATH", "")
     print(f"START {name}", flush=True)
     started = time.time()
     proc = subprocess.run(
@@ -168,14 +325,16 @@ for name in CONFIG["execution_order"]:
         "scenario": scenario_id,
         "category": scenario["category"],
         "method": method,
-        "repetition": int(repetition[1:]),
+        "repetition": repetition,
         "model": CONFIG["model"],
         "thinking": CONFIG["thinking"],
         "target_revision": CONFIG["target_revision"],
         "aiknow_revision": CONFIG["aiknow_revision"],
-        "adapter_path": str(EXTENSION),
-        "adapter_content_hash": adapter_content_hash(),
-        "run_fingerprint": RUN_FINGERPRINT,
+        "adapter_path": str(m["extension"]) if m.get("extension") else None,
+        "adapter_content_hash": (
+            adapter_content_hash(m["adapter_dir"]) if m.get("adapter_dir") else None
+        ),
+        "method_fingerprint": METHOD_FINGERPRINTS[method],
         "elapsed_wall_seconds": round(elapsed, 3),
         "exit_code": proc.returncode,
         "session_file": session_file,
@@ -195,19 +354,20 @@ for name in CONFIG["execution_order"]:
 
 print("Benchmark session execution complete.", flush=True)
 
-# ── Post-session analysis ─────────────────────────────────────────────────────
+# ── Post-session analysis ────────────────────────────────────────────────────
 
-# Reload status after execution.
 status = json.loads(results_path.read_text(encoding="utf-8"))
 valid = [
     item for item in status
     if item.get("exit_code") == 0
     and item.get("session_file")
-    and item.get("run_fingerprint") == RUN_FINGERPRINT
+    and item["name"] in EXECUTION_ORDER
+    and item.get("method") in METHOD_FINGERPRINTS
+    and item.get("method_fingerprint") == METHOD_FINGERPRINTS[item["method"]]
 ]
-if len(valid) < 18:
+if len(valid) < EXPECTED_COUNT:
     print(
-        f"Only {len(valid)}/18 valid sessions for this fingerprint — "
+        f"Only {len(valid)}/{EXPECTED_COUNT} valid sessions -- "
         "skipping output generation.",
         flush=True,
     )
@@ -323,7 +483,6 @@ def analyze_session(path: str) -> dict:
     }
 
 
-# Merge session analysis with run-status metadata.
 session_reports: list[dict] = []
 for item in valid:
     sf = item["session_file"]
@@ -342,153 +501,128 @@ for item in valid:
     })
     session_reports.append(report)
 
-# Write retrieval-efficiency-results.json.
 eff_path = ROOT / "retrieval-efficiency-results.json"
 eff_path.write_text(json.dumps(session_reports, indent=2, ensure_ascii=False), encoding="utf-8")
 print(f"Wrote {eff_path}", flush=True)
 
-# ── Objective gates ───────────────────────────────────────────────────────────
-
-aiknow_sessions = [r for r in session_reports if r["method"] == "aiknow"]
-grep_sessions = [r for r in session_reports if r["method"] == "grep"]
-
-
-def mean(values: list[float]) -> float:
-    return sum(values) / len(values) if values else 0.0
-
+# ── Tool isolation ───────────────────────────────────────────────────────────
 
 def check_tool_isolation(reports: list[dict]) -> list[str]:
     failures = []
     for r in reports:
         by_name = r.get("tool_calls_by_name", {})
-        if r["method"] == "aiknow":
-            bad = [k for k in by_name if k in ("read", "grep", "find", "ls", "bash")]
-            if bad:
-                failures.append(f"{r['name']}: aiknow session used {bad}")
-        else:
-            bad = [k for k in by_name if k.startswith("aiknow_")]
-            if bad:
-                failures.append(f"{r['name']}: grep session used {bad}")
+        allowed = ALLOWED_TOOL_NAMES.get(r["method"], set())
+        bad = [k for k in by_name if k not in allowed]
+        if bad:
+            failures.append(f"{r['name']} ({r['method']}): unexpected tools {bad}")
     return failures
 
 
 isolation_failures = check_tool_isolation(session_reports)
 
-aiknow_tool_calls = [r.get("tool_calls", 0) for r in aiknow_sessions]
-grep_tool_calls = [r.get("tool_calls", 0) for r in grep_sessions]
-aiknow_durations = [r.get("duration_seconds", 0.0) for r in aiknow_sessions]
-grep_durations = [r.get("duration_seconds", 0.0) for r in grep_sessions]
-aiknow_costs = [r.get("total_cost_usd", 0.0) for r in aiknow_sessions]
-grep_costs = [r.get("total_cost_usd", 0.0) for r in grep_sessions]
-aiknow_tokens = [r.get("sum_request_input_tokens", 0) for r in aiknow_sessions]
-grep_tokens = [r.get("sum_request_input_tokens", 0) for r in grep_sessions]
-aiknow_api = [r.get("assistant_api_calls", 0) for r in aiknow_sessions]
-grep_api = [r.get("assistant_api_calls", 0) for r in grep_sessions]
+# ── Per-method metric summaries ──────────────────────────────────────────────
 
-grep_mean_calls = mean(grep_tool_calls)
-grep_mean_dur = mean(grep_durations)
-grep_mean_cost = mean(grep_costs)
-grep_mean_tokens = mean(grep_tokens)
-grep_mean_api = mean(grep_api)
+def mean(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
 
-aiknow_mean_calls = mean(aiknow_tool_calls)
-aiknow_mean_dur = mean(aiknow_durations)
-aiknow_mean_cost = mean(aiknow_costs)
-aiknow_mean_tokens = mean(aiknow_tokens)
-aiknow_mean_api = mean(aiknow_api)
 
-# Gate definitions (all must pass independently).
-#   efficiency: mean aiKnow calls ≤ 80% grep; no trial > 25; mean duration ≤ 120% grep; no trial > 360s
-#   cost:       mean aiKnow cost ≤ 80% grep; no trial > $1.50; tokens/API ≤ 120% grep; no trial > 3M tokens or 50 calls
-gate_eff_mean_calls = aiknow_mean_calls <= 0.80 * grep_mean_calls
-gate_eff_no_trial_calls = all(c <= 25 for c in aiknow_tool_calls)
-gate_eff_mean_dur = aiknow_mean_dur <= 1.20 * grep_mean_dur
-gate_eff_no_trial_dur = all(d <= 360 for d in aiknow_durations)
-gate_cost_mean = aiknow_mean_cost <= 0.80 * grep_mean_cost
-gate_cost_no_trial = all(c <= 1.50 for c in aiknow_costs)
-gate_cost_tokens = aiknow_mean_tokens <= 1.20 * grep_mean_tokens
-gate_cost_api = aiknow_mean_api <= 1.20 * grep_mean_api
-gate_cost_no_trial_tokens = all(t <= 3_000_000 for t in aiknow_tokens)
-gate_cost_no_trial_api = all(a <= 50 for a in aiknow_api)
+methods_present = sorted({r["method"] for r in session_reports})
 
-efficiency_axis_pass = all([
-    gate_eff_mean_calls, gate_eff_no_trial_calls,
-    gate_eff_mean_dur, gate_eff_no_trial_dur,
-])
-cost_axis_pass = all([
-    gate_cost_mean, gate_cost_no_trial,
-    gate_cost_tokens, gate_cost_api,
-    gate_cost_no_trial_tokens, gate_cost_no_trial_api,
-])
+def method_stats(method: str) -> dict:
+    rs = [r for r in session_reports if r["method"] == method]
+    return {
+        "count": len(rs),
+        "tool_calls": mean([r.get("tool_calls", 0) for r in rs]),
+        "duration_seconds": mean([r.get("duration_seconds", 0.0) for r in rs]),
+        "total_cost_usd": mean([r.get("total_cost_usd", 0.0) for r in rs]),
+        "sum_request_input_tokens": mean([r.get("sum_request_input_tokens", 0) for r in rs]),
+        "assistant_api_calls": mean([r.get("assistant_api_calls", 0) for r in rs]),
+        "output_tokens": mean([r.get("output_tokens", 0) for r in rs]),
+    }
 
-aiknow_ceilings = []
-for r in aiknow_sessions:
-    tc = r.get("tool_calls", 0)
-    dur = r.get("duration_seconds", 0.0)
-    cost = r.get("total_cost_usd", 0.0)
-    tokens = r.get("sum_request_input_tokens", 0)
-    api = r.get("assistant_api_calls", 0)
-    trial_pass = tc <= 25 and dur <= 360 and cost <= 1.50 and tokens <= 3_000_000 and api <= 50
-    aiknow_ceilings.append({
-        "name": r["name"],
-        "tool_calls": tc,
-        "duration_seconds": dur,
-        "total_cost_usd": cost,
-        "sum_request_input_tokens": tokens,
-        "assistant_api_calls": api,
-        "pass": trial_pass,
-    })
+
+means = {m: method_stats(m) for m in methods_present}
+
+# Grep is the baseline for efficiency / cost gates.
+grep_stats = means.get("grep")
+
+# ── Objective gates (per non-grep method vs grep baseline) ────────────────────
+
+def gate_axis(method: str) -> dict:
+    rs = [r for r in session_reports if r["method"] == method]
+    if not rs or method == "grep" or not grep_stats:
+        return {}
+    tool_calls = [r.get("tool_calls", 0) for r in rs]
+    durations = [r.get("duration_seconds", 0.0) for r in rs]
+    costs = [r.get("total_cost_usd", 0.0) for r in rs]
+    tokens = [r.get("sum_request_input_tokens", 0) for r in rs]
+    api = [r.get("assistant_api_calls", 0) for r in rs]
+    mstats = means[method]
+    g = grep_stats
+    gates = {
+        "eff_mean_calls_le_80pct_grep": mstats["tool_calls"] <= 0.80 * g["tool_calls"],
+        "eff_no_trial_gt_25_calls": all(c <= 25 for c in tool_calls),
+        "eff_mean_duration_le_120pct_grep": mstats["duration_seconds"] <= 1.20 * g["duration_seconds"],
+        "eff_no_trial_gt_360s": all(d <= 360 for d in durations),
+        "cost_mean_le_80pct_grep": mstats["total_cost_usd"] <= 0.80 * g["total_cost_usd"],
+        "cost_no_trial_gt_1_50_usd": all(c <= 1.50 for c in costs),
+        "cost_tokens_le_120pct_grep": mstats["sum_request_input_tokens"] <= 1.20 * g["sum_request_input_tokens"],
+        "cost_api_calls_le_120pct_grep": mstats["assistant_api_calls"] <= 1.20 * g["assistant_api_calls"],
+        "cost_no_trial_gt_3M_tokens": all(t <= 3_000_000 for t in tokens),
+        "cost_no_trial_gt_50_api_calls": all(a <= 50 for a in api),
+    }
+    eff_pass = all([gates["eff_mean_calls_le_80pct_grep"], gates["eff_no_trial_gt_25_calls"],
+                    gates["eff_mean_duration_le_120pct_grep"], gates["eff_no_trial_gt_360s"]])
+    cost_pass = all([gates["cost_mean_le_80pct_grep"], gates["cost_no_trial_gt_1_50_usd"],
+                     gates["cost_tokens_le_120pct_grep"], gates["cost_api_calls_le_120pct_grep"],
+                     gates["cost_no_trial_gt_3M_tokens"], gates["cost_no_trial_gt_50_api_calls"]])
+    ceilings = []
+    for r in rs:
+        tc = r.get("tool_calls", 0)
+        dur = r.get("duration_seconds", 0.0)
+        cost = r.get("total_cost_usd", 0.0)
+        toks = r.get("sum_request_input_tokens", 0)
+        a = r.get("assistant_api_calls", 0)
+        ceilings.append({
+            "name": r["name"], "tool_calls": tc, "duration_seconds": dur,
+            "total_cost_usd": cost, "sum_request_input_tokens": toks,
+            "assistant_api_calls": a,
+            "pass": tc <= 25 and dur <= 360 and cost <= 1.50 and toks <= 3_000_000 and a <= 50,
+        })
+    ratios = {
+        "tool_calls": (mstats["tool_calls"] / g["tool_calls"]) if g["tool_calls"] else None,
+        "duration_seconds": (mstats["duration_seconds"] / g["duration_seconds"]) if g["duration_seconds"] else None,
+        "total_cost_usd": (mstats["total_cost_usd"] / g["total_cost_usd"]) if g["total_cost_usd"] else None,
+        "sum_request_input_tokens": (mstats["sum_request_input_tokens"] / g["sum_request_input_tokens"]) if g["sum_request_input_tokens"] else None,
+        "assistant_api_calls": (mstats["assistant_api_calls"] / g["assistant_api_calls"]) if g["assistant_api_calls"] else None,
+    }
+    return {
+        "gates": gates,
+        "ceilings": ceilings,
+        "over_grep_ratios": ratios,
+        "efficiency_axis_pass": eff_pass,
+        "cost_axis_pass": cost_pass,
+    }
+
+
+method_axes = {m: gate_axis(m) for m in methods_present if m != "grep"}
 
 obj = {
-    "run_fingerprint": RUN_FINGERPRINT,
+    "scope": SCOPE,
+    "method_fingerprints": METHOD_FINGERPRINTS,
     "records": len(valid),
+    "methods": methods_present,
     "tool_isolation_pass": len(isolation_failures) == 0,
     "tool_isolation_failures": isolation_failures,
-    "means": {
-        "aiknow": {
-            "tool_calls": aiknow_mean_calls,
-            "duration_seconds": aiknow_mean_dur,
-            "total_cost_usd": aiknow_mean_cost,
-            "sum_request_input_tokens": aiknow_mean_tokens,
-            "assistant_api_calls": aiknow_mean_api,
-        },
-        "grep": {
-            "tool_calls": grep_mean_calls,
-            "duration_seconds": grep_mean_dur,
-            "total_cost_usd": grep_mean_cost,
-            "sum_request_input_tokens": grep_mean_tokens,
-            "assistant_api_calls": grep_mean_api,
-        },
-    },
-    "aiknow_over_grep_ratios": {
-        "tool_calls": aiknow_mean_calls / grep_mean_calls if grep_mean_calls else None,
-        "duration_seconds": aiknow_mean_dur / grep_mean_dur if grep_mean_dur else None,
-        "total_cost_usd": aiknow_mean_cost / grep_mean_cost if grep_mean_cost else None,
-        "sum_request_input_tokens": aiknow_mean_tokens / grep_mean_tokens if grep_mean_tokens else None,
-        "assistant_api_calls": aiknow_mean_api / grep_mean_api if grep_mean_api else None,
-    },
-    "gates": {
-        "eff_mean_calls_le_80pct_grep": gate_eff_mean_calls,
-        "eff_no_trial_gt_25_calls": gate_eff_no_trial_calls,
-        "eff_mean_duration_le_120pct_grep": gate_eff_mean_dur,
-        "eff_no_trial_gt_360s": gate_eff_no_trial_dur,
-        "cost_mean_le_80pct_grep": gate_cost_mean,
-        "cost_no_trial_gt_1_50_usd": gate_cost_no_trial,
-        "cost_tokens_le_120pct_grep": gate_cost_tokens,
-        "cost_api_calls_le_120pct_grep": gate_cost_api,
-        "cost_no_trial_gt_3M_tokens": gate_cost_no_trial_tokens,
-        "cost_no_trial_gt_50_api_calls": gate_cost_no_trial_api,
-    },
-    "aiknow_ceilings": aiknow_ceilings,
-    "efficiency_axis_pass": efficiency_axis_pass,
-    "cost_axis_pass": cost_axis_pass,
+    "means": means,
+    "per_method": method_axes,
     "quality_axis": "PENDING_BLINDED_HUMAN_SCORING",
 }
 obj_path = ROOT / "objective-summary.json"
 obj_path.write_text(json.dumps(obj, indent=2), encoding="utf-8")
 print(f"Wrote {obj_path}", flush=True)
 
-# ── Blinded review packet ─────────────────────────────────────────────────────
+# ── Blinded review packet ────────────────────────────────────────────────────
 
 RUBRIC = """# Blinded answer-quality rubric (10 points)
 
@@ -518,12 +652,12 @@ Score each anonymized final answer before seeing method labels or usage/cost dat
 Record one integer per dimension and a total out of 10. Add a short justification. Do not infer or guess the discovery method.
 """
 
-# Shuffle sessions by scenario group (interleave aiknow/grep within each group)
-# so anonymous IDs are unpredictable.
-random.seed(42)
+# Shuffle the valid sessions into a per-scope stable order (seed varies with
+# scope so switching SCOPE re-shuffles cleanly).
+seed = 42 if SCOPE == "full" else 4212
+random.seed(seed)
 shuffled = list(valid)
 random.shuffle(shuffled)
-# Stable anonymous IDs A01..A18 assigned to shuffled order.
 mapping = []
 for idx, item in enumerate(shuffled):
     anon_id = f"A{idx + 1:02d}"
@@ -535,13 +669,15 @@ for idx, item in enumerate(shuffled):
         "repetition": item["repetition"],
     })
 
-# Write blind-mapping.json (separate from packet — method not exposed in packet).
+# Reset blind/ so the packet always matches the current scope + shuffle.
+for old in BLIND_ANSWERS.glob("*.md"):
+    old.unlink()
+
 (BLIND / "blind-mapping.json").write_text(
     json.dumps(mapping, indent=2, ensure_ascii=False), encoding="utf-8"
 )
 print(f"Wrote {BLIND / 'blind-mapping.json'}", flush=True)
 
-# Write per-answer files under blind/answers/.
 for entry in mapping:
     anon_id = entry["anonymous_id"]
     session_name = entry["session_name"]
@@ -549,7 +685,6 @@ for entry in mapping:
     text = answer_path.read_text(encoding="utf-8") if answer_path.exists() else ""
     (BLIND_ANSWERS / f"{anon_id}.md").write_text(text, encoding="utf-8")
 
-# Assemble reviewer-packet.md: rubric + each answer, no method labels.
 lines = ["# Blinded reviewer packet\n", RUBRIC]
 for entry in mapping:
     anon_id = entry["anonymous_id"]
@@ -564,20 +699,17 @@ for entry in mapping:
 (BLIND / "reviewer-packet.md").write_text("\n".join(lines), encoding="utf-8")
 print(f"Wrote {BLIND / 'reviewer-packet.md'}", flush=True)
 
-# Write empty scoring sheet (do not overwrite if already filled in).
+# Empty scoring sheet; deleted+rewritten because IDs change per scope.
 scoring_path = BLIND / "scoring-sheet.csv"
 header = "anonymous_id,factual_correctness_0_2,scenario_completeness_0_2,evidence_traceability_0_2,cross_boundary_reasoning_0_2,tests_safety_guidance_0_2,total_0_10,justification"
-if not scoring_path.exists():
-    rows = [header] + [f"{e['anonymous_id']},,,,,,," for e in mapping]
-    scoring_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
-    print(f"Wrote {scoring_path}", flush=True)
-else:
-    print(f"Preserved existing {scoring_path}", flush=True)
+rows = [header] + [f"{e['anonymous_id']},,,,,,," for e in mapping]
+scoring_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+print(f"Wrote {scoring_path}", flush=True)
 
 print("\nAll output files written. Benchmark run complete.", flush=True)
 print(f"  retrieval-efficiency-results.json: {eff_path}", flush=True)
 print(f"  objective-summary.json:            {obj_path}", flush=True)
 print(f"  blind/blind-mapping.json:          {BLIND / 'blind-mapping.json'}", flush=True)
 print(f"  blind/reviewer-packet.md:          {BLIND / 'reviewer-packet.md'}", flush=True)
-print(f"\nEfficiency axis pass: {efficiency_axis_pass}", flush=True)
-print(f"Cost axis pass:       {cost_axis_pass}", flush=True)
+for m, axes in method_axes.items():
+    print(f"\n[{m}] efficiency_axis_pass={axes.get('efficiency_axis_pass')} cost_axis_pass={axes.get('cost_axis_pass')}", flush=True)

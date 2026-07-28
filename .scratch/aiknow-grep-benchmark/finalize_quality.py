@@ -1,14 +1,22 @@
-"""finalize_quality.py — Post-review quality finalization.
+"""finalize_quality.py — Post-review quality finalization (multi-method).
 
 Validates a completed scoring sheet, joins the blind mapping to recover
-method labels, and writes quality-summary.json.
+method labels, and writes quality-summary.json with per-method means and
+per-scenario means for every method present in the mapping.
 
 Usage:
     python finalize_quality.py [scoring-sheet-path]
 
 Default scoring sheet: blind/scoring-sheet.csv
-Mapping file:          blind/blind-mapping.json (read-only; never modified)
+Mapping file:          blind/blind-mapping.json (read-only)
 Output:                blind/quality-summary.json
+
+Gate semantics (unchanged for aiKnow vs grep so results are comparable to
+prior runs; the same gates are computed independently for every non-grep
+method that has recorded sessions):
+  * quality_global_win_plus_0_5 : method mean >= grep mean + 0.5
+  * scenario_floors[scenario]   : method mean on that scenario >= grep mean
+  * quality_axis_pass           : both of the above pass
 """
 
 import csv
@@ -22,8 +30,6 @@ BLIND = ROOT / "blind"
 scoring_path = Path(sys.argv[1]) if len(sys.argv) > 1 else BLIND / "scoring-sheet.csv"
 mapping_path = BLIND / "blind-mapping.json"
 output_path = BLIND / "quality-summary.json"
-
-# ── Load and validate inputs ──────────────────────────────────────────────────
 
 if not scoring_path.exists():
     print(f"ERROR: scoring sheet not found: {scoring_path}", file=sys.stderr)
@@ -77,8 +83,6 @@ if len(scores) != len(mapping):
     )
     sys.exit(1)
 
-# ── Join mapping to recover method labels ─────────────────────────────────────
-
 joined: list[dict] = []
 for row in scores:
     anon_id = row["anonymous_id"].strip()
@@ -107,54 +111,83 @@ def method_rows(method: str) -> list[dict]:
     return [r for r in joined if r["method"] == method]
 
 
+methods_present = sorted({r["method"] for r in joined})
+scenarios = sorted({r["scenario"] for r in joined})
+
+
 def scenario_mean(rows: list[dict], scenario: str) -> float:
     return mean([r["total"] for r in rows if r["scenario"] == scenario])
 
 
-aiknow_rows = method_rows("aiknow")
-grep_rows = method_rows("grep")
+means_by_method = {m: mean([r["total"] for r in method_rows(m)]) for m in methods_present}
+scenario_means_by_method = {
+    m: {sc: scenario_mean(method_rows(m), sc) for sc in scenarios}
+    for m in methods_present
+}
 
-scenarios = sorted({r["scenario"] for r in joined})
+# Grep is the shared baseline.
+grep_mean = means_by_method.get("grep", 0.0)
 
-aiknow_mean = mean([r["total"] for r in aiknow_rows])
-grep_mean = mean([r["total"] for r in grep_rows])
-
-# Quality win: aiKnow global mean ≥ grep mean + 0.5 AND no scenario mean below grep's
-quality_global_win = aiknow_mean >= grep_mean + 0.5
-scenario_floors: dict[str, bool] = {}
-for sc in scenarios:
-    ak_sc = scenario_mean(aiknow_rows, sc)
-    gr_sc = scenario_mean(grep_rows, sc)
-    scenario_floors[sc] = ak_sc >= gr_sc
-
-quality_axis_pass = quality_global_win and all(scenario_floors.values())
+per_method: dict[str, dict] = {}
+for m in methods_present:
+    if m == "grep":
+        continue
+    m_mean = means_by_method[m]
+    quality_global_win = m_mean >= grep_mean + 0.5
+    scenario_floors: dict[str, bool] = {}
+    for sc in scenarios:
+        m_sc = scenario_means_by_method[m][sc]
+        g_sc = scenario_means_by_method.get("grep", {}).get(sc, 0.0)
+        scenario_floors[sc] = m_sc >= g_sc
+    per_method[m] = {
+        "mean": m_mean,
+        "delta_over_grep": round(m_mean - grep_mean, 4),
+        "gates": {
+            "quality_global_win_plus_0_5": quality_global_win,
+            "scenario_floors": scenario_floors,
+        },
+        "quality_axis_pass": quality_global_win and all(scenario_floors.values()),
+    }
 
 summary = {
     "scoring_sheet": str(scoring_path),
     "records": len(joined),
-    "means": {
-        "aiknow": aiknow_mean,
-        "grep": grep_mean,
-        "delta_aiknow_minus_grep": round(aiknow_mean - grep_mean, 4),
-    },
-    "scenario_means": {
-        sc: {
-            "aiknow": scenario_mean(aiknow_rows, sc),
-            "grep": scenario_mean(grep_rows, sc),
-        }
-        for sc in scenarios
-    },
-    "gates": {
-        "quality_global_win_plus_0_5": quality_global_win,
-        "scenario_floors": scenario_floors,
-    },
-    "quality_axis_pass": quality_axis_pass,
+    "methods": methods_present,
+    "means_by_method": means_by_method,
+    "scenario_means_by_method": scenario_means_by_method,
+    "per_method": per_method,
     "rows": joined,
 }
 
-# Do not modify scores — write only the summary.
+# Back-compat: expose the legacy top-level fields when only aiknow+grep are
+# present, so existing consumers keep working.
+if set(methods_present) == {"aiknow", "grep"}:
+    aiknow_mean = means_by_method["aiknow"]
+    summary["means"] = {
+        "aiknow": aiknow_mean,
+        "grep": grep_mean,
+        "delta_aiknow_minus_grep": round(aiknow_mean - grep_mean, 4),
+    }
+    summary["scenario_means"] = {
+        sc: {
+            "aiknow": scenario_means_by_method["aiknow"][sc],
+            "grep": scenario_means_by_method["grep"][sc],
+        }
+        for sc in scenarios
+    }
+    summary["gates"] = per_method["aiknow"]["gates"]
+    summary["quality_axis_pass"] = per_method["aiknow"]["quality_axis_pass"]
+
 output_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 print(f"Wrote {output_path}", flush=True)
-print(f"aiKnow mean quality: {aiknow_mean:.2f}", flush=True)
-print(f"grep mean quality:   {grep_mean:.2f}", flush=True)
-print(f"Quality axis pass:   {quality_axis_pass}", flush=True)
+print(f"grep mean quality: {grep_mean:.2f} (baseline)", flush=True)
+for m in methods_present:
+    if m == "grep":
+        continue
+    m_mean = means_by_method[m]
+    pm = per_method[m]
+    print(
+        f"[{m:10s}] mean={m_mean:.2f}  delta_vs_grep={pm['delta_over_grep']:+.2f}  "
+        f"quality_axis_pass={pm['quality_axis_pass']}",
+        flush=True,
+    )

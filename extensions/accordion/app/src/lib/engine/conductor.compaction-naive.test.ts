@@ -1986,6 +1986,66 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		expect(plan[0].kind).toBe("group");
 	});
 
+	it("keeps a suffix group when a later pre-group pass is under budget", () => {
+		// The host clears mutable conductor groups before each pass. A preserved frozen fold can
+		// make the cleared baseline fit the budget, even though the previous suffix group is still
+		// part of the desired view. The group must not flash open for one turn.
+		const blocks = [
+			chunkedBlock("old0", 0, 2_000, { foldedTokens: 2_000 }),
+			chunkedBlock("old1", 1, 2_000, { foldedTokens: 2_000 }),
+			chunkedBlock("pre", 2, 2_000, { foldedTokens: 2_000 }),
+			chunkedBlock("tail", 3, 100, { kind: "user", protected: true }),
+		];
+		const conductor = new MyCustomizeConductor({ preGroupTokens: 1 });
+		const first = conductor.conduct({ ...rolloverView(blocks), liveTokens: 110_000 });
+		const firstGroups = first.filter((command): command is Extract<typeof command, { kind: "group" }> => command.kind === "group");
+		expect(firstGroups).toHaveLength(1);
+		expect(firstGroups[0].digest).toBeUndefined(); // normal suffix group, not chunked rollover
+
+		const second = conductor.conduct({ ...rolloverView(blocks), liveTokens: 90_000 });
+		const secondGroups = second.filter((command) => command.kind === "group");
+		expect(secondGroups).toHaveLength(1);
+		expect(secondGroups[0]).toEqual(firstGroups[0]);
+	});
+
+	it("retains an older suffix group when a new pre-group rollover fires", () => {
+		const firstBlocks = [
+			chunkedBlock("old0", 0, 4_000, { foldedTokens: 4_000 }),
+			chunkedBlock("old1", 1, 4_000, { foldedTokens: 4_000 }),
+			chunkedBlock("barrier", 2, 100, { foldedTokens: 100, held: true }),
+			chunkedBlock("pre0", 3, 6_000, { foldedTokens: 6_000 }),
+			chunkedBlock("tail", 4, 100, { kind: "user", protected: true }),
+		];
+		const conductor = new MyCustomizeConductor({ preGroupTokens: 12_000 });
+		const first = conductor.conduct({ ...rolloverView(firstBlocks), liveTokens: 110_000 });
+		expect(first.some((command) => command.kind === "group" && command.ids.includes("old0"))).toBe(true);
+
+		const secondBlocks = [...firstBlocks.slice(0, 4), chunkedBlock("pre1", 4, 6_000, { foldedTokens: 6_000, turn: 6 }), firstBlocks[4]];
+		const second = conductor.conduct({ ...rolloverView(secondBlocks), liveTokens: 110_000 });
+		const groups = second.filter((command): command is Extract<typeof command, { kind: "group" }> => command.kind === "group");
+		expect(groups.some((group) => group.ids.includes("old0"))).toBe(true);
+		expect(groups.some((group) => group.digest?.startsWith("⟨chunked-compaction ·") && group.ids.includes("pre0"))).toBe(true);
+	});
+
+	it("retains an older suffix group when the later early-rollover path fires", () => {
+		const firstBlocks = [
+			chunkedBlock("old0", 0, 4_000, { foldedTokens: 4_000 }),
+			chunkedBlock("old1", 1, 4_000, { foldedTokens: 4_000 }),
+			chunkedBlock("barrier", 2, 100, { foldedTokens: 100, held: true }),
+			chunkedBlock("pre0", 3, 6_000),
+			chunkedBlock("tail", 4, 100, { kind: "user", protected: true }),
+		];
+		const conductor = new MyCustomizeConductor({ preGroupTokens: 20_000 });
+		const first = conductor.conduct({ ...rolloverView(firstBlocks), liveTokens: 110_000 });
+		expect(first.some((command) => command.kind === "group" && command.ids.includes("old0"))).toBe(true);
+
+		const secondBlocks = [...firstBlocks.slice(0, 4), chunkedBlock("pre1", 4, 6_000, { turn: 6 }), firstBlocks[4]];
+		const second = conductor.conduct({ ...rolloverView(secondBlocks), liveTokens: 110_000 });
+		const groups = second.filter((command): command is Extract<typeof command, { kind: "group" }> => command.kind === "group");
+		expect(groups.some((group) => group.ids.includes("old0"))).toBe(true);
+		expect(groups.some((group) => group.digest?.startsWith("⟨chunked-compaction ·") && group.ids.includes("pre0"))).toBe(true);
+	});
+
 	it("early rollover emits a chunked-compaction group when liveTokens exceeds cap and pre-group has enough saving", () => {
 		// Pre-group zone: 2 blocks × 6_000 tokens = 12_000 < preGroupTarget (15_000) so the fast path does not fire.
 		// No non-pre-group candidates exist, so the main fold loop leaves live unchanged.

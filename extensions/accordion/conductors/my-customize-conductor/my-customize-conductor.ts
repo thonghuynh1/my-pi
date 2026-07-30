@@ -262,7 +262,11 @@ export class MyCustomizeConductor implements Conductor {
 			return [{ kind: "group", ids, digest }];
 		};
 		if (preGroupTarget > 0) preGroupTokens = preGroupBlocks.reduce((sum, block) => sum + block.tokens, 0);
-		if (!atomicRebaseQualifies && preGroupTarget > 0) {
+		const priorRebaseGroupIds = priorPlan
+			?.filter((command): command is Extract<Command, { kind: "group" }> => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))
+			.flatMap((command) => command.ids) ?? [];
+		const rebaseAlreadyApplied = priorRebaseGroupIds.length > 0 && priorRebaseGroupIds.every((id) => byId.get(id)?.grouped === true);
+		if (!atomicRebaseQualifies && preGroupTarget > 0 && cap >= preGroupTarget && !rebaseAlreadyApplied) {
 			const nextBlock = view.blocks[view.protectedFromIndex];
 			const preGroupEndsOnTurnBoundary = nextBlock?.kind === "user" || view.protectedFromIndex === view.blocks.length;
 			const noOpen = chunkedCompaction.noOpenToolPairAcrossPreGroupTail(view, preGroupFromIndex);

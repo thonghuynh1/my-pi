@@ -92,7 +92,7 @@
 	const PROT_STEP = 2_000;
 	// Budget slider bounds + fill fraction (native range tracks don't paint a colored
 	// fill once a custom thumb is defined, so we drive it via background-size).
-	const BUDGET_MIN = 12_000;
+	const BUDGET_MIN = 50_000;
 	const budgetMax = $derived(Math.max(store.contextWindow ?? 200_000, store.budget, 200_000));
 	const budgetPct = $derived(((store.budget - BUDGET_MIN) / (budgetMax - BUDGET_MIN)) * 100);
 	let barEl = $state<HTMLDivElement>();

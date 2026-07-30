@@ -1,4 +1,0 @@
-anonymous_id,factual_correctness_0_2,scenario_completeness_0_2,evidence_traceability_0_2,cross_boundary_reasoning_0_2,tests_safety_guidance_0_2,total_0_10,justification
-A01,2,1,2,2,2,9,"Accurately traces durable and streaming aggregation with strong file-line evidence and concrete tests; persisted-snapshot compatibility and exact UI scope are identified but left unresolved."
-A02,2,2,2,2,2,10,"Complete and precise impact analysis covering durable buckets, streaming exclusion, average-cost edge cases, persistence normalization, documentation, and targeted tests with traceable evidence."
-A03,2,1,2,2,2,9,"Correctly connects ledger recording, summary buckets, live projection, rendering, and tests; historical snapshot compatibility is only noted as a possibility rather than incorporated into actionable impact guidance."

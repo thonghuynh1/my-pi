@@ -1735,6 +1735,9 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 			const members = view.blocks.filter((block) => group.ids.includes(block.id));
 			projectedLive += chunkedCompaction.estimateDefaultGroupDigestCost(members) - members.reduce((sum, block) => sum + block.tokens, 0);
 		}
+		expect(view.budget).toBe(70_000);
+		expect(chunkedCompaction.effectivePreGroupTokens(view, {})).toBe(15_000);
+		expect(70_000 - chunkedCompaction.effectivePreGroupTokens(view, {})).toBe(55_000);
 		expect(projectedLive).toBeLessThanOrEqual(55_000);
 	});
 
@@ -1749,6 +1752,81 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const second = conductor.conduct({ ...view, liveTokens: 55_000, blocks: blocks.map((block) => ({ ...block, grouped: true })) });
 		expect(first.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
 		expect(second.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(0);
+	});
+
+	it("budget reduction applies one atomic rebase through AccordionStore", () => {
+		const blocks = [...Array.from({ length: 24 }, (_, i) => blk(i, "text", 4_000, { text: `block ${i}` })), blk(24, "user", 100, { text: "tail" })];
+		const store = makeStore(blocks);
+		store.setProtect(100);
+		store.budget = 100_000;
+		store.attach(new MyCustomizeConductor());
+		store.contextWindow = 200_000;
+		store.setBudget(70_000);
+		expect(store.groups).toHaveLength(1);
+		expect(store.lastReports.some((report) => report.reason === "clamp")).toBe(false);
+		expect(store.liveTokens).toBeLessThanOrEqual(55_000);
+	}, 15_000);
+
+	it("observed budget reduction triggers atomic rebase", () => {
+		const blocks = [...Array.from({ length: 24 }, (_, i) => chunkedBlock(`observed-${i}`, i, 4_000)), chunkedBlock("observed-tail", 24, 100, { kind: "user", protected: true })];
+		const conductor = new MyCustomizeConductor();
+		conductor.conduct({ ...rolloverView(blocks), budget: 100_000, liveTokens: 50_000 });
+		const plan = conductor.conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 });
+		expect(plan.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
+	});
+
+	it("later budget reduction can trigger a new rebase", () => {
+		const conductor = new MyCustomizeConductor();
+		const firstBlocks = [...Array.from({ length: 24 }, (_, i) => chunkedBlock(`later-a-${i}`, i, 4_000)), chunkedBlock("later-tail", 24, 100, { kind: "user", protected: true })];
+		const secondBlocks = [...Array.from({ length: 24 }, (_, i) => chunkedBlock(`later-b-${i}`, i, 4_000)), chunkedBlock("later-tail-b", 24, 100, { kind: "user", protected: true })];
+		const first = conductor.conduct({ ...rolloverView(firstBlocks), budget: 70_000, liveTokens: 100_000 });
+		const second = conductor.conduct({ ...rolloverView(secondBlocks), budget: 60_000, liveTokens: 100_000 });
+		expect(first.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
+		expect(second.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
+	});
+
+	it("atomic rebase keeps complete turns in canonical order", () => {
+		const blocks = [...Array.from({ length: 8 }, (_, i) => chunkedBlock(`turn-${i}`, i, 4_000)), chunkedBlock("turn-tail", 8, 100, { kind: "user", protected: true })];
+		const plan = new MyCustomizeConductor().conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 });
+		const group = plan.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"));
+		expect(group?.ids).toEqual(blocks.slice(4, 8).map((block) => block.id));
+	});
+
+	for (const [name, barrier] of [["held blocks", { held: true }], ["existing groups", { grouped: true }], ["proactively compressed blocks", { proactivelyCompressed: true }]] as const) {
+		it(`atomic rebase stops at ${name}`, () => {
+			const blocks = [...Array.from({ length: 6 }, (_, i) => chunkedBlock(`${name}-${i}`, i, 4_000)), chunkedBlock(`${name}-barrier`, 6, 4_000, barrier), ...Array.from({ length: 4 }, (_, i) => chunkedBlock(`${name}-after-${i}`, i + 7, 4_000)), chunkedBlock(`${name}-tail`, 11, 100, { kind: "user", protected: true })];
+			const plan = new MyCustomizeConductor().conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 });
+			const group = plan.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"));
+			expect(group?.ids).toEqual(blocks.slice(0, 6).map((block) => block.id));
+		});
+	}
+
+	it("atomic rebase leaves the protected tail raw", () => {
+		const blocks = [...Array.from({ length: 8 }, (_, i) => chunkedBlock(`protected-${i}`, i, 4_000)), chunkedBlock("protected-tail", 8, 100, { kind: "user", protected: true })];
+		const plan = new MyCustomizeConductor().conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 });
+		const acted = plan.flatMap((command) => command.kind === "group" || command.kind === "fold" ? command.ids : command.kind === "replace" ? [command.id] : []);
+		expect(acted).not.toContain("protected-tail");
+	});
+
+	it("atomic rebase falls back below the pre-group target", () => {
+		const blocks = [...Array.from({ length: 8 }, (_, i) => chunkedBlock(`low-${i}`, i, 4_000)), chunkedBlock("low-tail", 8, 100, { kind: "user", protected: true })];
+		const plan = new MyCustomizeConductor().conduct({ ...rolloverView(blocks, 32_000), budget: 10_000, liveTokens: 20_000 });
+		expect(plan.some((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toBe(false);
+	});
+
+	it("atomic rebase falls back when no safe group exists", () => {
+		const blocks = [chunkedBlock("unsafe", 0, 20_000, { held: true }), chunkedBlock("unsafe-tail", 1, 100, { kind: "user", protected: true })];
+		const plan = new MyCustomizeConductor().conduct({ ...rolloverView(blocks), budget: 10_000, liveTokens: 20_100 });
+		expect(plan.some((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toBe(false);
+	});
+
+	it("normal batching resumes after atomic rebase", () => {
+		const blocks = [...Array.from({ length: 25 }, (_, i) => chunkedBlock(`resume-${i}`, i, 4_000)), chunkedBlock("resume-tail", 25, 100, { kind: "user", protected: true })];
+		const conductor = new MyCustomizeConductor();
+		const first = conductor.conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 });
+		const second = conductor.conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 });
+		expect(first.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
+		expect(second.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
 	});
 
 	it("walking skeleton emits one chunked-compaction group", () => {

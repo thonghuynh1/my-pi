@@ -252,10 +252,24 @@ export function selectCompactionRange(view: ConductorView, fromIndex: number): S
 	// The current partial turn is the turn of the first protected block.
 	// All blocks with the same turn number must stay in the protected tail.
 	const currentTurn = end < blocks.length ? blocks[end].turn : Infinity;
+	// Never begin in the middle of a turn. Excluding the partial turn is safer than
+	// splitting it across a group boundary.
+	let safeFromIndex = fromIndex;
+	while (
+		safeFromIndex < end &&
+		safeFromIndex > 0 &&
+		blocks[safeFromIndex - 1].turn === blocks[safeFromIndex].turn &&
+		!blocks[safeFromIndex].held &&
+		!blocks[safeFromIndex].grouped &&
+		!blocks[safeFromIndex].proactivelyCompressed
+	) {
+		safeFromIndex++;
+	}
+	if (safeFromIndex >= end) return null;
 
 	// Hard barrier scan: the first held/grouped/proactivelyCompressed block caps the range.
 	let harderEnd = end;
-	for (let i = fromIndex; i < end; i++) {
+	for (let i = safeFromIndex; i < end; i++) {
 		const b = blocks[i];
 		if (b.held || b.grouped || b.proactivelyCompressed) {
 			harderEnd = i;
@@ -265,12 +279,12 @@ export function selectCompactionRange(view: ConductorView, fromIndex: number): S
 
 	// Trim from the soft end: exclude blocks that belong to the current partial turn.
 	let toIndexExclusive = harderEnd;
-	while (toIndexExclusive > fromIndex && blocks[toIndexExclusive - 1].turn === currentTurn) {
+	while (toIndexExclusive > safeFromIndex && blocks[toIndexExclusive - 1].turn === currentTurn) {
 		toIndexExclusive--;
 	}
 
-	if (toIndexExclusive <= fromIndex) return null;
-	return { fromIndex, toIndexExclusive, oversizedTurnSplit: false };
+	if (toIndexExclusive <= safeFromIndex) return null;
+	return { fromIndex: safeFromIndex, toIndexExclusive, oversizedTurnSplit: false };
 }
 
 /**

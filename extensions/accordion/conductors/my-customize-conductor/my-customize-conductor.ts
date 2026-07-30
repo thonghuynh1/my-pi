@@ -90,6 +90,10 @@ export class MyCustomizeConductor implements Conductor {
 	private rolloverCount = 0;
 	private tokensSavedByRollover = 0;
 	private lastEstimatedGroupSaving = 0;
+	// Session-local trigger state. A first observation and each distinct lower budget are
+	// consumed when the view is observed, regardless of which planning path returns.
+	private observedView = false;
+	private previousBudget: number | null = null;
 	/** Pre-group blocks needing restore, set per-conduct and consumed by finishConduct. */
 	private pendingPreGroupRestore: string[] = [];
 
@@ -174,6 +178,10 @@ export class MyCustomizeConductor implements Conductor {
 		// then calibrated to real tokens), not the raw budget — else the true request overflows.
 		const cap = availableCap(view);
 		const hardCap = contextWindowCap(view);
+		const isFirstObservedView = !this.observedView;
+		const previousBudget = this.previousBudget;
+		this.observedView = true;
+		this.previousBudget = view.budget;
 		// Preserve the previous plan for early-return paths. The normal replan path clears
 		// lastPlan before reaching those paths, but valid suffix groups may still need replay.
 		const priorPlan = this.lastPlan;
@@ -209,6 +217,9 @@ export class MyCustomizeConductor implements Conductor {
 		}
 
 		const preGroupTarget = chunkedCompaction.effectivePreGroupTokens(view, this.opts);
+		const atomicRebaseQualifies = preGroupTarget > 0 && view.liveTokens > cap && cap >= preGroupTarget &&
+			(isFirstObservedView || previousBudget !== null && view.budget < previousBudget);
+		const rebaseTarget = Math.min(HOLD_BAND * cap, cap - preGroupTarget);
 		const preGroupFromIndex = preGroupTarget > 0
 			? chunkedCompaction.computePreGroupFromIndex(view, preGroupTarget, isAccumulationBoundary)
 			: view.protectedFromIndex;
@@ -250,8 +261,8 @@ export class MyCustomizeConductor implements Conductor {
 			this.lastEstimatedGroupSaving = estimatedGroupSaving;
 			return [{ kind: "group", ids, digest }];
 		};
-		if (preGroupTarget > 0) {
-			preGroupTokens = preGroupBlocks.reduce((sum, block) => sum + block.tokens, 0);
+		if (preGroupTarget > 0) preGroupTokens = preGroupBlocks.reduce((sum, block) => sum + block.tokens, 0);
+		if (!atomicRebaseQualifies && preGroupTarget > 0) {
 			const nextBlock = view.blocks[view.protectedFromIndex];
 			const preGroupEndsOnTurnBoundary = nextBlock?.kind === "user" || view.protectedFromIndex === view.blocks.length;
 			const noOpen = chunkedCompaction.noOpenToolPairAcrossPreGroupTail(view, preGroupFromIndex);
@@ -414,6 +425,50 @@ export class MyCustomizeConductor implements Conductor {
 			plannedContribution.set(b.id, b.foldedTokens);
 			alreadyPlanned.add(b.id);
 		};
+
+		// An accepted trigger is planned as one atomic batch. The priority group is selected
+		// before ordinary candidates, so its saving is part of the runway arithmetic rather than
+		// being discovered after folds have already consumed the pressure.
+		if (atomicRebaseQualifies) {
+			const barrierBeforePreGroup = view.blocks.slice(view.frozenFromIndex, preGroupFromIndex)
+				.some((block) => block.held || block.grouped || block.proactivelyCompressed);
+			const priorityFromIndex = barrierBeforePreGroup ? view.frozenFromIndex : preGroupFromIndex;
+			const range = chunkedCompaction.selectCompactionRange(view, priorityFromIndex);
+			const priorityIds = new Set(range
+				? chunkedCompaction.trimOpenToolPairs(
+					view.blocks.slice(range.fromIndex, range.toIndexExclusive).map((block) => block.id),
+					view.blocks,
+				)
+				: []);
+			const priorityBlocks = view.blocks.filter((block) => priorityIds.has(block.id));
+			const priorityCommand = tryEmitGroup(priorityBlocks)?.[0];
+			if (priorityCommand?.kind === "group") {
+				const prioritySaving = priorityBlocks.reduce((sum, block) => sum + block.tokens, 0) -
+					chunkedCompaction.estimateDefaultGroupDigestCost(priorityBlocks);
+				live = view.liveTokens - prioritySaving;
+				const groupedIds = new Set(priorityCommand.ids);
+				for (const block of sortCandidates(candidates)) {
+					if (live <= rebaseTarget) break;
+					if (!groupedIds.has(block.id)) applyCandidate(block, false);
+				}
+				const retained = this.replayablePreviousGroups(view, groupedIds, priorPlan);
+				const plannedReplaces = replaces.filter(
+					(command): command is Extract<Command, { kind: "replace" }> => command.kind === "replace" && !groupedIds.has(command.id),
+				);
+				const plannedFolds = foldIds.filter((id) => !groupedIds.has(id));
+				const plannedBreakFolds = breakFoldIds.filter((id) => !groupedIds.has(id));
+				const cmds: Command[] = [...retained, priorityCommand, ...plannedReplaces];
+				if (plannedFolds.length > 0) cmds.push({ kind: "fold", ids: plannedFolds });
+				if (plannedBreakFolds.length > 0) cmds.push({ kind: "fold", ids: plannedBreakFolds, breakFrozen: true });
+				this.lastPlan = cmds;
+				this.lastSavings = new Map(priorityCommand.ids.length > 0
+					? [[priorityCommand.ids[0], { tokens: prioritySaving, breakFrozen: false }]]
+					: []);
+				this.lastSemanticKey = semanticKey;
+				this.lastViewKey = viewKey;
+				return this.finishConduct(cmds, preGroupTokens, preGroupTarget, true);
+			}
+		}
 
 		for (const b of sortCandidates(candidates)) {
 			if (live <= cap) break;

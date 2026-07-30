@@ -1703,6 +1703,54 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		expect(humanTokens(1_050_000)).toBe("1.05m");
 	});
 
+	it("first over-cap view rebases atomically", () => {
+		const blocks = [
+			...Array.from({ length: 25 }, (_, i) => chunkedBlock(`rebase-${i}`, i, 4_000)),
+			chunkedBlock("rebase-tail", 25, 100, { kind: "user", protected: true }),
+		];
+		const view = { ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 };
+		const plan = new MyCustomizeConductor().conduct(view);
+		const groups = plan.filter((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
+		expect(groups).toHaveLength(1);
+		expect(groups[0].digest).toMatch(/^⟨chunked-compaction ·/);
+		expect(plan.some((command) => command.kind === "fold")).toBe(true);
+		expect(new Set(groups[0].ids).size).toBe(groups[0].ids.length);
+	});
+
+	it("atomic rebase leaves one full pre-group interval", () => {
+		const blocks = [
+			...Array.from({ length: 25 }, (_, i) => chunkedBlock(`target-${i}`, i, 4_000)),
+			chunkedBlock("target-tail", 25, 100, { kind: "user", protected: true }),
+		];
+		const view = { ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 };
+		const plan = new MyCustomizeConductor().conduct(view);
+		let projectedLive = view.liveTokens;
+		const groupedIds = new Set(plan.flatMap((command) => command.kind === "group" ? command.ids : []));
+		for (const block of view.blocks) {
+			if (groupedIds.has(block.id)) continue;
+			if (plan.some((command) => command.kind === "fold" && command.ids.includes(block.id))) projectedLive += block.foldedTokens - block.tokens;
+		}
+		for (const group of plan) {
+			if (group.kind !== "group") continue;
+			const members = view.blocks.filter((block) => group.ids.includes(block.id));
+			projectedLive += chunkedCompaction.estimateDefaultGroupDigestCost(members) - members.reduce((sum, block) => sum + block.tokens, 0);
+		}
+		expect(projectedLive).toBeLessThanOrEqual(55_000);
+	});
+
+	it("unchanged budget consumes the rebase trigger once", () => {
+		const blocks = [
+			...Array.from({ length: 25 }, (_, i) => chunkedBlock(`once-${i}`, i, 4_000)),
+			chunkedBlock("once-tail", 25, 100, { kind: "user", protected: true }),
+		];
+		const conductor = new MyCustomizeConductor();
+		const view = { ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 };
+		const first = conductor.conduct(view);
+		const second = conductor.conduct({ ...view, liveTokens: 55_000, blocks: blocks.map((block) => ({ ...block, grouped: true })) });
+		expect(first.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
+		expect(second.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(0);
+	});
+
 	it("walking skeleton emits one chunked-compaction group", () => {
 		const plan = new MyCustomizeConductor().conduct(rolloverView(rolloverBlocks()));
 		expect(plan).toHaveLength(1);

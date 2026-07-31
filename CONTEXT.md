@@ -63,3 +63,11 @@ Tool_result blocks that Proactive Content Compression never compresses because t
 ## Frozen-Prefix Deadlock
 
 The failure mode where Accordion's cache-aware folding guard prevents any folding because the frozen prefix has grown to cover most blocks by the time the budget is exceeded. Proactive Content Compression resolves this by ensuring frozen blocks are already small.
+
+## Atomic Budget Rebase
+
+The one-pass `MyCustomizeConductor` transition for a first-observed or budget-decrease over-cap session. It emits one deterministic chunked-compaction group plus any non-overlapping folds needed to leave one normal Pre-Group interval of runway.
+
+## Human Accordion Budget Minimum
+
+The 50,000-token minimum enforced by human Accordion budget controls. `AccordionStore.setBudget()` intentionally preserves lower programmatic budgets; below the conductor's active Pre-Group target, `MyCustomizeConductor` uses safe fallback planning.

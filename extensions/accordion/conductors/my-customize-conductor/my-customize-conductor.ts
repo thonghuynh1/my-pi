@@ -48,10 +48,6 @@ function isGroupBoundary(block: ViewBlock, pstackByBlockId: Map<string, PstackId
 	return tool === "mcp" || tool === "recall" || pstackByBlockId.has(block.id);
 }
 
-function isChunkedPreGroupBoundary(block: ViewBlock, pstackByBlockId: Map<string, PstackIdentity>): boolean {
-	return block.proactivelyCompressed || isGroupBoundary(block, pstackByBlockId);
-}
-
 function isAccumulationBoundary(block: ViewBlock): boolean {
 	return block.held || block.grouped || block.proactivelyCompressed;
 }
@@ -219,7 +215,7 @@ export class MyCustomizeConductor implements Conductor {
 		const preGroupTarget = chunkedCompaction.effectivePreGroupTokens(view, this.opts);
 		const atomicRebaseQualifies = preGroupTarget > 0 && view.liveTokens > cap && cap >= preGroupTarget &&
 			(isFirstObservedView || previousBudget !== null && view.budget < previousBudget);
-		const rebaseTarget = Math.min(HOLD_BAND * cap, cap - preGroupTarget);
+		const rebaseFloor = Math.min(HOLD_BAND * cap, cap - preGroupTarget);
 		const preGroupFromIndex = preGroupTarget > 0
 			? chunkedCompaction.computePreGroupFromIndex(view, preGroupTarget, isAccumulationBoundary)
 			: view.protectedFromIndex;
@@ -262,11 +258,7 @@ export class MyCustomizeConductor implements Conductor {
 			return [{ kind: "group", ids, digest }];
 		};
 		if (preGroupTarget > 0) preGroupTokens = preGroupBlocks.reduce((sum, block) => sum + block.tokens, 0);
-		const priorRebaseGroupIds = priorPlan
-			?.filter((command): command is Extract<Command, { kind: "group" }> => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))
-			.flatMap((command) => command.ids) ?? [];
-		const rebaseAlreadyApplied = priorRebaseGroupIds.length > 0 && priorRebaseGroupIds.every((id) => byId.get(id)?.grouped === true);
-		if (!atomicRebaseQualifies && preGroupTarget > 0 && cap >= preGroupTarget && !rebaseAlreadyApplied) {
+		if (!atomicRebaseQualifies && preGroupTarget > 0 && cap >= preGroupTarget) {
 			const nextBlock = view.blocks[view.protectedFromIndex];
 			const preGroupEndsOnTurnBoundary = nextBlock?.kind === "user" || view.protectedFromIndex === view.blocks.length;
 			const noOpen = chunkedCompaction.noOpenToolPairAcrossPreGroupTail(view, preGroupFromIndex);
@@ -286,29 +278,6 @@ export class MyCustomizeConductor implements Conductor {
 					const retained = this.replayablePreviousGroups(view, newIds);
 					this.rememberReplayableGroups(retained);
 					return this.finishConduct([...retained, ...cmds], preGroupTokens, preGroupTarget, true);
-				}
-			}
-
-			// If the traditional pre-group trigger did not fire (e.g. because MCP results
-			// stopped the pre-group boundary walk), try a broader selectCompactionRange from
-			// the frozen boundary — it includes user/MCP/recall/pstack blocks in complete turns.
-			if (!fastPathFires && !escapeValveFires) {
-				const range = chunkedCompaction.selectCompactionRange(view, view.frozenFromIndex);
-				if (range) {
-					const rangeBlocks = view.blocks.slice(range.fromIndex, range.toIndexExclusive);
-					const rangeTokens = rangeBlocks.reduce((sum, b) => sum + b.tokens, 0);
-					const rangeNoOpen = chunkedCompaction.noOpenToolPairAcrossPreGroupTail(view, range.fromIndex);
-					const altFast = rangeTokens >= preGroupTarget && rangeNoOpen;
-					const altEscape = rangeTokens > preGroupTarget * PRE_GROUP_OVERFLOW_CAP;
-					if (altFast || altEscape) {
-						const cmds = tryEmitGroup(rangeBlocks);
-						if (cmds) {
-							const newIds = new Set(cmds.flatMap((command) => command.kind === "group" ? command.ids : []));
-							const retained = this.replayablePreviousGroups(view, newIds);
-							this.rememberReplayableGroups(retained);
-							return this.finishConduct([...retained, ...cmds], rangeTokens, preGroupTarget, true);
-						}
-					}
 				}
 			}
 		}
@@ -429,6 +398,28 @@ export class MyCustomizeConductor implements Conductor {
 			plannedContribution.set(b.id, b.foldedTokens);
 			alreadyPlanned.add(b.id);
 		};
+		const savingsFor = (commands: Command[]): Map<string, SavedFold> => {
+			const savings = new Map<string, SavedFold>();
+			for (const command of commands) {
+				if (command.kind === "group") {
+					const firstId = command.ids[0];
+					if (!firstId) continue;
+					const members = command.ids.map((id) => byId.get(id)).filter((block): block is ViewBlock => block !== undefined);
+					const originalTokens = members.reduce((total, block) => total + block.tokens, 0);
+					const saving = originalTokens - chunkedCompaction.estimateDefaultGroupDigestCost(members);
+					savings.set(firstId, { tokens: Math.max(0, saving), breakFrozen: false });
+				} else if (command.kind === "fold") {
+					for (const id of command.ids) {
+						const block = byId.get(id);
+						if (block) savings.set(id, { tokens: block.tokens - block.foldedTokens, breakFrozen: command.breakFrozen ?? false });
+					}
+				} else if (command.kind === "replace") {
+					const block = byId.get(command.id);
+					if (block) savings.set(command.id, { tokens: block.tokens - estSummaryTokens(command.content), breakFrozen: command.breakFrozen ?? false });
+				}
+			}
+			return savings;
+		};
 
 		// An accepted trigger is planned as one atomic batch. The priority group is selected
 		// before ordinary candidates, so its saving is part of the runway arithmetic rather than
@@ -452,7 +443,7 @@ export class MyCustomizeConductor implements Conductor {
 				live = view.liveTokens - prioritySaving;
 				const groupedIds = new Set(priorityCommand.ids);
 				for (const block of sortCandidates(candidates)) {
-					if (live <= rebaseTarget) break;
+					if (live <= rebaseFloor) break;
 					if (!groupedIds.has(block.id)) applyCandidate(block, false);
 				}
 				const retained = this.replayablePreviousGroups(view, groupedIds, priorPlan);
@@ -465,9 +456,7 @@ export class MyCustomizeConductor implements Conductor {
 				if (plannedFolds.length > 0) cmds.push({ kind: "fold", ids: plannedFolds });
 				if (plannedBreakFolds.length > 0) cmds.push({ kind: "fold", ids: plannedBreakFolds, breakFrozen: true });
 				this.lastPlan = cmds;
-				this.lastSavings = new Map(priorityCommand.ids.length > 0
-					? [[priorityCommand.ids[0], { tokens: prioritySaving, breakFrozen: false }]]
-					: []);
+				this.lastSavings = savingsFor(cmds);
 				this.lastSemanticKey = semanticKey;
 				this.lastViewKey = viewKey;
 				return this.finishConduct(cmds, preGroupTokens, preGroupTarget, true);
@@ -565,30 +554,9 @@ export class MyCustomizeConductor implements Conductor {
 		if (plannedFoldIds.length) cmds.push({ kind: "fold", ids: plannedFoldIds });
 		if (plannedBreakFoldIds.length) cmds.push({ kind: "fold", ids: plannedBreakFoldIds, breakFrozen: true });
 
-		// Record the plan and per-block savings for the next-pass epoch hold check.
-		const savings = new Map<string, SavedFold>();
-		for (const c of cmds) {
-			if (c.kind === "group") {
-				const firstId = c.ids[0];
-				if (firstId) {
-					const members = c.ids.map((id) => byId.get(id)).filter((b): b is ViewBlock => b !== undefined);
-					const originalResidue = members.reduce((total, block) => total + block.tokens, 0);
-					const saving = originalResidue - chunkedCompaction.estimateDefaultGroupDigestCost(members);
-					savings.set(firstId, { tokens: Math.max(0, saving), breakFrozen: false });
-				}
-			} else if (c.kind === "fold") {
-				for (const id of c.ids) {
-					const b = byId.get(id);
-					if (b) savings.set(id, { tokens: b.tokens - b.foldedTokens, breakFrozen: c.breakFrozen ?? false });
-				}
-			} else if (c.kind === "replace") {
-				const b = byId.get(c.id);
-				if (b && !groupedIds.has(c.id)) savings.set(c.id, { tokens: b.tokens - estSummaryTokens(c.content), breakFrozen: c.breakFrozen ?? false });
-			}
-		}
 		if (live <= hardCap) this.lastFrozenGroupEpochKey = null;
 		this.lastPlan = cmds;
-		this.lastSavings = savings;
+		this.lastSavings = savingsFor(cmds);
 		this.lastSemanticKey = semanticKey;
 		this.lastViewKey = viewKey;
 

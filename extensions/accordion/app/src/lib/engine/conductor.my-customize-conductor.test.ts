@@ -1146,6 +1146,29 @@ describe("MyCustomizeConductor", () => {
 		}
 	});
 
+	it("keeps atomic-rebase group members out of ordinary folds and replacements", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 100, 100, { text: "task" }),
+			vb("c:read", "tool_call", 1, 30, 30, { toolName: "read", callId: "c:read", text: 'read {"path":"/src/file.ts"}' }),
+			vb("r:read", "tool_result", 2, 4_000, 40, { toolName: "read", callId: "c:read", text: "source snapshot" }),
+			vb("r:text", "text", 3, 6_000, 100, { text: "ordinary fold candidate" }),
+			...Array.from({ length: 4 }, (_, i) => vb(`g:${i}`, "text", i + 4, 4_000, 100, { text: `safe complete block ${i}` })),
+		];
+		const result = new MyCustomizeConductor().conduct(makeView(blocks, 20_000, 34_000, { contextWindow: 128_000 }));
+		const rebaseGroup = result.find(
+			(command): command is Extract<Command, { kind: "group" }> => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"),
+		);
+
+		expect(rebaseGroup).toBeDefined();
+		expect(foldIdsOf(result).has("r:text")).toBe(true);
+		expect(replaceOf(result, "r:read")).toBeDefined();
+		const groupIds = groupedIdsOf(result);
+		const otherDispositionIds = new Set(result.flatMap((command) =>
+			command.kind === "fold" ? command.ids : command.kind === "replace" ? [command.id] : [],
+		));
+		for (const id of groupIds) expect(otherDispositionIds.has(id)).toBe(false);
+	});
+
 	it("does not group frozen blocks when non-frozen planning reaches the cap", () => {
 		const blocks = [
 			vb("f:1", "text", 0, 1_000, 200, { text: "cached one" }),

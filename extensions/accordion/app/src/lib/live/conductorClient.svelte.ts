@@ -30,6 +30,7 @@ import {
 	type ConductorHost,
 	type ConductorView,
 	type Command,
+	type ConductorPlan,
 	type ContentMode,
 	type ConductorMessage,
 	type HostHelloMessage,
@@ -104,8 +105,8 @@ export class RemoteRunner implements Conductor {
 	 * re-dial, so `attachConductor` must not treat it as "already correctly attached". */
 	private _dead = false;
 	get isDead(): boolean { return this._dead; }
-	/** The conductor's last desired command set; `null` until it has ever spoken (⇒ hold/raw). */
-	private desired: Command[] | null = null;
+	/** The conductor's last complete desired plan; `null` until it has ever spoken (⇒ hold/raw). */
+	private desired: ConductorPlan | null = null;
 	private wants: ContentMode = "full";
 	private rev = 0;
 	private lastRev = 0;
@@ -124,7 +125,7 @@ export class RemoteRunner implements Conductor {
 	}
 
 	// ---- Conductor interface ----------------------------------------------
-	conduct(view: ConductorView): Command[] | null {
+	conduct(view: ConductorView): Command[] | ConductorPlan | null {
 		if (this.suppressUpdate) this.suppressUpdate = false;
 		else if (this.greeted) this.pushContext(view); // hold the first push until wants is known
 		return this.desired;
@@ -285,8 +286,16 @@ export class RemoteRunner implements Conductor {
 				// conductor's reply bumps this.rev, so a slow conductor's in-flight reply is
 				// dropped as stale and it must recompute against the newer snapshot — intentional,
 				// because applying a command set computed against an old view could rewind state.
-				if (m.rev !== undefined && m.rev < this.rev) break;
-				this.desired = Array.isArray(m.commands) ? m.commands : [];
+				if (m.rev !== undefined && m.rev < Math.max(this.rev, this.lastRev)) break;
+				// A commands frame is one complete plan. Omitted preGroup explicitly clears remote
+				// ownership for this revision; it is not a hold. The store normalizes the IDs and
+				// publishes membership together with the command snapshot during refold().
+				this.desired = {
+					commands: Array.isArray(m.commands) ? m.commands : [],
+					preGroup: m.preGroup && Array.isArray(m.preGroup.memberIds)
+						? { memberIds: [...m.preGroup.memberIds] }
+						: { memberIds: [] },
+				};
 				this.lastRev = m.rev ?? this.rev;
 				// Apply now. We poke the store, which re-enters conduct(); suppress the
 				// redundant context/update that re-entry would otherwise emit.

@@ -17,6 +17,26 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PORT = 7791; // isolated from the default 7704
 const ERROR_PORT = 7792;
 
+async function connectWhenReady(port: number): Promise<WebSocket> {
+	const deadline = Date.now() + 8_000;
+	let lastError: Error | undefined;
+	while (Date.now() < deadline) {
+		const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+		try {
+			await new Promise<void>((resolve, reject) => {
+				ws.once("open", resolve);
+				ws.once("error", reject);
+			});
+			return ws;
+		} catch (error) {
+			lastError = error as Error;
+			ws.close();
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+	}
+	throw lastError ?? new Error(`timed out waiting for conductor on port ${port}`);
+}
+
 function makeView() {
 	const blocks: any[] = [];
 	let order = 0;
@@ -49,8 +69,7 @@ test("WS round-trip: hello → context/update → valid commands", async () => {
 	const child = spawn("node", [join(HERE, "the-conductor.ts")], { env, stdio: ["ignore", "ignore", "inherit"] });
 
 	try {
-		await new Promise((r) => setTimeout(r, 600)); // let the server bind
-		const ws = new WebSocket(`ws://127.0.0.1:${PORT}`);
+		const ws = await connectWhenReady(PORT);
 		const view = makeView();
 		const foldable = new Set(["text", "thinking", "tool_result"]);
 		const byId = new Map(view.blocks.map((b: any) => [b.id, b]));
@@ -60,12 +79,6 @@ test("WS round-trip: hello → context/update → valid commands", async () => {
 			let gotHello = false;
 			let gotHostComplete = false;
 			let status: any = null;
-			ws.on("open", () => {
-				ws.send(JSON.stringify({
-					type: "host/hello", conductorProtocol: 3,
-					session: { title: "smoke", model: "test", cwd: "/tmp" }, budget: view.budget, contextWindow: 200_000,
-				}));
-			});
 			ws.on("message", (raw) => {
 				const msg = JSON.parse(raw.toString());
 				if (msg.type === "conductor/hello") {
@@ -92,6 +105,10 @@ test("WS round-trip: hello → context/update → valid commands", async () => {
 				}
 			});
 			ws.on("error", reject);
+			ws.send(JSON.stringify({
+				type: "host/hello", conductorProtocol: 4,
+				session: { title: "smoke", model: "test", cwd: "/tmp" }, budget: view.budget, contextWindow: 200_000,
+			}));
 		});
 
 		const commands = result.commands;
@@ -133,8 +150,7 @@ test("clears provider error after a later successful host completion", async () 
 	const child = spawn("node", [join(HERE, "the-conductor.ts")], { env, stdio: ["ignore", "ignore", "inherit"] });
 
 	try {
-		await new Promise((r) => setTimeout(r, 600));
-		const ws = new WebSocket(`ws://127.0.0.1:${ERROR_PORT}`);
+		const ws = await connectWhenReady(ERROR_PORT);
 		const baseView = makeView();
 
 		await new Promise<void>((resolve, reject) => {
@@ -151,12 +167,6 @@ test("clears provider error after a later successful host completion", async () 
 				ws.send(JSON.stringify({ ...baseView, rev }));
 			};
 
-			ws.on("open", () => {
-				ws.send(JSON.stringify({
-					type: "host/hello", conductorProtocol: 3,
-					session: { title: "smoke", model: "test", cwd: "/tmp" }, budget: baseView.budget, contextWindow: 200_000,
-				}));
-			});
 			ws.on("message", (raw) => {
 				const msg = JSON.parse(raw.toString());
 				if (msg.type === "conductor/hello") {
@@ -191,6 +201,10 @@ test("clears provider error after a later successful host completion", async () 
 				if (retry) clearInterval(retry);
 				reject(error);
 			});
+			ws.send(JSON.stringify({
+				type: "host/hello", conductorProtocol: 4,
+				session: { title: "smoke", model: "test", cwd: "/tmp" }, budget: baseView.budget, contextWindow: 200_000,
+			}));
 		});
 		ws.close();
 	} finally {

@@ -16,6 +16,26 @@ import WebSocket from "ws"; // default export = the WebSocket class (works wheth
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PORT = 7790; // isolated from the default 7703
 
+async function connectWhenReady(port: number): Promise<WebSocket> {
+	const deadline = Date.now() + 8_000;
+	let lastError: Error | undefined;
+	while (Date.now() < deadline) {
+		const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+		try {
+			await new Promise<void>((resolve, reject) => {
+				ws.once("open", resolve);
+				ws.once("error", reject);
+			});
+			return ws;
+		} catch (error) {
+			lastError = error as Error;
+			ws.close();
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+	}
+	throw lastError ?? new Error(`timed out waiting for conductor on port ${port}`);
+}
+
 function makeView() {
 	const blocks: any[] = [];
 	let order = 0;
@@ -48,8 +68,7 @@ test("WS round-trip: hello → context/update → valid commands", async () => {
 	const child = spawn("node", [join(HERE, "the-conductor.ts")], { env, stdio: ["ignore", "ignore", "inherit"] });
 
 	try {
-		await new Promise((r) => setTimeout(r, 600)); // let the server bind
-		const ws = new WebSocket(`ws://127.0.0.1:${PORT}`);
+		const ws = await connectWhenReady(PORT);
 		const view = makeView();
 		const foldable = new Set(["text", "thinking", "tool_result"]);
 		const byId = new Map(view.blocks.map((b: any) => [b.id, b]));
@@ -57,12 +76,6 @@ test("WS round-trip: hello → context/update → valid commands", async () => {
 		const commands = await new Promise<any[]>((resolve, reject) => {
 			const timer = setTimeout(() => reject(new Error("timed out waiting for commands")), 8000);
 			let gotHello = false;
-			ws.on("open", () => {
-				ws.send(JSON.stringify({
-					type: "host/hello", conductorProtocol: 3,
-					session: { title: "smoke", model: "test", cwd: "/tmp" }, budget: view.budget, contextWindow: 200_000,
-				}));
-			});
 			ws.on("message", (raw) => {
 				const msg = JSON.parse(raw.toString());
 				if (msg.type === "conductor/hello") {
@@ -78,6 +91,10 @@ test("WS round-trip: hello → context/update → valid commands", async () => {
 				}
 			});
 			ws.on("error", reject);
+			ws.send(JSON.stringify({
+				type: "host/hello", conductorProtocol: 4,
+				session: { title: "smoke", model: "test", cwd: "/tmp" }, budget: view.budget, contextWindow: 200_000,
+			}));
 		});
 
 		const repeatCommands = new Promise<any[]>((resolve, reject) => {

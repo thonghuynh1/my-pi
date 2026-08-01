@@ -82,7 +82,9 @@
 	// the protected working tail — newest blocks the auto-folder never touches.
 	// split the grid into two boxes: older/foldable (top) and protected (bottom).
 	const protectedFrom = $derived(store.protectedFromIndex);
-	const olderTiles = $derived(tiles.slice(0, protectedFrom));
+	const preGroupIds = $derived(new Set(store.preGroupIds));
+	const olderTiles = $derived(tiles.slice(0, protectedFrom).filter(({ b }) => !preGroupIds.has(b.id)));
+	const preGroupTiles = $derived(tiles.slice(0, protectedFrom).filter(({ b }) => preGroupIds.has(b.id)));
 	const protectedTiles = $derived(tiles.slice(protectedFrom));
 
 	// ---- PEEK: pure UI-local "open for viewing" state (the redesign). -------------
@@ -109,7 +111,7 @@
 	}
 
 	// ---- display list for the older box: groups + plain blocks via buildDisplay ----
-	const olderBlocks = $derived(store.blocks.slice(0, protectedFrom));
+	const olderBlocks = $derived(store.blocks.slice(0, protectedFrom).filter((b) => !preGroupIds.has(b.id)));
 	const displayRows = $derived(buildDisplay(olderBlocks, store.groups, peeked));
 	// An OPEN group breaks the dense grid into stacked segments (grid · band · grid · …) so its
 	// multi-line band gets natural height instead of overflowing one fixed-height grid track.
@@ -162,6 +164,16 @@
 	});
 
 	// Spec array for the protected box (vacated + protected tiles + ghosts).
+	const preGroupSpecs = $derived.by<TileSpec[]>(() => preGroupTiles.map(({ b }) => ({
+		id: b.id,
+		kind: b.kind,
+		face: faceFor(b.tokens),
+		folded: false,
+		pinned: false,
+		selected: b.id === selectedId,
+		inrange: false,
+	})));
+
 	const protSpecs = $derived.by<TileSpec[]>(() => {
 		const out: TileSpec[] = [];
 		// vacated placeholder cells
@@ -515,7 +527,7 @@
 		// Range-select is a map-only gesture.
 		if (!steerLocked && view === "map" && shiftKey && rangeAnchorId) {
 			clearPendingClick();
-			if (!bl || store.isProtected(bl) || store.groupOf(bl)) {
+			if (!bl || store.isProtected(bl) || store.isPreGroup(bl) || store.groupOf(bl)) {
 				groupErr = true;
 				return;
 			}
@@ -526,7 +538,7 @@
 		deferClick(() => {
 			onselect(id);
 			rangeAnchorId =
-				!steerLocked && view === "map" && bl && !store.isProtected(bl) && !store.groupOf(bl) ? id : null;
+				!steerLocked && view === "map" && bl && !store.isProtected(bl) && !store.isPreGroup(bl) && !store.groupOf(bl) ? id : null;
 			rangeEndId = null;
 			groupErr = false;
 		});
@@ -551,6 +563,7 @@
 	) {
 		clearPendingClick();
 		if (steerLocked) return; // double-click folds, which is locked — no-op (observation is fine)
+		if (e.kind !== "group" && store.isPreGroup(e.id)) return;
 		if (e.kind === "group") {
 			collapseGroup(e.id);
 		} else {
@@ -578,7 +591,7 @@
 			const b = store.get(spec.id);
 			if (!b) { tooltip = null; return; }
 			const prot = store.isProtected(b);
-			text = tip(b, prot);
+			text = store.isPreGroup(b) ? `Pre-Group · ${k(b.tokens)} tok · stays full until safe rollover · click to inspect` : tip(b, prot);
 		}
 		tooltip = { text, rect: clientRect };
 	}
@@ -995,7 +1008,7 @@
 			{/snippet}
 			<div class="boxes" style:--cell="{cell}px" style:--cols={cols}>
 				{#if olderTiles.length}
-					<section class="box older">
+					<section class="box older" aria-label="Older context" data-region="older">
 						<div class="stack">
 							{#each segments as seg, segIdx (seg.kind === "band" ? "band-" + seg.row.group.id : "tiles-" + (seg.rows[0].type === "block" ? seg.rows[0].block.id : seg.rows[0].group.id))}
 								{#if seg.kind === "tiles"}
@@ -1097,8 +1110,24 @@
 						</div>
 					</section>
 				{/if}
+				{#if preGroupSpecs.length}
+				<section class="box prot pre-group" aria-label="Pre-Group" data-region="pre-group">
+					<div class="box-label">Pre-Group</div>
+					<div class="canvas-fill">
+						<TileCanvas
+							bind:this={canvasRefs["pre-group"]}
+							specs={preGroupSpecs}
+							{cols}
+							{cell}
+							gap={4}
+							onhit={onCanvasHit}
+							onhover={onCanvasHover}
+						/>
+					</div>
+				</section>
+				{/if}
 				{#if protSpecs.length}
-				<section class="box prot">
+				<section class="box prot" aria-label="Protected Tail" data-region="protected-tail">
 					<!-- Single canvas for prot box: vacated placeholders + protected tiles + ghosts.
 					     The wrapper div takes flex: 1 so the canvas fills the box horizontally. -->
 					<div class="canvas-fill">
@@ -1534,6 +1563,19 @@
 		border: 3px solid var(--accent-dim);
 		background: var(--panel);
 		box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent), var(--shadow-1);
+	}
+	.box.pre-group {
+		border-width: 2px;
+		border-color: var(--accent-dim);
+		background: var(--panel);
+	}
+	.box-label {
+		font-size: var(--fs-xs);
+		font-family: var(--mono);
+		text-transform: uppercase;
+		letter-spacing: .08em;
+		color: var(--muted);
+		margin-bottom: var(--sp-2);
 	}
 
 	/* canvas-fill: flex wrapper for TileCanvas inside a box (fills the space after the rail). */

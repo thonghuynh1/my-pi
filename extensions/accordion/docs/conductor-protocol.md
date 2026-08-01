@@ -198,7 +198,7 @@ conductor list — the descriptor file is not deleted), and delete it on shutdow
 | field              | type     | meaning                                                     |
 |--------------------|----------|-------------------------------------------------------------|
 | `registryProtocol` | number   | must equal `1` (the `REGISTRY_PROTOCOL` constant)           |
-| `conductorProtocol`| number   | the conductor wire version you speak (`3` today)            |
+| `conductorProtocol`| number   | the conductor wire version you speak (`4` today)            |
 | `id`               | string   | stable conductor id (also the file's basename)              |
 | `label`            | string   | human-facing name shown in the switcher                     |
 | `url`              | string   | the `ws://` endpoint Accordion dials                        |
@@ -423,7 +423,7 @@ wants full content, and on each `context/update` folds the oldest non-`protected
 // recency-folder.js — run: node recency-folder.js   (npm i ws)
 // Advertise it for auto-discovery by writing this JSON to
 // ~/.accordion/conductors/recency-folder.json (refresh heartbeatAt every few seconds):
-//   { "registryProtocol":1, "conductorProtocol":3, "id":"recency-folder",
+//   { "registryProtocol":1, "conductorProtocol":4, "id":"recency-folder",
 //     "label":"Recency folder", "url":"ws://127.0.0.1:7700",
 //     "pid":<pid>, "startedAt":<ms>, "heartbeatAt":<ms> }
 import { WebSocketServer } from "ws";

@@ -68,6 +68,10 @@ The failure mode where Accordion's cache-aware folding guard prevents any foldin
 
 The one-pass `MyCustomizeConductor` transition for a first-observed or budget-decrease over-cap session. It emits one deterministic chunked-compaction group plus any non-overlapping folds needed to leave one normal Pre-Group interval of runway.
 
+## Pre-Group Interval
+
+The exact conductor-owned contiguous region between Accordion’s older foldable context and Protected Tail whose blocks remain full while accumulating toward the next safe rollover group.
+
 ## Human Accordion Budget Minimum
 
 The 50,000-token minimum enforced by human Accordion budget controls. `AccordionStore.setBudget()` intentionally preserves lower programmatic budgets; below the conductor's active Pre-Group target, `MyCustomizeConductor` uses safe fallback planning.

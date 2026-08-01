@@ -20,7 +20,7 @@
  * conductor author copies these shapes; they should not have to vendor the whole engine.
  * See `docs/conductor-protocol.md` for a copy-paste reference conductor.
  */
-import type { Command, ClampReport, ViewBlock, LockName, JSONValue } from "./conductor";
+import type { Command, ClampReport, ViewBlock, LockName, JSONValue, PreGroupRegion } from "./conductor";
 
 /**
  * Bumped on any breaking change to the messages below. Independent of the pi wire's
@@ -28,8 +28,9 @@ import type { Command, ClampReport, ViewBlock, LockName, JSONValue } from "./con
  *  - v2: initial conductor protocol (ConductorView, Command vocab, cap/request).
  *  - v3: conductor lock declarations in `conductor/hello` (ADR 0011) plus the
  *        "complete" capability for out-of-band model completions over the wire.
+ *  - v4: complete plan-region metadata in `conductor/commands`.
  */
-export const CONDUCTOR_PROTOCOL_VERSION = 3;
+export const CONDUCTOR_PROTOCOL_VERSION = 4;
 
 /**
  * How much of each block's content a conductor wants to receive (declared in
@@ -154,6 +155,8 @@ export interface ConductorCommandsMessage {
 	type: "conductor/commands";
 	rev?: number;
 	commands: Command[];
+	/** Complete next Pre-Group membership for this revision. Omission owns no region. */
+	preGroup?: PreGroupRegion;
 }
 
 /**

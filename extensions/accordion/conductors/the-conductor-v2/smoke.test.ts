@@ -62,7 +62,7 @@ test("WS round-trip: hello → context/update → valid commands", async () => {
 			let status: any = null;
 			ws.on("open", () => {
 				ws.send(JSON.stringify({
-					type: "host/hello", conductorProtocol: 3,
+					type: "host/hello", conductorProtocol: 4,
 					session: { title: "smoke", model: "test", cwd: "/tmp" }, budget: view.budget, contextWindow: 200_000,
 				}));
 			});
@@ -153,7 +153,7 @@ test("clears provider error after a later successful host completion", async () 
 
 			ws.on("open", () => {
 				ws.send(JSON.stringify({
-					type: "host/hello", conductorProtocol: 3,
+					type: "host/hello", conductorProtocol: 4,
 					session: { title: "smoke", model: "test", cwd: "/tmp" }, budget: baseView.budget, contextWindow: 200_000,
 				}));
 			});

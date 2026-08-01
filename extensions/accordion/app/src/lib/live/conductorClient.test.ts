@@ -197,6 +197,60 @@ describe("RemoteRunner — commands drive the store", () => {
 		expect(store.isFolded(store.get("m0:p0")!)).toBe(true);
 	});
 
+	it("applies remote pre-group metadata with commands as one plan", () => {
+		const store = makeStore(3);
+		store.setProtect(0);
+		const { ws } = connectRunner(store);
+		sendHello(ws, "full");
+
+		ws.emit({
+			type: "conductor/commands",
+			rev: 1,
+			commands: [{ kind: "fold", ids: ["m0:p0"] }],
+			preGroup: { memberIds: ["m1:p0"] },
+		});
+
+		expect(store.isPreGroup("m1:p0")).toBe(true);
+		expect(store.isFolded(store.get("m0:p0")!)).toBe(true);
+		store.fold("m1:p0");
+		expect(store.get("m1:p0")!.override).toBeNull();
+	});
+
+	it("drops stale remote commands and pre-group membership together", () => {
+		const store = makeStore(3);
+		store.setProtect(0);
+		const { ws } = connectRunner(store);
+		sendHello(ws, "full");
+
+		ws.emit({ type: "conductor/commands", rev: 2, commands: [{ kind: "fold", ids: ["m0:p0"] }], preGroup: { memberIds: ["m1:p0"] } });
+		expect(store.isPreGroup("m1:p0")).toBe(true);
+		expect(store.isFolded(store.get("m0:p0")!)).toBe(true);
+		const before = [...store.preGroupIds];
+
+		ws.emit({ type: "conductor/commands", rev: 1, commands: [{ kind: "fold", ids: ["m2:p0"] }], preGroup: { memberIds: ["m2:p0"] } });
+
+		expect(store.preGroupIds).toEqual(before);
+		expect(store.isPreGroup("m1:p0")).toBe(true);
+		expect(store.isPreGroup("m2:p0")).toBe(false);
+		expect(store.isFolded(store.get("m0:p0")!)).toBe(true);
+		expect(store.isFolded(store.get("m2:p0")!)).toBe(false);
+	});
+
+	it("treats omitted remote pre-group metadata as no region", () => {
+		const store = makeStore(3);
+		store.setProtect(0);
+		const { ws } = connectRunner(store);
+		sendHello(ws, "full");
+
+		ws.emit({ type: "conductor/commands", rev: 1, commands: [], preGroup: { memberIds: ["m1:p0"] } });
+		expect(store.isPreGroup("m1:p0")).toBe(true);
+		ws.emit({ type: "conductor/commands", rev: 2, commands: [{ kind: "fold", ids: ["m0:p0"] }] });
+
+		expect(store.preGroupIds).toEqual([]);
+		expect(store.isPreGroup("m1:p0")).toBe(false);
+		expect(store.isFolded(store.get("m0:p0")!)).toBe(true);
+	});
+
 	it("holds the last command set when the conductor goes silent", () => {
 		const store = makeStore(3);
 		store.setProtect(0); // see above — disable protection so the tiny fixture's blocks are foldable
@@ -425,7 +479,7 @@ describe("RemoteRunner — stale desired cleared on unexpected disconnect (Bug 3
 });
 
 describe("RemoteRunner — conductor/status telemetry (display-only)", () => {
-	it("stashes text + metrics from a conductor/status without touching folds or replying", () => {
+	it("does not steer pre-group membership from remote status", () => {
 		const store = makeStore(3);
 		store.setProtect(0);
 		const { ws } = connectRunner(store);
@@ -444,6 +498,7 @@ describe("RemoteRunner — conductor/status telemetry (display-only)", () => {
 		expect(conductorStatus.details).toEqual({ factLedger: [{ cat: "paths", value: "app/src/lib/engine/store.svelte.ts", turn: 3 }] });
 		// Display-only: it must NOT fold anything or emit a commandResult.
 		expect(store.isFolded(store.get("m0:p0")!)).toBe(false);
+		expect(store.preGroupIds).toEqual([]);
 		expect(ws.framesOfType("host/commandResult").length).toBe(resultsBefore);
 	});
 

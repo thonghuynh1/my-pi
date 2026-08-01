@@ -147,7 +147,10 @@ off-box ones are added by `ws://` URL in the header dropdown.
 
 The runnable wire example is [`recency-folder/`](recency-folder/) (Node.js). The full
 lifecycle and message reference is the second half of
-[`docs/conductor-protocol.md`](../docs/conductor-protocol.md).
+[`docs/conductor-protocol.md`](../docs/conductor-protocol.md). The accepted WebSocket
+conductor protocol is v4. A `Command[]` response is a complete command snapshot with no
+owned Pre-Group region; a `ConductorPlan` may instead provide `preGroup.memberIds` as the
+complete next membership.
 
 ```bash
 cd recency-folder

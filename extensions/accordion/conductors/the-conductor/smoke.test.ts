@@ -59,7 +59,7 @@ test("WS round-trip: hello → context/update → valid commands", async () => {
 			let gotHello = false;
 			ws.on("open", () => {
 				ws.send(JSON.stringify({
-					type: "host/hello", conductorProtocol: 3,
+					type: "host/hello", conductorProtocol: 4,
 					session: { title: "smoke", model: "test", cwd: "/tmp" }, budget: view.budget, contextWindow: 200_000,
 				}));
 			});

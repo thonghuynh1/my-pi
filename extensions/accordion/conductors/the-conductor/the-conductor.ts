@@ -60,8 +60,8 @@ import {
 } from "./adapter.ts";
 import { buildCommands } from "./commands.ts";
 
-// Mirrors CONDUCTOR_PROTOCOL_VERSION in conductors/contract/protocol.ts (v3 = locks + complete).
-const CONDUCTOR_PROTOCOL_VERSION = 3;
+// Mirrors CONDUCTOR_PROTOCOL_VERSION in conductors/contract/protocol.ts (v4 = complete plan-region metadata; v3 = locks + complete).
+const CONDUCTOR_PROTOCOL_VERSION = 4;
 
 const ID = "the-conductor";
 const LABEL = "The Conductor";

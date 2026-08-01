@@ -70,7 +70,7 @@ function advertise() {
 	mkdirSync(REG_DIR, { recursive: true });
 	const entry = {
 		registryProtocol: 1,
-		conductorProtocol: 3,
+		conductorProtocol: 4,
 		id: ID,
 		label: LABEL,
 		url: URL,
@@ -737,7 +737,7 @@ function onConnection(ws) {
 	ws.send(
 		JSON.stringify({
 			type: "conductor/hello",
-			conductorProtocol: 3,
+			conductorProtocol: 4,
 			id: ID,
 			label: LABEL,
 			wants: { content: "full" }, // need block text for probe + digest prompts

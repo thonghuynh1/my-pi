@@ -211,7 +211,7 @@ Sample `~/.accordion/conductors/recency-folder.json`:
 ```json
 {
   "registryProtocol": 1,
-  "conductorProtocol": 3,
+  "conductorProtocol": 4,
   "id": "recency-folder",
   "label": "Recency folder",
   "url": "ws://127.0.0.1:7700",
@@ -262,7 +262,7 @@ re-applies the whole batch each time. To change one block, re-send your whole in
 ## Message reference
 
 All shapes are exact (from `conductors/contract/protocol.ts`). `CONDUCTOR_PROTOCOL_VERSION`
-is `3` (bumped from 2 by ADR 0011 to carry the lock declaration in `conductor/hello`).
+is `4` (bumped from 3 to carry complete plan-region metadata in `conductor/commands`).
 
 ### host → conductor
 
@@ -271,7 +271,7 @@ is `3` (bumped from 2 by ADR 0011 to carry the lock declaration in `conductor/he
 ```json
 {
   "type": "host/hello",
-  "conductorProtocol": 3,
+  "conductorProtocol": 4,
   "session": { "title": "fix the parser", "model": "google/gemini-2.5-flash-lite", "cwd": "/home/me/proj" },
   "budget": 70000,
   "contextWindow": 1000000
@@ -343,7 +343,7 @@ about the current state to fold into your next batch.
 **`conductor/hello`** — your opening frame.
 
 ```json
-{ "type": "conductor/hello", "conductorProtocol": 3, "id": "recency-folder", "label": "Recency folder", "wants": { "content": "full" } }
+{ "type": "conductor/hello", "conductorProtocol": 4, "id": "recency-folder", "label": "Recency folder", "wants": { "content": "full" } }
 ```
 
 `wants.content`: `"full"` (every block's text — the default), `"shape"` (structure +
@@ -360,9 +360,15 @@ not security.
   "commands": [
     { "kind": "fold", "ids": ["m4:r", "m6:r"] },
     { "kind": "replace", "id": "m9:r", "content": "" }
-  ]
+  ],
+  "preGroup": { "memberIds": ["m10:r", "m11:r"] }
 }
 ```
+
+`Command[]` is a complete command snapshot with no owned region when `preGroup` is omitted.
+The plan-envelope branch is a `ConductorPlan` whose `preGroup.memberIds` is the complete next membership for that revision. A `null` result means hold the previous commands and
+membership together. `conductor/status` is display-only for membership and cannot create or
+change a Pre-Group region.
 
 Echo the `rev` of the `context/update` you are answering so the host can spot a reply to a
 stale snapshot.
@@ -426,7 +432,7 @@ const wss = new WebSocketServer({ host: "127.0.0.1", port: 7700 });
 
 wss.on("connection", (ws) => {
   ws.send(JSON.stringify({
-    type: "conductor/hello", conductorProtocol: 3,
+    type: "conductor/hello", conductorProtocol: 4,
     id: "recency-folder", label: "Recency folder", wants: { content: "full" },
   }));
 
@@ -666,9 +672,10 @@ fully via `CompletionRequest.signal`.
 
 ## Version notes
 
-- **Conductor protocol version 3** (`CONDUCTOR_PROTOCOL_VERSION = 3`): adds the `"complete"`
-  capability — `cap/request` gains the `completion` payload; `cap/result` gains `model`,
-  `inputTokens`, `outputTokens` on a successful "complete" result.
+- **Conductor protocol version 4** (`CONDUCTOR_PROTOCOL_VERSION = 4`): adds complete
+  plan-region metadata to `conductor/commands`; `preGroup.memberIds` is complete next
+  membership for that revision. The legacy `Command[]` branch remains a complete command
+  snapshot with no owned region. The `"complete"` capability was added in v3.
 - **Pi wire protocol version 5** (`PROTOCOL_VERSION = 5`): adds `completeRequest` /
   `completeResult` — the relay messages the GUI sends to the extension to fulfil a
   conductor's model call. This is the underlying transport for `ConductorHost.complete` in

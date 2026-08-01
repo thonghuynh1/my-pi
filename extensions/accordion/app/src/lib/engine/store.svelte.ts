@@ -869,21 +869,6 @@ export class AccordionStore {
 	get preGroupIds(): readonly string[] {
 		return this.preGroupMemberIds;
 	}
-	/** Ordered current blocks in the authoritative Pre-Group region. */
-	get preGroupMembers(): Block[] {
-		const declared = new Set(this.preGroupMemberIds);
-		return this.blocks.filter((block) => declared.has(block.id));
-	}
-	/** The contiguous boundary used by Map consumers, or null when membership is empty. */
-	get preGroupBoundary(): { fromIndex: number; toIndex: number; memberIds: string[] } | null {
-		const members = this.preGroupMembers;
-		if (!members.length) return null;
-		return {
-			fromIndex: this.index.get(members[0].id) ?? 0,
-			toIndex: (this.index.get(members[members.length - 1].id) ?? -1) + 1,
-			memberIds: members.map((block) => block.id),
-		};
-	}
 	/** Full tokens currently held in the protected tail. */
 	protectedTokens = $derived.by(() => {
 		let n = 0;
@@ -944,39 +929,21 @@ export class AccordionStore {
 		if (result === null) {
 			return { commands: this.lastCmds, preGroup: { memberIds: [...this.preGroupMemberIds] } };
 		}
-		if (Array.isArray(result)) {
-			const tagged = (result as Command[] & Partial<ConductorPlan>).commands;
-			if (Array.isArray(tagged)) return this.normalizeConductorResult({ commands: tagged, preGroup: (result as Partial<ConductorPlan>).preGroup });
-			return { commands: result, preGroup: { memberIds: [] } };
-		}
+		if (Array.isArray(result)) return { commands: result, preGroup: { memberIds: [] } };
 		if (!result || !Array.isArray(result.commands)) {
 			this.emit("conductor", "invalid conductor plan", "missing command snapshot");
 			return { commands: [], preGroup: { memberIds: [] } };
 		}
-		const rawIds = result.preGroup?.memberIds;
-		if (result.preGroup === undefined) return { commands: result.commands };
-		if (!Array.isArray(rawIds)) {
+		if (result.preGroup === undefined) return { commands: result.commands, preGroup: { memberIds: [] } };
+		if (!Array.isArray(result.preGroup.memberIds)) {
 			this.emit("conductor", "invalid conductor plan", "Pre-Group memberIds must be an array");
 			return { commands: result.commands, preGroup: { memberIds: [] } };
 		}
-		const present = new Set(this.blocks.map((block) => block.id));
-		const memberIds: string[] = [];
-		const seen = new Set<string>();
-		for (const id of rawIds) {
-			if (typeof id !== "string" || seen.has(id) || !present.has(id)) continue;
-			seen.add(id);
-			memberIds.push(id);
-		}
+		const blockOrder = new Map(this.blocks.map((block, index) => [block.id, index]));
+		const memberIds = [...new Set(result.preGroup.memberIds)]
+			.filter((id) => typeof id === "string" && blockOrder.has(id))
+			.sort((a, b) => (blockOrder.get(a) ?? 0) - (blockOrder.get(b) ?? 0));
 		return { commands: result.commands, preGroup: { memberIds } };
-	}
-
-	private setPreGroupMembership(plan: ConductorPlan): void {
-		const declared = plan.preGroup?.memberIds ?? [];
-		const allowed = new Set(this.blocks.map((block) => block.id));
-		const ids = declared.filter((id, i) => allowed.has(id) && declared.indexOf(id) === i);
-		const order = new Map(this.blocks.map((block, i) => [block.id, i]));
-		ids.sort((a, b) => (order.get(a) ?? Infinity) - (order.get(b) ?? Infinity));
-		this.preGroupMemberIds = ids;
 	}
 
 	private runConductor(): void {
@@ -1015,7 +982,7 @@ export class AccordionStore {
 			const plan = this.normalizeConductorResult(result);
 			// Membership and commands become visible together. A rollover can consume a region
 			// only because the next plan has already released those IDs.
-			this.setPreGroupMembership(plan);
+			this.preGroupMemberIds = plan.preGroup?.memberIds ?? [];
 			const cmds = plan.commands;
 			// Every conductor's folds are attributed uniformly — no conductor is special by id.
 			const by: Actor = "auto";

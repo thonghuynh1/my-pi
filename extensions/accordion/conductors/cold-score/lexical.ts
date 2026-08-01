@@ -65,13 +65,13 @@ export function extractIdentifiers(tailText: string): Set<string> {
 	}
 
 	// ── 2. File paths ─────────────────────────────────────────────────────────
-	// Match tokens that look like paths: contain / or \ or start with ./ or ../
-	// Also match Windows absolute paths: C:\... or D:/...
-	// Also match @scope/package patterns.
-	// Strip leading/trailing punctuation like ( ) , ; : " ' ` [ ]
-	const pathRe = /(?:[A-Za-z]:[\\/]|\.\.?[\\/]|[\\/])?[\w@.-]+(?:[\\/][\w.@-]+)+/g;
-	while ((m = pathRe.exec(tailText)) !== null) {
-		const raw = m[0].replace(/^[^\w@./\\A-Z]+|[^)\w/\\]+$/g, "").replace(/[.,;:'"`)]+$/, "");
+	// Scan non-whitespace tokens once, then keep tokens containing a path separator.
+	// A single regex that searches for a separator after an unbounded word prefix becomes
+	// quadratic on long separator-free tool output.
+	const pathTokenRe = /[^\s"'`()\[\]{},;]+/g;
+	while ((m = pathTokenRe.exec(tailText)) !== null) {
+		if (!m[0].includes("/") && !m[0].includes("\\")) continue;
+		const raw = m[0].replace(/^[^\w@./\\A-Z]+/, "").replace(/[.,:]+$/, "");
 		if (raw.length >= QUOTED_MIN && !STOPWORDS.has(raw.toLowerCase())) {
 			candidates.set(raw, raw.length);
 		}

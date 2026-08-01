@@ -444,7 +444,7 @@ describe("RemoteRunner — stale desired cleared on unexpected disconnect (Bug 3
 		// The status should be "error" (not "idle") to signal an unexpected drop.
 		expect(conductorLink.status).toBe("error");
 
-		// conduct() should now return [] (clear to raw), not the stale fold command.
+		// conduct() should now return an empty plan, not the stale fold command.
 		// We use a minimal ConductorView — the runner only reads its cached `desired`.
 		const view = {
 			budget: 10000,
@@ -456,7 +456,7 @@ describe("RemoteRunner — stale desired cleared on unexpected disconnect (Bug 3
 			blocks: [],
 		};
 		const result = runner.conduct(view as any);
-		expect(result).toEqual([]);
+		expect(result).toEqual({ commands: [], preGroup: { memberIds: [] } });
 	});
 
 	it("the STORE goes raw immediately after disconnect — without manually calling conduct()", () => {

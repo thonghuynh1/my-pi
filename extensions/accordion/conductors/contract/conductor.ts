@@ -542,12 +542,12 @@ export interface ConductorHost {
  * changes (a block streamed in, the budget moved, the protect tail resized).
  *
  * Return value:
- *  - `Command[]` — the conductor's complete desired state; the host resets to baseline
- *    and applies it.
- *  - `[]` — explicitly clear to raw (nothing folded).
- *  - `null` — "hold": the host reuses the last non-null command batch. It still rebuilds
- *    from baseline and re-enforces invariants, so new blocks not named in that batch arrive
- *    raw. Used by an async conductor that is still thinking; it must never block a model call.
+ *  - `ConductorPlan` is the complete desired command state and optional owned region.
+ *  - `Command[]` is the legacy complete command state with no owned region.
+ *  - `[]` explicitly clears to raw and releases any owned region.
+ *  - `null` holds the last non-null commands and owned region together. The host still
+ *    rebuilds from baseline and re-enforces invariants, so new unnamed blocks arrive raw.
+ *    Async conductors use this while thinking; `conduct()` must never block a model call.
  *
  * `conduct()` MUST be synchronous and side-effect-free with respect to the view.
  * In-process conductors can use `attach(host)` / `detach()` and `host.requestRerun()`

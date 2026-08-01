@@ -94,9 +94,9 @@ export class MyCustomizeConductor implements Conductor {
 	private previousBudget: number | null = null;
 	/** Pre-group blocks needing restore, set per-conduct and consumed by finishConduct. */
 	private pendingPreGroupRestore: string[] = [];
-	private lastCompatiblePlan: (Command[] & ConductorPlan) | null = null;
-	private lastCompatibleCommands: Command[] | null = null;
-	private lastCompatibleMemberKey: string | null = null;
+	private lastResult: ConductorPlan | null = null;
+	private lastResultCommands: Command[] | null = null;
+	private lastResultMemberKey: string | null = null;
 
 	constructor(opts: chunkedCompaction.MyCustomizeConductorOpts = {}) {
 		this.opts = { preGroupTokens: opts.preGroupTokens ?? DEFAULT_PRE_GROUP_TOKENS };
@@ -149,28 +149,24 @@ export class MyCustomizeConductor implements Conductor {
 		preGroupTarget: number,
 		rolloverJustFired: boolean,
 		memberIds: string[],
-	): Command[] & ConductorPlan {
+	): ConductorPlan {
 		if (this.host) {
 			const preGroupFillPct = preGroupTarget === 0 ? 0 : Math.round((preGroupTokens / preGroupTarget) * 100);
-			const preGroupPhase = preGroupTarget === 0
-				? "inactive"
-				: rolloverJustFired
-					? "rolled-over"
-					: preGroupTokens >= preGroupTarget
-						? "waiting-safe-rollover"
-						: "accumulating";
+			let preGroupPhase: ChunkedStatusMetrics["preGroupPhase"];
+			if (preGroupTarget === 0) preGroupPhase = "inactive";
+			else if (rolloverJustFired) preGroupPhase = "rolled-over";
+			else if (preGroupTokens >= preGroupTarget) preGroupPhase = "waiting-safe-rollover";
+			else preGroupPhase = "accumulating";
 			const metrics: ChunkedStatusMetrics = {
 				preGroupTokens,
+				preGroupTargetTokens: preGroupTarget,
 				preGroupFillPct,
+				preGroupPhase,
 				rolloverCount: this.rolloverCount,
 				tokensSavedByRollover: this.tokensSavedByRollover,
 				lastEstimatedGroupSaving: this.lastEstimatedGroupSaving,
 				breakFrozenCount: this.rolloverCount,
-			} as ChunkedStatusMetrics;
-			Object.defineProperties(metrics, {
-				preGroupTargetTokens: { value: preGroupTarget, enumerable: false },
-				preGroupPhase: { value: preGroupPhase, enumerable: false },
-			});
+			};
 			const text = rolloverJustFired
 				? `chunked · rollover · ${this.rolloverCount} rollover(s) · ${humanTokens(this.tokensSavedByRollover)} saved · pregroup ${preGroupTokens} → 0`
 				: `chunked · ${preGroupFillPct}% pregroup · ${this.rolloverCount} rollovers · ${humanTokens(this.tokensSavedByRollover)} saved`;
@@ -181,21 +177,15 @@ export class MyCustomizeConductor implements Conductor {
 		const restoreIds = this.pendingPreGroupRestore;
 		this.pendingPreGroupRestore = [];
 		if (restoreIds.length > 0) plan = [{ kind: "restore", ids: restoreIds }, ...plan];
-		// Keep the pre-envelope array surface binary-compatible with existing in-process tests and
-		// callers while exposing the new plan fields. The host recognizes this tagged snapshot as
-		// metadata-bearing, unlike an ordinary legacy Command[] result.
 		const memberKey = memberIds.join("\u0000");
-		if (this.lastCompatiblePlan && this.lastCompatibleCommands === plan && this.lastCompatibleMemberKey === memberKey) return this.lastCompatiblePlan;
-		const compatible = [...plan] as Command[] & ConductorPlan;
-		Object.defineProperty(compatible, "commands", { value: plan, enumerable: false });
-		Object.defineProperty(compatible, "preGroup", { value: { memberIds }, enumerable: false });
-		this.lastCompatiblePlan = compatible;
-		this.lastCompatibleCommands = plan;
-		this.lastCompatibleMemberKey = memberKey;
-		return compatible;
+		if (this.lastResult && this.lastResultCommands === plan && this.lastResultMemberKey === memberKey) return this.lastResult;
+		this.lastResult = { commands: plan, preGroup: { memberIds } };
+		this.lastResultCommands = plan;
+		this.lastResultMemberKey = memberKey;
+		return this.lastResult;
 	}
 
-	conduct(view: ConductorView): Command[] & ConductorPlan {
+	conduct(view: ConductorView): ConductorPlan {
 		// Fold toward the REAL available space (budget capped by window − harness − reply reserve,
 		// then calibrated to real tokens), not the raw budget — else the true request overflows.
 		const cap = availableCap(view);

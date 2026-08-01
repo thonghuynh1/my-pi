@@ -1,9 +1,24 @@
 import { describe, it, expect } from "vitest";
-import { IN_PROCESS_CONDUCTORS, MyCustomizeConductor } from "$conductors";
-import type { Command, ConductorView, ViewBlock } from "$conductors/contract";
+import { IN_PROCESS_CONDUCTORS, MyCustomizeConductor as ProductionMyCustomizeConductor } from "$conductors";
+import type { Command, Conductor, ConductorHost, ConductorView, ViewBlock } from "$conductors/contract";
 import { foldTag } from "./digest";
 import { compactPath, estSummaryTokens, foldCode, mcpSummary, normalizePstackName, pstackLabel, canonicalMcpIdentity } from "$conductors/my-customize-conductor/mcp-summary";
 import { estimateDefaultGroupDigestCost } from "$conductors/my-customize-conductor/my-customize-conductor";
+
+class MyCustomizeConductor implements Conductor {
+	private readonly delegate: ProductionMyCustomizeConductor;
+	readonly id: string;
+	readonly label: string;
+
+	constructor(opts?: ConstructorParameters<typeof ProductionMyCustomizeConductor>[0]) {
+		this.delegate = new ProductionMyCustomizeConductor(opts);
+		this.id = this.delegate.id;
+		this.label = this.delegate.label;
+	}
+
+	attach(host: ConductorHost): void { this.delegate.attach(host); }
+	conduct(view: ConductorView): Command[] { return this.delegate.conduct(view).commands; }
+}
 
 const POTETO_BEACON_LINES = [
 	"Poteto mode active.",

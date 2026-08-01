@@ -36,7 +36,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { NaiveCompactionConductor } from "$conductors/compaction-naive/compaction-naive";
-import { MyCustomizeConductor } from "$conductors/my-customize-conductor/my-customize-conductor";
+import { MyCustomizeConductor as ProductionMyCustomizeConductor } from "$conductors/my-customize-conductor/my-customize-conductor";
 import * as chunkedCompaction from "$conductors/my-customize-conductor/chunked-compaction";
 import { corpusContentHash } from "$conductors/my-customize-conductor/chunked-compaction";
 import { humanTokens } from "$conductors/my-customize-conductor/constants";
@@ -45,6 +45,7 @@ import type { Block, ParsedSession } from "./types";
 import { resolveRecall } from "../live/plan";
 import type {
 	Command,
+	Conductor,
 	ConductorHost,
 	ConductorView,
 	ViewBlock,
@@ -54,6 +55,21 @@ import type {
 } from "$conductors/contract";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+class MyCustomizeConductor implements Conductor {
+	private readonly delegate: ProductionMyCustomizeConductor;
+	readonly id: string;
+	readonly label: string;
+
+	constructor(opts?: ConstructorParameters<typeof ProductionMyCustomizeConductor>[0]) {
+		this.delegate = new ProductionMyCustomizeConductor(opts);
+		this.id = this.delegate.id;
+		this.label = this.delegate.label;
+	}
+
+	attach(host: ConductorHost): void { this.delegate.attach(host); }
+	conduct(view: ConductorView): Command[] { return this.delegate.conduct(view).commands; }
+}
 
 /** Build a minimal ViewBlock. */
 function vb(
@@ -1597,6 +1613,19 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		};
 	}
 
+	it("returns a plain plan envelope with authoritative membership", () => {
+		const blocks = [chunkedBlock("pre", 0), chunkedBlock("tail", 1, 100, { kind: "user", protected: true })];
+		const result = new ProductionMyCustomizeConductor().conduct({
+			...rolloverView(blocks),
+			budget: 100_000,
+			liveTokens: 2_100,
+		});
+
+		expect(Array.isArray(result)).toBe(false);
+		expect(result.commands).toEqual([]);
+		expect(result.preGroup?.memberIds).toEqual(["pre"]);
+	});
+
 	function rolloverView(blocks: ViewBlock[], contextWindow: number | null = 200_000): ConductorView {
 		const protectedFromIndex = blocks.findIndex((block) => block.protected);
 		return {
@@ -1637,12 +1666,16 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 			"breakFrozenCount",
 			"lastEstimatedGroupSaving",
 			"preGroupFillPct",
+			"preGroupPhase",
+			"preGroupTargetTokens",
 			"preGroupTokens",
 			"rolloverCount",
 			"tokensSavedByRollover",
 		]);
 		expect(typeof nonRolloverMetrics?.preGroupTokens).toBe("number");
 		expect(typeof nonRolloverMetrics?.preGroupFillPct).toBe("number");
+		expect(nonRolloverMetrics?.preGroupPhase).toBe("accumulating");
+		expect(typeof nonRolloverMetrics?.preGroupTargetTokens).toBe("number");
 		expect(rolloverMetrics?.preGroupTokens).toBeTypeOf("number");
 		expect(rolloverMetrics?.rolloverCount).toBe(1);
 		expect(rolloverMetrics?.breakFrozenCount).toBe(1);

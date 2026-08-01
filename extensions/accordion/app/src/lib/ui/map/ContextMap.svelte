@@ -346,7 +346,12 @@
 		});
 	});
 
-	const k = (n: number) => { n = Math.round(n); return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M` : n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`; };
+	function k(n: number): string {
+		n = Math.round(n);
+		if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+		if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}k`;
+		return `${n}`;
+	}
 	type PreGroupPhase = "accumulating" | "waiting-safe-rollover" | "rolled-over";
 	type PreGroupProgress = { tokens: number; target: number; fillPct: number; phase: PreGroupPhase };
 	function readPreGroupProgress(): PreGroupProgress | null {
@@ -359,9 +364,13 @@
 		return { tokens: preGroupTokens, target: preGroupTargetTokens, fillPct: preGroupFillPct, phase: preGroupPhase };
 	}
 	const preGroupProgress = $derived.by(readPreGroupProgress);
-	const preGroupPhaseLabel = $derived(preGroupProgress?.phase === "waiting-safe-rollover"
-		? "waiting for safe rollover"
-		: preGroupProgress?.phase === "rolled-over" ? "safe rollover" : "accumulating");
+	const preGroupPhaseLabel = $derived.by(() => {
+		switch (preGroupProgress?.phase) {
+			case "waiting-safe-rollover": return "waiting for safe rollover";
+			case "rolled-over": return "safe rollover";
+			default: return "accumulating";
+		}
+	});
 	const preGroupProgressText = $derived(preGroupProgress
 		? `Pre-Group · ${k(preGroupProgress.tokens)} / ${k(preGroupProgress.target)} · ${preGroupProgress.fillPct}% · ${preGroupPhaseLabel}`
 		: "");

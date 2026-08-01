@@ -203,15 +203,15 @@ export class RemoteRunner implements Conductor {
 			if (this.ws !== ws) return;
 			this.ws = null;
 			if (!this.manualClose) {
-				// Unexpected drop: clear stale commands so conduct() returns [] (raw) rather
-				// than perpetuating the last known desired state against a dead conductor.
-				this.desired = [];
+				// Unexpected drop: clear stale commands and membership rather than
+				// perpetuating the last desired plan against a dead conductor.
+				this.desired = { commands: [], preGroup: { memberIds: [] } };
 				this._dead = true;
 				clearConductorStatus(); // the telemetry line is stale now → hide it
 
 				// Immediately re-run the conductor pass so the store renders raw NOW rather than
-				// waiting for the next unrelated refold. conduct() reads this.desired (now [])
-				// and returns [], which clears all conductor folds in the same tick.
+				// waiting for the next unrelated refold. The empty plan clears all conductor
+				// folds and owned membership in the same tick.
 				this.store.refold();
 				if (conductorLink.status !== "error") {
 					conductorLink.status = "error";
@@ -277,11 +277,8 @@ export class RemoteRunner implements Conductor {
 				// a version-mismatched or never-greeted conductor could fold the live context. Ignore
 				// any commands until greeted; a well-behaved conductor always sends hello first.
 				if (!this.greeted) break;
-				// Drop replies to stale snapshots. If the conductor echoed a rev that is
-				// older than the latest context/update we have sent, this reply was computed
-				// against a state we already superseded — applying it would rewind decisions.
-				// If rev is absent, accept as before (backward-compatible with conductors that
-				// do not echo rev).
+				// Drop replies older than either the latest host snapshot or accepted plan.
+				// If rev is absent, accept it for backward compatibility.
 				// Liveness tradeoff: a human interaction between our context/update and the
 				// conductor's reply bumps this.rev, so a slow conductor's in-flight reply is
 				// dropped as stale and it must recompute against the newer snapshot — intentional,

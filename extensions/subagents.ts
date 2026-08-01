@@ -1190,7 +1190,6 @@ async function runSubagent(
 	try {
 		const services = await createAgentSessionServices({
 			cwd,
-			modelRegistry: ctx.modelRegistry,
 			resourceLoaderOptions: {
 				// Keep child agents isolated and avoid recursively loading this extension.
 				noExtensions: true,

@@ -14,7 +14,7 @@
 import type { Block, Actor, SessionMeta, ParsedSession, Group } from "./types";
 import { digest, digestTokens, foldCode, foldTag, groupDigest, groupDigestTokens, substTokens, wireFoldable } from "./digest";
 import { estTokens, BLOCK_OVERHEAD } from "./tokens";
-import type { Conductor, ConductorView, Command, ClampReport, ClampReason, LockName, ConductorHost, CompletionRequest, CompletionResult, JSONValue } from "$conductors/contract";
+import type { Conductor, ConductorPlan, ConductorResult, ConductorView, Command, ClampReport, ClampReason, LockName, ConductorHost, CompletionRequest, CompletionResult, JSONValue } from "$conductors/contract";
 import { contextWindowCap, hasLock } from "$conductors/contract";
 import { BuiltinConductor } from "$conductors";
 import { CHUNKED_COMPACTION_PREFIX } from "$conductors/my-customize-conductor/constants";
@@ -201,6 +201,8 @@ export class AccordionStore {
 	 * raw. Reset to `[]` whenever a conductor is detached.
 	 */
 	private lastCmds: Command[] = [];
+	/** The complete next Pre-Group membership declared by the last normalized plan. */
+	private preGroupMemberIds = $state<string[]>([]);
 	/** Re-entrancy latch: a command that itself re-folds (e.g. `group`) must not recurse. */
 	private conducting = false;
 	/**
@@ -353,6 +355,7 @@ export class AccordionStore {
 		this.syncLocks();
 		this.lastCmds = [];
 		this.lastReports = [];
+		this.preGroupMemberIds = [];
 		// Release human/agent holds in the domains the NEW conductor locks. Pass `c?.locks`
 		// explicitly; the `activeLocks` snapshot was just synced above so `isLocked` already agrees.
 		this.releaseLockedDomains(c?.locks ?? []);
@@ -388,6 +391,7 @@ export class AccordionStore {
 		this.syncLocks();
 		this.lastCmds = [];
 		this.lastReports = [];
+		this.preGroupMemberIds = [];
 		this.refold();
 	}
 
@@ -856,6 +860,30 @@ export class AccordionStore {
 	isProtected(b: Block): boolean {
 		return (this.index.get(b.id) ?? -1) >= this.protectedFromIndex;
 	}
+	/** True only for a current block named by authoritative plan metadata. */
+	isPreGroup(blockOrId: Block | string): boolean {
+		const id = typeof blockOrId === "string" ? blockOrId : blockOrId.id;
+		return this.preGroupMemberIds.includes(id) && this.index.has(id);
+	}
+	/** Ordered, validated membership as durable IDs. */
+	get preGroupIds(): readonly string[] {
+		return this.preGroupMemberIds;
+	}
+	/** Ordered current blocks in the authoritative Pre-Group region. */
+	get preGroupMembers(): Block[] {
+		const declared = new Set(this.preGroupMemberIds);
+		return this.blocks.filter((block) => declared.has(block.id));
+	}
+	/** The contiguous boundary used by Map consumers, or null when membership is empty. */
+	get preGroupBoundary(): { fromIndex: number; toIndex: number; memberIds: string[] } | null {
+		const members = this.preGroupMembers;
+		if (!members.length) return null;
+		return {
+			fromIndex: this.index.get(members[0].id) ?? 0,
+			toIndex: (this.index.get(members[members.length - 1].id) ?? -1) + 1,
+			memberIds: members.map((block) => block.id),
+		};
+	}
 	/** Full tokens currently held in the protected tail. */
 	protectedTokens = $derived.by(() => {
 		let n = 0;
@@ -912,6 +940,45 @@ export class AccordionStore {
 	 * Non-reentrant: a `group` command routes through `createGroup`, which calls `refold`
 	 * again — the latch makes that inner call a no-op so the outer pass owns the result.
 	 */
+	private normalizeConductorResult(result: ConductorResult): ConductorPlan {
+		if (result === null) {
+			return { commands: this.lastCmds, preGroup: { memberIds: [...this.preGroupMemberIds] } };
+		}
+		if (Array.isArray(result)) {
+			const tagged = (result as Command[] & Partial<ConductorPlan>).commands;
+			if (Array.isArray(tagged)) return this.normalizeConductorResult({ commands: tagged, preGroup: (result as Partial<ConductorPlan>).preGroup });
+			return { commands: result, preGroup: { memberIds: [] } };
+		}
+		if (!result || !Array.isArray(result.commands)) {
+			this.emit("conductor", "invalid conductor plan", "missing command snapshot");
+			return { commands: [], preGroup: { memberIds: [] } };
+		}
+		const rawIds = result.preGroup?.memberIds;
+		if (result.preGroup === undefined) return { commands: result.commands };
+		if (!Array.isArray(rawIds)) {
+			this.emit("conductor", "invalid conductor plan", "Pre-Group memberIds must be an array");
+			return { commands: result.commands, preGroup: { memberIds: [] } };
+		}
+		const present = new Set(this.blocks.map((block) => block.id));
+		const memberIds: string[] = [];
+		const seen = new Set<string>();
+		for (const id of rawIds) {
+			if (typeof id !== "string" || seen.has(id) || !present.has(id)) continue;
+			seen.add(id);
+			memberIds.push(id);
+		}
+		return { commands: result.commands, preGroup: { memberIds } };
+	}
+
+	private setPreGroupMembership(plan: ConductorPlan): void {
+		const declared = plan.preGroup?.memberIds ?? [];
+		const allowed = new Set(this.blocks.map((block) => block.id));
+		const ids = declared.filter((id, i) => allowed.has(id) && declared.indexOf(id) === i);
+		const order = new Map(this.blocks.map((block, i) => [block.id, i]));
+		ids.sort((a, b) => (order.get(a) ?? Infinity) - (order.get(b) ?? Infinity));
+		this.preGroupMemberIds = ids;
+	}
+
 	private runConductor(): void {
 		if (this.conducting) return;
 		this.conducting = true;
@@ -936,7 +1003,7 @@ export class AccordionStore {
 
 			// Ask the active conductor for its complete desired state. `null` ⇒ hold the last
 			// applied batch (a remote one still thinking); `[]` ⇒ clear to raw; no conductor ⇒ raw.
-			let result: Command[] | null;
+			let result: ConductorResult;
 			try {
 				result = this.conductor ? this.conductor.conduct(this.buildView(protectedFrom)) : [];
 			} catch (e) {
@@ -945,7 +1012,11 @@ export class AccordionStore {
 				result = null;
 				this.emit("conductor", "conductor error", e instanceof Error ? e.message : String(e));
 			}
-			const cmds = result === null ? this.lastCmds : result;
+			const plan = this.normalizeConductorResult(result);
+			// Membership and commands become visible together. A rollover can consume a region
+			// only because the next plan has already released those IDs.
+			this.setPreGroupMembership(plan);
+			const cmds = plan.commands;
 			// Every conductor's folds are attributed uniformly — no conductor is special by id.
 			const by: Actor = "auto";
 			const reports = this.applyCommands(cmds, by);
@@ -1108,6 +1179,7 @@ export class AccordionStore {
 		const b = this.get(id);
 		if (!b) return void reports.push(clamp(kind, [id], "unknown-id", `no block ${id}`));
 		if (b.override !== null) return void reports.push(clamp(kind, [id], "human-override", `${label(b)} is held by the human`));
+		if (this.isPreGroup(id)) return void reports.push(clamp(kind, [id], "pre-group", `${label(b)} is reserved in the active Pre-Group`));
 		if (this.groupWire.has(id)) return void reports.push(clamp(kind, [id], "grouped", `${label(b)} is inside a folded group`));
 		if (b.proactivelyCompressed)
 			return void reports.push(clamp(kind, [id], "proactively-compressed", `${label(b)} was proactively compressed — recall-only`));
@@ -1171,6 +1243,8 @@ export class AccordionStore {
 		if (ids.length < 1) return void reports.push(clamp("group", ids, "invalid-group", "a group needs ≥1 block"));
 		const range = this.snappedRange(ids[0], ids[ids.length - 1]);
 		if (range) {
+			if (range.some((id) => this.isPreGroup(id)))
+				return void reports.push(clamp("group", ids, "pre-group", "group range intersects the active Pre-Group"));
 			const held = range.filter((id) => this.get(id)?.override != null);
 			if (held.length)
 				return void reports.push(clamp("group", ids, "human-override", `would collapse ${held.length} human-held block(s)`));
@@ -1467,10 +1541,11 @@ export class AccordionStore {
 	 * human-pinned.
 	 */
 	canFold(b: Block): boolean {
-		return wireFoldable(b) && !this.isProtected(b) && !this.inFoldedGroup(b.id) && b.override !== "pinned";
+		return !this.isPreGroup(b) && wireFoldable(b) && !this.isProtected(b) && !this.inFoldedGroup(b.id) && b.override !== "pinned";
 	}
 
 	fold(id: string, by: Actor = "you"): void {
+		if (by === "you" && this.isPreGroup(id)) return;
 		// ADR 0011 `human-steering` lock: a human hand-fold is refused outright — no override
 		// written, no log, no onHumanOverride. There is no human override to "win" under the lock.
 		if (this.humanLocked(by)) return;
@@ -1513,6 +1588,7 @@ export class AccordionStore {
 		if (by === "you") this.onHumanOverride?.([id], "unfolded");
 	}
 	toggle(id: string, by: Actor = "you"): void {
+		if (by === "you" && this.isPreGroup(id)) return;
 		// ADR 0011 `human-steering`: gate early so a locked human toggle is a true no-op
 		// (fold/unfold are also gated, but gating here avoids reading state under the lock).
 		if (this.humanLocked(by)) return;
@@ -1682,6 +1758,7 @@ export class AccordionStore {
 		if (this.humanLocked(by)) return null;
 		const memberIds = this.snappedRange(startId, endId);
 		if (!memberIds) return null;
+		if (memberIds.some((id) => this.isPreGroup(id))) return null;
 		// Never reach into the protected tail (ADR 0006 §1).
 		if ((this.index.get(memberIds[memberIds.length - 1]) ?? Infinity) >= this.protectedFromIndex) return null;
 		for (const id of memberIds) {

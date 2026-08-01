@@ -190,6 +190,19 @@ export type Command =
 	| RestoreCommand
 	| PinCommand;
 
+/** The host-owned region that must remain full until a safe rollover consumes it. */
+export interface PreGroupRegion {
+	memberIds: string[];
+}
+
+/** A complete conductor command snapshot plus optional authoritative Pre-Group metadata. */
+export interface ConductorPlan {
+	commands: Command[];
+	preGroup?: PreGroupRegion;
+}
+
+export type ConductorResult = Command[] | ConductorPlan | null;
+
 /**
  * Collapse blocks to a digest. With no `digest`, the host uses its own per-kind digest
  * (and the agent-recoverable `{#code FOLDED}` tag). With a `digest`, that exact string
@@ -312,6 +325,8 @@ export type ClampReason =
 	| "not-foldable"
 	/** The block was already shortened by Proactive Content Compression. */
 	| "proactively-compressed"
+	/** The authoritative Pre-Group region owns this block until rollover. */
+	| "pre-group"
 	/** The op was a no-op (e.g. restoring an already-live block). */
 	| "noop";
 
@@ -581,5 +596,5 @@ export interface Conductor {
 	 * call `host.requestRerun()` after the conductor is gone.
 	 */
 	detach?(): void;
-	conduct(view: ConductorView): Command[] | null;
+	conduct(view: ConductorView): ConductorResult;
 }

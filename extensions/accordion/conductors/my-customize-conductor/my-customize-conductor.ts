@@ -18,7 +18,7 @@
  * tokens to ≤ 0.9 × cap, the plan is returned unchanged. This keeps the KV prefix stable
  * across passes where nothing meaningful has changed.
  */
-import type { Command, Conductor, ConductorHost, ConductorView, ViewBlock } from "../contract";
+import type { Command, Conductor, ConductorHost, ConductorPlan, ConductorView, ViewBlock } from "../contract";
 import { availableCap, contextWindowCap } from "../contract";
 import { FOLD_RANK } from "../builtin/builtin";
 import { FOLDABLE_KINDS } from "../cold-score/score";
@@ -61,7 +61,9 @@ type SavedFold = { tokens: number; breakFrozen: boolean };
 
 type ChunkedStatusMetrics = {
 	preGroupTokens: number;
+	preGroupTargetTokens: number;
 	preGroupFillPct: number;
+	preGroupPhase: "inactive" | "accumulating" | "waiting-safe-rollover" | "rolled-over";
 	rolloverCount: number;
 	tokensSavedByRollover: number;
 	lastEstimatedGroupSaving: number;
@@ -92,6 +94,9 @@ export class MyCustomizeConductor implements Conductor {
 	private previousBudget: number | null = null;
 	/** Pre-group blocks needing restore, set per-conduct and consumed by finishConduct. */
 	private pendingPreGroupRestore: string[] = [];
+	private lastCompatiblePlan: (Command[] & ConductorPlan) | null = null;
+	private lastCompatibleCommands: Command[] | null = null;
+	private lastCompatibleMemberKey: string | null = null;
 
 	constructor(opts: chunkedCompaction.MyCustomizeConductorOpts = {}) {
 		this.opts = { preGroupTokens: opts.preGroupTokens ?? DEFAULT_PRE_GROUP_TOKENS };
@@ -143,9 +148,17 @@ export class MyCustomizeConductor implements Conductor {
 		preGroupTokens: number,
 		preGroupTarget: number,
 		rolloverJustFired: boolean,
-	): Command[] {
+		memberIds: string[],
+	): Command[] & ConductorPlan {
 		if (this.host) {
 			const preGroupFillPct = preGroupTarget === 0 ? 0 : Math.round((preGroupTokens / preGroupTarget) * 100);
+			const preGroupPhase = preGroupTarget === 0
+				? "inactive"
+				: rolloverJustFired
+					? "rolled-over"
+					: preGroupTokens >= preGroupTarget
+						? "waiting-safe-rollover"
+						: "accumulating";
 			const metrics: ChunkedStatusMetrics = {
 				preGroupTokens,
 				preGroupFillPct,
@@ -153,7 +166,11 @@ export class MyCustomizeConductor implements Conductor {
 				tokensSavedByRollover: this.tokensSavedByRollover,
 				lastEstimatedGroupSaving: this.lastEstimatedGroupSaving,
 				breakFrozenCount: this.rolloverCount,
-			};
+			} as ChunkedStatusMetrics;
+			Object.defineProperties(metrics, {
+				preGroupTargetTokens: { value: preGroupTarget, enumerable: false },
+				preGroupPhase: { value: preGroupPhase, enumerable: false },
+			});
 			const text = rolloverJustFired
 				? `chunked · rollover · ${this.rolloverCount} rollover(s) · ${humanTokens(this.tokensSavedByRollover)} saved · pregroup ${preGroupTokens} → 0`
 				: `chunked · ${preGroupFillPct}% pregroup · ${this.rolloverCount} rollovers · ${humanTokens(this.tokensSavedByRollover)} saved`;
@@ -163,13 +180,22 @@ export class MyCustomizeConductor implements Conductor {
 		// (clearConductorState preserves those folds, but the pre-group contract is "full until grouped").
 		const restoreIds = this.pendingPreGroupRestore;
 		this.pendingPreGroupRestore = [];
-		if (restoreIds.length > 0) {
-			return [{ kind: "restore", ids: restoreIds }, ...plan];
-		}
-		return plan;
+		if (restoreIds.length > 0) plan = [{ kind: "restore", ids: restoreIds }, ...plan];
+		// Keep the pre-envelope array surface binary-compatible with existing in-process tests and
+		// callers while exposing the new plan fields. The host recognizes this tagged snapshot as
+		// metadata-bearing, unlike an ordinary legacy Command[] result.
+		const memberKey = memberIds.join("\u0000");
+		if (this.lastCompatiblePlan && this.lastCompatibleCommands === plan && this.lastCompatibleMemberKey === memberKey) return this.lastCompatiblePlan;
+		const compatible = [...plan] as Command[] & ConductorPlan;
+		Object.defineProperty(compatible, "commands", { value: plan, enumerable: false });
+		Object.defineProperty(compatible, "preGroup", { value: { memberIds }, enumerable: false });
+		this.lastCompatiblePlan = compatible;
+		this.lastCompatibleCommands = plan;
+		this.lastCompatibleMemberKey = memberKey;
+		return compatible;
 	}
 
-	conduct(view: ConductorView): Command[] {
+	conduct(view: ConductorView): Command[] & ConductorPlan {
 		// Fold toward the REAL available space (budget capped by window − harness − reply reserve,
 		// then calibrated to real tokens), not the raw budget — else the true request overflows.
 		const cap = availableCap(view);
@@ -277,7 +303,7 @@ export class MyCustomizeConductor implements Conductor {
 					const newIds = new Set(cmds.flatMap((command) => command.kind === "group" ? command.ids : []));
 					const retained = this.replayablePreviousGroups(view, newIds);
 					this.rememberReplayableGroups(retained);
-					return this.finishConduct([...retained, ...cmds], preGroupTokens, preGroupTarget, true);
+					return this.finishConduct([...retained, ...cmds], preGroupTokens, preGroupTarget, true, preGroupBlocks.filter((b) => !newIds.has(b.id)).map((b) => b.id));
 				}
 			}
 		}
@@ -289,14 +315,14 @@ export class MyCustomizeConductor implements Conductor {
 			const retained = this.replayablePreviousGroups(view);
 			if (retained.length > 0) {
 				this.rememberReplayableGroups(retained);
-				return this.finishConduct(retained, preGroupTokens, preGroupTarget, false);
+				return this.finishConduct(retained, preGroupTokens, preGroupTarget, false, preGroupBlocks.map((b) => b.id));
 			}
 			this.lastPlan = null;
 			this.lastSavings.clear();
 			this.lastSemanticKey = null;
 			this.lastFrozenGroupEpochKey = null;
 			this.lastViewKey = null;
-			return this.finishConduct([], preGroupTokens, preGroupTarget, false);
+			return this.finishConduct([], preGroupTokens, preGroupTarget, false, preGroupBlocks.map((b) => b.id));
 		}
 
 		const allCandidates = view.blocks.filter(
@@ -329,7 +355,7 @@ export class MyCustomizeConductor implements Conductor {
 		// invalidate the hold so stale beacon text does not survive mode changes or newer poteto blocks.
 		if (this.lastSemanticKey !== null && this.lastSemanticKey !== semanticKey) this.lastFrozenGroupEpochKey = null;
 		if (this.lastPlan !== null && this.lastSemanticKey === semanticKey && this.lastViewKey === viewKey) {
-			return this.finishConduct(this.lastPlan, preGroupTokens, preGroupTarget, false);
+			return this.finishConduct(this.lastPlan, preGroupTokens, preGroupTarget, false, preGroupBlocks.map((b) => b.id));
 		}
 		if (this.lastPlan !== null && this.lastSemanticKey === semanticKey) {
 			let projectedHeld = view.liveTokens;
@@ -338,7 +364,7 @@ export class MyCustomizeConductor implements Conductor {
 				if (b && !b.held && !b.protected && !b.grouped) projectedHeld -= saving.tokens;
 			}
 			if (projectedHeld <= HOLD_BAND * cap) {
-				return this.finishConduct(this.lastPlan, preGroupTokens, preGroupTarget, false);
+				return this.finishConduct(this.lastPlan, preGroupTokens, preGroupTarget, false, preGroupBlocks.map((b) => b.id));
 			}
 		}
 		this.lastPlan = null;
@@ -459,7 +485,7 @@ export class MyCustomizeConductor implements Conductor {
 				this.lastSavings = savingsFor(cmds);
 				this.lastSemanticKey = semanticKey;
 				this.lastViewKey = viewKey;
-				return this.finishConduct(cmds, preGroupTokens, preGroupTarget, true);
+				return this.finishConduct(cmds, preGroupTokens, preGroupTarget, true, preGroupBlocks.filter((b) => !groupedIds.has(b.id)).map((b) => b.id));
 			}
 		}
 
@@ -486,7 +512,7 @@ export class MyCustomizeConductor implements Conductor {
 				const newIds = new Set(cmds.flatMap((command) => command.kind === "group" ? command.ids : []));
 				const retained = this.replayablePreviousGroups(view, newIds, priorPlan);
 				this.rememberReplayableGroups(retained);
-				return this.finishConduct([...retained, ...cmds], preGroupTokens, preGroupTarget, true);
+				return this.finishConduct([...retained, ...cmds], preGroupTokens, preGroupTarget, true, preGroupBlocks.filter((b) => !newIds.has(b.id)).map((b) => b.id));
 			}
 		}
 
@@ -560,7 +586,7 @@ export class MyCustomizeConductor implements Conductor {
 		this.lastSemanticKey = semanticKey;
 		this.lastViewKey = viewKey;
 
-		return this.finishConduct(cmds, preGroupTokens, preGroupTarget, false);
+		return this.finishConduct(cmds, preGroupTokens, preGroupTarget, false, preGroupBlocks.map((b) => b.id));
 	}
 }
 

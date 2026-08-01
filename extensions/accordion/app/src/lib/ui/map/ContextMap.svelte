@@ -12,6 +12,7 @@
 	import TileCanvas from "./TileCanvas.svelte";
 	import type { TileSpec } from "./tileDraw";
 	import { faceFor as faceForLib } from "./tileDraw";
+	import { conductorStatus } from "$lib/live/conductorClient.svelte";
 
 	let {
 		store,
@@ -83,6 +84,7 @@
 	// split the grid into two boxes: older/foldable (top) and protected (bottom).
 	const protectedFrom = $derived(store.protectedFromIndex);
 	const preGroupIds = $derived(new Set(store.preGroupIds));
+	const firstPreGroupId = $derived(store.blocks.find((b) => preGroupIds.has(b.id))?.id ?? null);
 	const olderTiles = $derived(tiles.slice(0, protectedFrom).filter(({ b }) => !preGroupIds.has(b.id)));
 	const preGroupTiles = $derived(tiles.slice(0, protectedFrom).filter(({ b }) => preGroupIds.has(b.id)));
 	const protectedTiles = $derived(tiles.slice(protectedFrom));
@@ -344,7 +346,25 @@
 		});
 	});
 
-	const k = (n: number) => { n = Math.round(n); return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`; };
+	const k = (n: number) => { n = Math.round(n); return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M` : n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`; };
+	type PreGroupPhase = "accumulating" | "waiting-safe-rollover" | "rolled-over";
+	type PreGroupProgress = { tokens: number; target: number; fillPct: number; phase: PreGroupPhase };
+	function readPreGroupProgress(): PreGroupProgress | null {
+		const status = store.conductorStatus.text ? store.conductorStatus : conductorStatus.text ? conductorStatus : null;
+		if (!status) return null;
+		const { preGroupTokens, preGroupTargetTokens, preGroupFillPct, preGroupPhase } = status.metrics;
+		if (typeof preGroupTokens !== "number" || typeof preGroupTargetTokens !== "number" || typeof preGroupFillPct !== "number") return null;
+		if (!Number.isFinite(preGroupTokens) || !Number.isFinite(preGroupTargetTokens) || !Number.isFinite(preGroupFillPct)) return null;
+		if (preGroupPhase !== "accumulating" && preGroupPhase !== "waiting-safe-rollover" && preGroupPhase !== "rolled-over") return null;
+		return { tokens: preGroupTokens, target: preGroupTargetTokens, fillPct: preGroupFillPct, phase: preGroupPhase };
+	}
+	const preGroupProgress = $derived.by(readPreGroupProgress);
+	const preGroupPhaseLabel = $derived(preGroupProgress?.phase === "waiting-safe-rollover"
+		? "waiting for safe rollover"
+		: preGroupProgress?.phase === "rolled-over" ? "safe rollover" : "accumulating");
+	const preGroupProgressText = $derived(preGroupProgress
+		? `Pre-Group · ${k(preGroupProgress.tokens)} / ${k(preGroupProgress.target)} · ${preGroupProgress.fillPct}% · ${preGroupPhaseLabel}`
+		: "");
 	function tip(b: Block, prot = false): string {
 		const tool = b.toolName ? ` ${b.toolName}` : "";
 		const folded = store.isFolded(b);
@@ -1112,7 +1132,7 @@
 				{/if}
 				{#if preGroupSpecs.length}
 				<section class="box prot pre-group" aria-label="Pre-Group" data-region="pre-group">
-					<div class="box-label">Pre-Group</div>
+					<div class="box-label">{preGroupProgressText || "Pre-Group"}</div>
 					<div class="canvas-fill">
 						<TileCanvas
 							bind:this={canvasRefs["pre-group"]}
@@ -1151,6 +1171,13 @@
 			     dbl-click or the row button = fold/unfold. Colour spine = kind grammar. -->
 			<div class="transcript">
 				{#each store.blocks as b (b.id)}
+					{@const preGroup = preGroupIds.has(b.id)}
+					{#if b.id === firstPreGroupId}
+						<section class="tr-pre-group" aria-label="Pre-Group" data-region="pre-group">
+							<strong>Pre-Group</strong>
+							{#if preGroupProgressText}<span class="mono">{preGroupProgressText}</span>{/if}
+						</section>
+					{/if}
 					{@const folded = store.isFolded(b)}
 					{@const prot = store.isProtected(b)}
 					{@const canFold = store.canFold(b)}
@@ -1161,10 +1188,12 @@
 						class:prot
 						class:sel={b.id === selectedId}
 						data-id={b.id}
+						aria-label={`${ROLE[b.kind]} ${b.id}${preGroup ? " · Pre-Group" : ""}`}
 						title={tip(b, prot)}
 					>
 						<header class="tr-head">
 							<span class="tr-role">{ROLE[b.kind]}</span>
+							{#if preGroup}<span class="tr-flag pre-group-flag" aria-label="Pre-Group">Pre-Group</span>{/if}
 							{#if b.toolName}<span class="tr-tool mono">{b.toolName}</span>{/if}
 							<span class="tr-tok mono tnum">
 								{k(store.effTokens(b))}{#if folded}<span class="dim">/{k(b.tokens)}</span>{/if} tok
@@ -1175,7 +1204,7 @@
 								<span class="tr-flag" title="pinned — held full"><Icon name="pin" size={10} /></span>
 							{/if}
 							<span class="grow"></span>
-							{#if folded || canFold}
+							{#if !preGroup && (folded || canFold)}
 								<button
 									class="tr-btn"
 									class:locked={steerLocked}
@@ -1986,6 +2015,21 @@
 		display: inline-flex;
 		align-items: center;
 		color: var(--faint);
+	}
+	.tr-pre-group {
+		display: flex;
+		align-items: baseline;
+		gap: var(--sp-2);
+		padding: var(--sp-2) var(--sp-3);
+		border: 1px solid var(--accent-dim);
+		border-radius: var(--radius-sm);
+		background: var(--panel-2);
+		color: var(--accent);
+	}
+	.pre-group-flag {
+		color: var(--accent);
+		font-size: var(--fs-xs);
+		font-weight: 600;
 	}
 	.tr-btn {
 		display: inline-flex;

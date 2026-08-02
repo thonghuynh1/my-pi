@@ -254,8 +254,12 @@
 		if (ghostRafId !== null) return;
 		function tick() {
 			ghostPhase = (ghostPhase + 0.06) % (Math.PI * 2);
-			scheduleRedraw();
-			const hasGhosts = specs.some((s) => s.kind === "ghost");
+			const ghostIndices: number[] = [];
+			for (let i = 0; i < specs.length; i++) {
+				if (specs[i].kind === "ghost") ghostIndices.push(i);
+			}
+			schedulePartialRedraw(ghostIndices);
+			const hasGhosts = ghostIndices.length > 0;
 			if (hasGhosts) {
 				ghostRafId = requestAnimationFrame(tick);
 			} else {
@@ -493,7 +497,7 @@
 	// Redraw when specs change. hoveredIndex is intentionally NOT listed here —
 	// hover changes flow only through schedulePartialRedraw() to avoid a full
 	// canvas repaint on every mouse-move frame.
-	// (ghostPhase is also excluded — ghost loop calls scheduleRedraw itself.)
+	// (ghostPhase is also excluded — the ghost loop schedules partial redraws.)
 	$effect(() => {
 		void specs;
 		if (canvas && palette && sprites) {

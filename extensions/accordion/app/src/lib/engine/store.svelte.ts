@@ -994,7 +994,7 @@ export class AccordionStore {
 			this.healProtected(protectedFrom);
 			// Reset conductor-owned state to the raw baseline (human overrides + groups still
 			// apply); the snapshot's liveTokens is then exactly what the conductor folds down from.
-			this.clearConductorState();
+			this.clearConductorState(protectedFrom);
 			this.version++;
 
 			// Ask the active conductor for its complete desired state. `null` ⇒ hold the last
@@ -1063,11 +1063,12 @@ export class AccordionStore {
 	 * Cached-prefix folds and groups remain unchanged so the next provider payload keeps its
 	 * cacheable prefix. Other conductor groups rebuild from the current command batch.
 	 */
-	private clearConductorState(): void {
-		for (const b of this.blocks) {
+	private clearConductorState(protectedFrom: number): void {
+		for (let i = 0; i < this.blocks.length; i++) {
+			const b = this.blocks[i];
 			if (b.override === null) {
 				// Moving boundaries must not make an existing automatic fold snap open.
-				if ((this.isProtected(b) || b.order < this.frozenFromIndex) && (b.autoFolded || b.subst !== undefined)) continue;
+				if ((i >= protectedFrom || b.order < this.frozenFromIndex) && (b.autoFolded || b.subst !== undefined)) continue;
 				b.autoFolded = false;
 				b.subst = undefined;
 				if (b.by === "auto" || b.by === "conductor") b.by = null;
@@ -1097,24 +1098,29 @@ export class AccordionStore {
 	 * shrink test naturally skips `user`/`tool_call` and never proposes a fold the host clamps).
 	 */
 	private buildView(protectedFrom: number): ConductorView {
-		const blocks = this.blocks.map((b, i) => ({
-			id: b.id,
-			messageKey: messageKey(b.id),
-			kind: b.kind,
-			turn: b.turn,
-			order: b.order,
-			tokens: b.tokens,
-			foldedTokens: wireFoldable(b) ? digestTokens(b) : b.tokens,
-			toolName: b.toolName,
-			callId: b.callId,
-			isError: b.isError,
-			proactivelyCompressed: b.proactivelyCompressed,
-			held: b.override !== null,
-			folded: this.isFolded(b),
-			protected: i >= protectedFrom,
-			grouped: this.groupWire.has(b.id),
-			text: b.text,
-		}));
+		const groupWire = this.groupWire;
+		const blocks = this.blocks.map((b, i) => {
+			const wire = groupWire.get(b.id);
+			const folded = wire !== undefined ? wire.collapsed : b.override === "folded" || (b.override !== "pinned" && b.override !== "unfolded" && b.autoFolded);
+			return {
+				id: b.id,
+				messageKey: messageKey(b.id),
+				kind: b.kind,
+				turn: b.turn,
+				order: b.order,
+				tokens: b.tokens,
+				foldedTokens: wireFoldable(b) ? digestTokens(b) : b.tokens,
+				toolName: b.toolName,
+				callId: b.callId,
+				isError: b.isError,
+				proactivelyCompressed: b.proactivelyCompressed,
+				held: b.override !== null,
+				folded,
+				protected: i >= protectedFrom,
+				grouped: wire !== undefined,
+				text: b.text,
+			};
+		});
 		return {
 			blocks,
 			budget: this.budget,
@@ -1470,9 +1476,11 @@ export class AccordionStore {
 
 	private snapshotFoldState(): Map<string, FoldSnapshot> {
 		const m = new Map<string, FoldSnapshot>();
+		const groupWire = this.groupWire;
 		for (const b of this.blocks) {
-			const folded = this.isFolded(b);
-			m.set(b.id, { folded, digest: folded ? this.digestOf(b) : "", grouped: this.groupWire.has(b.id) });
+			const wire = groupWire.get(b.id);
+			const folded = wire !== undefined ? wire.collapsed : b.override === "folded" || (b.override !== "pinned" && b.override !== "unfolded" && b.autoFolded);
+			m.set(b.id, { folded, digest: folded ? this.digestOf(b) : "", grouped: wire !== undefined });
 		}
 		return m;
 	}
@@ -1523,12 +1531,14 @@ export class AccordionStore {
 			});
 			counts.ungroup++;
 		}
+		const groupWire = this.groupWire;
 		for (const b of this.blocks) {
 			const prev = before.get(b.id);
-			const folded = this.isFolded(b);
+			const wire = groupWire.get(b.id);
+			const folded = wire !== undefined ? wire.collapsed : b.override === "folded" || (b.override !== "pinned" && b.override !== "unfolded" && b.autoFolded);
 			const digestText = folded ? this.digestOf(b) : "";
 			if (!prev) continue;
-			if (prev.grouped || this.groupWire.has(b.id)) continue;
+			if (prev.grouped || wire !== undefined) continue;
 			if (prev.folded === folded && prev.digest === digestText) continue;
 			let action: DecisionAction;
 			if (!prev.folded && folded) action = "fold";

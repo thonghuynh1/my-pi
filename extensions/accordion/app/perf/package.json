@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run store/"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.10"
+  }
+}

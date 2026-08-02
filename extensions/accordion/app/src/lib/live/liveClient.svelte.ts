@@ -305,31 +305,42 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 			// we learn it (before the user can adjust) AND whenever the window CHANGES — a
 			// changed window means a different model, so the old budget no longer fits.
 			const cw = msg.contextWindow;
+			let contextWindow: number | undefined;
+			let budget: number | undefined;
 			if (typeof cw === "number" && cw > 0) {
 				const prev = session.store.contextWindow;
-				session.store.setContextWindow(cw);
+				contextWindow = cw;
 				if (session.store.outputReserve === 0) session.store.outputReserve = defaultOutputReserve(cw);
-				if (!budgetLive || (prev !== null && prev !== cw)) {
-					session.store.setBudget(liveBudgetForContextWindow(cw));
+				const windowChanged = prev !== null && prev !== cw;
+				if (!budgetLive || windowChanged) {
+					budget = liveBudgetForContextWindow(cw);
 					budgetLive = true;
-				}			}
+				}
+			}
 
-			if (msg.harness && typeof msg.harness === "object") {
-				session.store.setHarnessBreakdown(msg.harness);
+			const harness = msg.harness && typeof msg.harness === "object" ? msg.harness : undefined;
+			session.store.applySync({
+				harness,
+				blocks: msg.blocks.map(wireToBlock),
+				contextWindow,
+				budget,
+			});
+
+			if (harness) {
 				// Slice 0 debug: print the breakdown each turn so the user can read it
 				// in DevTools without knowing any Svelte state path. Remove once a real
 				// UI gauge exists.
 				const live = session.store.liveTokens;
-				const total = msg.harness.totalTokens;
-				const sys = msg.harness.systemPromptTokens;
+				const total = harness.totalTokens;
+				const sys = harness.systemPromptTokens;
 				const overhead = total !== null ? total - live : null;
 				const other = overhead !== null && sys !== null ? overhead - sys : null;
 				// Self-consistent (all chars/4 of the SAME payload) decomposition — lets us
 				// prove that the big "other" bucket is tokenizer DRIFT, not real harness.
-				const wire = msg.harness.actualWireTokens ?? null; // chars/4 of whole body
-				const msgs = msg.harness.messagesTokens ?? null; // chars/4 of payload.messages
-				const tools = msg.harness.toolsTokens ?? null; // chars/4 of payload.tools (incl MCP)
-				const sysWire = msg.harness.systemPayloadTokens ?? null; // chars/4 of payload.system
+				const wire = harness.actualWireTokens ?? null; // chars/4 of whole body
+				const msgs = harness.messagesTokens ?? null; // chars/4 of payload.messages
+				const tools = harness.toolsTokens ?? null; // chars/4 of payload.tools (incl MCP)
+				const sysWire = harness.systemPayloadTokens ?? null; // chars/4 of payload.system
 				// framing = per-message JSON envelope overhead (role tags, tool_use wrappers,
 				// cache_control). Grows with message COUNT, not content size.
 				const framing = msgs !== null ? Math.max(0, msgs - live) : null;
@@ -362,25 +373,24 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 				// real target the conductor folds toward — smaller than `budget` once tools/window bite.
 				const k = session.store.calibration;
 				const cw = session.store.contextWindow;
-				const harness = session.store.harnessOverhead;
+				const harnessOverhead = session.store.harnessOverhead;
 				const reserve = session.store.outputReserve;
 				const availableCapEst =
-					cw != null ? Math.max(0, Math.min(session.store.budget, cw / k - harness - reserve / k)) : session.store.budget;
+					cw != null ? Math.max(0, Math.min(session.store.budget, cw / k - harnessOverhead - reserve / k)) : session.store.budget;
 				console.log("[accordion harness/cap]", {
 					k: Number(k.toFixed(3)), // calibration: real tokens per estimate unit
-					harnessOverhead: harness, // reserved system+tools+framing (estimate units)
+					harnessOverhead, // reserved system+tools+framing (estimate units)
 					outputReserve: reserve, // reserved for the reply (real tokens)
 					budget: session.store.budget, // user budget (estimate units)
 					contextWindow: cw, // real model window
 					availableCapEst, // what the conductor actually folds toward
-					projectedRealTotal: Math.round(k * (live + harness) + reserve), // predicted real request
+					projectedRealTotal: Math.round(k * (live + harnessOverhead) + reserve), // predicted real request
 				});
 				// Also expose the store globally for ad-hoc inspection.
 				(globalThis as { __accordion?: unknown }).__accordion = session.store;
 			}
-			// Committed blocks arrive HERE (the appendBlocks path), NEVER from ghost state.
+			// Committed blocks arrive through applySync, NEVER from ghost state.
 			// Invariant: a ghost is only removed, never converted to a block.
-			session.store.appendBlocks(msg.blocks.map(wireToBlock));
 			const plan = computePlan();
 			const reply: PlanMessage = { type: "plan", reqId: msg.reqId, ops: plan.ops, groups: plan.groups, ...(plan.steeringOff && { steeringOff: true }), ...(plan.budgetExceeded && { budgetExceeded: true }) };
 			try {

@@ -16,7 +16,7 @@
  * in what order. Keeping that decision byte-identical to the pre-refactor folder is the
  * whole point of M1, pinned by `conductor.builtin.test.ts`.
  */
-import type { Conductor, ConductorView, ConductorBlockKind, Command } from "../contract";
+import type { Conductor, ConductorView, ConductorBlockKind, Command, ViewBlock } from "../contract";
 import { availableCap } from "../contract";
 
 /**
@@ -57,15 +57,23 @@ export class BuiltinConductor implements Conductor {
 		const cap = availableCap(view);
 		if (live <= cap) return [];
 
-		const cand = view.blocks
-			.filter((b) => !b.held && !b.protected && !b.grouped && b.foldedTokens < b.tokens)
-			.sort((a, b) => FOLD_RANK[a.kind] - FOLD_RANK[b.kind] || a.order - b.order);
+		// Rank buckets preserve the old rank-then-order result while avoiding one sort over the
+		// complete session on every sync. Sort within each rank because the public view is allowed
+		// to arrive in an order different from the block order used by the tie-break.
+		const candidates: ViewBlock[][] = [[], [], [], [], []];
+		for (const b of view.blocks) {
+			if (!b.held && !b.protected && !b.grouped && b.foldedTokens < b.tokens) candidates[FOLD_RANK[b.kind]].push(b);
+		}
 
 		const ids: string[] = [];
-		for (const b of cand) {
+		for (const bucket of candidates) {
+			bucket.sort((a, b) => a.order - b.order);
+			for (const b of bucket) {
+				if (live <= cap) break;
+				ids.push(b.id);
+				live += b.foldedTokens - b.tokens;
+			}
 			if (live <= cap) break;
-			ids.push(b.id);
-			live += b.foldedTokens - b.tokens;
 		}
 		return ids.length ? [{ kind: "fold", ids }] : [];
 	}

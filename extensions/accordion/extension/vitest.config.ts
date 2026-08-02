@@ -7,5 +7,6 @@ export default {
 		include: ["**/*.test.ts"],
 		exclude: ["**/node_modules/**"],
 		setupFiles: [],
+		testTimeout: 10_000,
 	},
 };

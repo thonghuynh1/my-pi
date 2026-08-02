@@ -20,6 +20,7 @@ import { NaiveCompactionConductor } from "./compaction-naive/compaction-naive";
 import { Bear2HybridConductor } from "./bear2-hybrid/bear2-hybrid";
 import { CodeSkeletonConductor } from "./code-skeleton/code-skeleton";
 import { KeelConductor } from "./keel/keel";
+import { StrictMonotonicConductor } from "./strict-monotonic/strict-monotonic";
 import type { Conductor, LockName } from "./contract";
 
 export { BuiltinConductor } from "./builtin/builtin";
@@ -32,6 +33,7 @@ export { NaiveCompactionConductor } from "./compaction-naive/compaction-naive";
 export { Bear2HybridConductor } from "./bear2-hybrid/bear2-hybrid";
 export { CodeSkeletonConductor } from "./code-skeleton/code-skeleton";
 export { KeelConductor } from "./keel/keel";
+export { StrictMonotonicConductor } from "./strict-monotonic/strict-monotonic";
 
 /**
  * A conductor compiled into the app (in-process).
@@ -69,6 +71,7 @@ export const IN_PROCESS_CONDUCTORS: InProcessConductor[] = [
   },
   { id: "code-skeleton", label: "Code skeleton", create: () => new CodeSkeletonConductor() },
   { id: "keel", label: "Keel", create: () => new KeelConductor() },
+  { id: "strict-monotonic", label: "Strict monotonic", create: () => new StrictMonotonicConductor() },
 ];
 
 /** Look up an in-process conductor by id (null if not one). */

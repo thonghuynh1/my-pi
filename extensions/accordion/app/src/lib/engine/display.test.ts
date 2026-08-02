@@ -70,9 +70,14 @@ describe("buildDisplay", () => {
 		expect(buildDisplay(blocks, [g])[1].type).toBe("group");
 	});
 
-	it("drops a group whose first member is absent (invariant already broken) rather than emitting strays", () => {
-		// 'b' missing from the slice: the group's first member 'a' is present, so it still
-		// renders with the members it can resolve. But if the FIRST member is gone, nothing emits.
+	it("renders every visible block plainly when an excluded block splits a group", () => {
+		const g: Group = { id: "g:b", memberIds: ["b", "c", "d"], folded: true };
+		const visibleBlocks = blocks.filter((block) => block.id !== "c");
+
+		expect(ids(buildDisplay(visibleBlocks, [g]))).toEqual(["b:a", "b:b", "b:d", "b:e"]);
+	});
+
+	it("ignores a group whose first member is absent", () => {
 		const g: Group = { id: "g:x", memberIds: ["x", "c"], folded: true };
 		expect(ids(buildDisplay(blocks, [g]))).toEqual(["b:a", "b:b", "b:c", "b:d", "b:e"]);
 	});

@@ -15,7 +15,7 @@ import type { Block, Actor, SessionMeta, ParsedSession, Group } from "./types";
 import { digest, digestTokens, foldCode, foldTag, groupDigest, groupDigestTokens, substTokens, wireFoldable } from "./digest";
 import { estTokens, BLOCK_OVERHEAD } from "./tokens";
 import type { Conductor, ConductorPlan, ConductorResult, ConductorView, Command, ClampReport, ClampReason, LockName, ConductorHost, CompletionRequest, CompletionResult, JSONValue } from "$conductors/contract";
-import { contextWindowCap, hasLock } from "$conductors/contract";
+import { availableCap, contextWindowCap, hasLock } from "$conductors/contract";
 import { BuiltinConductor } from "$conductors";
 import { CHUNKED_COMPACTION_PREFIX } from "$conductors/my-customize-conductor/constants";
 
@@ -935,7 +935,7 @@ export class AccordionStore {
 			return { commands: [], preGroup: { memberIds: [] } };
 		}
 		if (result.preGroup === undefined) return { commands: result.commands, preGroup: { memberIds: [] } };
-		if (!Array.isArray(result.preGroup.memberIds)) {
+		if (!result.preGroup || !Array.isArray(result.preGroup.memberIds)) {
 			this.emit("conductor", "invalid conductor plan", "Pre-Group memberIds must be an array");
 			return { commands: result.commands, preGroup: { memberIds: [] } };
 		}
@@ -984,6 +984,7 @@ export class AccordionStore {
 			// only because the next plan has already released those IDs.
 			this.preGroupMemberIds = plan.preGroup?.memberIds ?? [];
 			const cmds = plan.commands;
+			const groupIdsBeforeApply = new Set(this.groups.map((group) => group.id));
 			// Every conductor's folds are attributed uniformly — no conductor is special by id.
 			const by: Actor = "auto";
 			const reports = this.applyCommands(cmds, by);
@@ -1001,6 +1002,14 @@ export class AccordionStore {
 				this.recordDecision(by, "clamp", r.ids, r.detail, r.reason);
 			}
 			this.recordConductorTransitions(before, beforeGroups);
+			// createGroup() requests a nested refold, but the conducting guard intentionally
+			// suppresses re-entry. If that newly-created group was only the structural first
+			// step and the result remains over budget, settle once more after this pass so the
+			// conductor can plan folds against the committed group.
+			const createdGroup = this.groups.some((group) => !groupIdsBeforeApply.has(group.id));
+			if (createdGroup && this.liveTokens > availableCap(this.buildView(protectedFrom)) && this.conductor) {
+				this.requestConductorRerun(this.conductor, this.conductorEpoch);
+			}
 		} finally {
 			this.conducting = false;
 		}

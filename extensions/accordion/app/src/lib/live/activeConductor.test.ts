@@ -50,4 +50,23 @@ describe("attachActiveConductor", () => {
 		expect(store.conductor?.id).toBe("my-customize-conductor");
 		expect(store.foldedCount).toBeGreaterThan(0);
 	});
+
+	it("atomically groups an oversized backlog on the first populated live view", () => {
+		setActiveConductor("my-customize-conductor");
+		const store = makeStore();
+		store.setContextWindow(200_000);
+		store.setBudget(70_000);
+		store.setProtect(100);
+
+		attachActiveConductor(store); // Live full-sync attaches while the rebuilt store is empty.
+		store.appendBlocks([
+			...Array.from({ length: 35 }, (_, i) => block(`a:backlog-${i}:p0`, i, 4_000)),
+			block("a:tail:p0", 35, 100),
+		]);
+
+		expect(store.fullTokens).toBeGreaterThan(140_000);
+		expect(store.groups).toHaveLength(1);
+		expect(store.groups[0].memberIds.length).toBeGreaterThan(1);
+		expect(store.groups[0].digest).toMatch(/^⟨chunked-compaction ·/);
+	});
 });

@@ -22,6 +22,8 @@ const ID = "recency-folder";
 const LABEL = "Recency folder";
 const PORT = 7700;
 const URL = `ws://127.0.0.1:${PORT}`;
+// Mirrors CONDUCTOR_PROTOCOL_VERSION in conductors/contract/protocol.ts.
+const CONDUCTOR_PROTOCOL_VERSION = 4;
 
 // ── Auto-discovery: advertise a heartbeat file under ~/.accordion/conductors/ ──
 // Accordion's desktop discovery polls this directory; an entry older than 15 s is reaped.
@@ -35,7 +37,7 @@ function advertise() {
 	mkdirSync(REG_DIR, { recursive: true });
 	const entry = {
 		registryProtocol: 1,
-		conductorProtocol: 3,
+		conductorProtocol: CONDUCTOR_PROTOCOL_VERSION,
 		id: ID,
 		label: LABEL,
 		url: URL,
@@ -71,7 +73,7 @@ wss.on("connection", (ws) => {
 	ws.send(
 		JSON.stringify({
 			type: "conductor/hello",
-			conductorProtocol: 3,
+			conductorProtocol: CONDUCTOR_PROTOCOL_VERSION,
 			id: ID,
 			label: LABEL,
 			wants: { content: "full" },

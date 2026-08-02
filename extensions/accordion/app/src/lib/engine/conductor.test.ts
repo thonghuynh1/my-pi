@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { AccordionStore } from "./store.svelte";
 import { BuiltinConductor } from "$conductors";
-import type { Conductor, ConductorView, Command, ConductorHost } from "$conductors/contract";
+import type { Conductor, ConductorView, Command, ConductorHost, ConductorResult } from "$conductors/contract";
 import type { Block, ParsedSession } from "./types";
 import { digest, digestTokens } from "./digest";
 
@@ -41,9 +41,9 @@ function makeStore(blocks: Block[]): AccordionStore {
 class StubConductor implements Conductor {
 	readonly id = "stub";
 	readonly label = "Stub";
-	cmds: Command[] | null = [];
+	cmds: ConductorResult = [];
 	lastSnapshot: ConductorView | null = null;
-	conduct(view: ConductorView): Command[] | null {
+	conduct(view: ConductorView): ConductorResult {
 		this.lastSnapshot = view;
 		return this.cmds;
 	}
@@ -496,6 +496,116 @@ describe("conductor seam — group command", () => {
 	});
 });
 
+describe("conductor seam — authoritative Pre-Group plans", () => {
+	it("normalizes membership to known unique IDs in block order", () => {
+		const s = makeStore(Array.from({ length: 4 }, (_, i) => blk(i)));
+		s.setProtect(0);
+		const stub = new StubConductor();
+		stub.cmds = {
+			commands: [],
+			preGroup: { memberIds: ["m3:p0", "missing", "m1:p0", "m3:p0", 42] },
+		} as unknown as ConductorResult;
+		s.attach(stub);
+		expect(s.preGroupIds).toEqual(["m1:p0", "m3:p0"]);
+	});
+
+	it("holds commands and membership on null, but clears for legacy and omitted metadata", () => {
+		const s = makeStore(Array.from({ length: 4 }, (_, i) => blk(i)));
+		s.setProtect(0);
+		const stub = new StubConductor();
+		stub.cmds = { commands: [{ kind: "fold", ids: ["m0:p0"] }], preGroup: { memberIds: ["m2:p0"] } };
+		s.attach(stub);
+		stub.cmds = null;
+		s.refold();
+		expect(s.isFolded(s.get("m0:p0")!)).toBe(true);
+		expect(s.preGroupIds).toEqual(["m2:p0"]);
+		stub.cmds = [{ kind: "fold", ids: ["m1:p0"] }];
+		s.refold();
+		expect(s.preGroupIds).toEqual([]);
+		stub.cmds = { commands: [], preGroup: { memberIds: ["m2:p0"] } };
+		s.refold();
+		stub.cmds = { commands: [{ kind: "fold", ids: ["m0:p0"] }] };
+		s.refold();
+		expect(s.preGroupIds).toEqual([]);
+	});
+
+	it("clears membership when attaching, swapping, and detaching conductors", () => {
+		const s = makeStore(Array.from({ length: 3 }, (_, i) => blk(i)));
+		s.setProtect(0);
+		const owner = new StubConductor();
+		owner.cmds = { commands: [], preGroup: { memberIds: ["m1:p0"] } };
+		s.attach(owner);
+		expect(s.preGroupIds).toEqual(["m1:p0"]);
+		const replacement = new StubConductor();
+		replacement.cmds = null;
+		s.attach(replacement);
+		expect(s.preGroupIds).toEqual([]);
+		s.attach(owner);
+		s.detach();
+		expect(s.preGroupIds).toEqual([]);
+	});
+
+	it("refuses human fold/group in Pre-Group while unrelated older controls work", () => {
+		const s = makeStore(Array.from({ length: 7 }, (_, i) => blk(i)));
+		s.setProtect(0);
+		const stub = new StubConductor();
+		stub.cmds = { commands: [], preGroup: { memberIds: ["m4:p0", "m5:p0"] } };
+		s.attach(stub);
+		s.fold("m4:p0");
+		expect(s.get("m4:p0")!.override).toBeNull();
+		expect(s.createGroup("m3:p0", "m4:p0")).toBeNull();
+		s.fold("m0:p0");
+		expect(s.get("m0:p0")!.override).toBe("folded");
+		expect(s.createGroup("m1:p0", "m2:p0")).not.toBeNull();
+	});
+
+	it("clamps conductor commands against same-plan membership", () => {
+		const s = makeStore(Array.from({ length: 5 }, (_, i) => blk(i)));
+		s.setProtect(0);
+		const stub = new StubConductor();
+		stub.cmds = {
+			commands: [
+				{ kind: "fold", ids: ["m1:p0", "m4:p0"] },
+				{ kind: "group", ids: ["m0:p0", "m2:p0"] },
+			],
+			preGroup: { memberIds: ["m1:p0", "m2:p0"] },
+		};
+		s.attach(stub);
+		expect(s.isFolded(s.get("m1:p0")!)).toBe(false);
+		expect(s.isFolded(s.get("m4:p0")!)).toBe(true);
+		expect(s.groups).toEqual([]);
+		expect(s.lastReports.filter((report) => report.reason === "pre-group")).toHaveLength(2);
+	});
+
+	it("releases consumed IDs before a same-plan partial rollover is applied", () => {
+		const s = makeStore(Array.from({ length: 5 }, (_, i) => blk(i)));
+		s.setProtect(0);
+		const stub = new StubConductor();
+		stub.cmds = {
+			commands: [{ kind: "group", ids: ["m1:p0", "m2:p0"], digest: "rollover" }],
+			preGroup: { memberIds: ["m3:p0"] },
+		};
+		s.attach(stub);
+		expect(s.groups[0]?.memberIds).toEqual(["m1:p0", "m2:p0"]);
+		expect(s.preGroupIds).toEqual(["m3:p0"]);
+		expect(s.lastReports.some((report) => report.reason === "pre-group")).toBe(false);
+	});
+
+	it("rejects malformed null metadata without crashing or discarding valid commands", () => {
+		const s = makeStore(Array.from({ length: 3 }, (_, i) => blk(i)));
+		s.setProtect(0);
+		const stub = new StubConductor();
+		stub.cmds = {
+			commands: [{ kind: "fold", ids: ["m0:p0"] }],
+			preGroup: null,
+		} as unknown as ConductorResult;
+		expect(() => s.attach(stub)).not.toThrow();
+		expect(s.isFolded(s.get("m0:p0")!)).toBe(true);
+		expect(s.preGroupIds).toEqual([]);
+		expect(s.log.some((entry) => entry.action === "invalid conductor plan" && entry.detail === "Pre-Group memberIds must be an array")).toBe(true);
+	});
+});
+
 describe("conductor seam — hold last state (null)", () => {
 	it("re-applies the last batch across an append, leaving new blocks raw", () => {
 		const s = makeStore(Array.from({ length: 3 }, (_, i) => blk(i)));
@@ -515,6 +625,31 @@ describe("conductor seam — hold last state (null)", () => {
 });
 
 describe("conductor seam — in-process async rerun hook", () => {
+	it("runs a settling pass when a new group alone leaves the store over budget", async () => {
+		const s = makeStore(Array.from({ length: 4 }, (_, i) => blk(i, "text", 4_000)));
+		s.setProtect(0);
+		s.setBudget(5_000);
+		let conductCalls = 0;
+		const staged: Conductor = {
+			id: "staged-group",
+			label: "Staged group",
+			conduct(view) {
+				conductCalls++;
+				if (!view.blocks.some((block) => block.grouped)) {
+					return [{ kind: "group", ids: ["m0:p0", "m1:p0"], digest: "⟨chunked-compaction · staged⟩" }];
+				}
+				return [{ kind: "fold", ids: ["m2:p0", "m3:p0"] }];
+			},
+		};
+
+		s.attach(staged);
+		await flushMicrotasks();
+
+		expect(conductCalls).toBe(2);
+		expect(s.groups).toHaveLength(1);
+		expect(s.liveTokens * s.calibration).toBeLessThanOrEqual(s.budget);
+	});
+
 	it("lets an in-process conductor request a fresh pass after returning null", async () => {
 		const s = makeStore(Array.from({ length: 3 }, (_, i) => blk(i)));
 		s.setProtect(0);

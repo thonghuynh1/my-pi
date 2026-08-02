@@ -49,7 +49,10 @@ function isGroupBoundary(block: ViewBlock, pstackByBlockId: Map<string, PstackId
 }
 
 function isAccumulationBoundary(block: ViewBlock): boolean {
-	return block.held || block.grouped || block.proactivelyCompressed;
+	// A frozen fold is already committed context compression. Do not pull it back into the
+	// next Pre-Group window: doing so emits a restore on the following agent turn and makes
+	// previously folded context snap open. Accumulate only the still-full suffix after it.
+	return block.held || block.folded || block.grouped || block.proactivelyCompressed;
 }
 
 /** Fraction of cap below which the current fold plan is held stable (epoch hold band). */
@@ -92,8 +95,6 @@ export class MyCustomizeConductor implements Conductor {
 	// consumed when the view is observed, regardless of which planning path returns.
 	private observedView = false;
 	private previousBudget: number | null = null;
-	/** Pre-group blocks needing restore, set per-conduct and consumed by finishConduct. */
-	private pendingPreGroupRestore: string[] = [];
 	private lastResult: ConductorPlan | null = null;
 	private lastResultCommands: Command[] | null = null;
 	private lastResultMemberKey: string | null = null;
@@ -172,11 +173,6 @@ export class MyCustomizeConductor implements Conductor {
 				: `chunked · ${preGroupFillPct}% pregroup · ${this.rolloverCount} rollovers · ${humanTokens(this.tokensSavedByRollover)} saved`;
 			this.host.setStatus(text, metrics, null);
 		}
-		// Prepend restore for pre-group blocks that were folded while in the frozen prefix
-		// (clearConductorState preserves those folds, but the pre-group contract is "full until grouped").
-		const restoreIds = this.pendingPreGroupRestore;
-		this.pendingPreGroupRestore = [];
-		if (restoreIds.length > 0) plan = [{ kind: "restore", ids: restoreIds }, ...plan];
 		const memberKey = memberIds.join("\u0000");
 		if (this.lastResult && this.lastResultCommands === plan && this.lastResultMemberKey === memberKey) return this.lastResult;
 		this.lastResult = { commands: plan, preGroup: { memberIds } };
@@ -190,9 +186,14 @@ export class MyCustomizeConductor implements Conductor {
 		// then calibrated to real tokens), not the raw budget — else the true request overflows.
 		const cap = availableCap(view);
 		const hardCap = contextWindowCap(view);
-		const isFirstObservedView = !this.observedView;
+		// Attaching a conductor to a freshly rebuilt live store runs one pass before the
+		// full-sync blocks are appended. Do not consume the late-start atomic-rebase trigger
+		// on that empty scaffolding view; the first populated view is the first observation
+		// that can make a meaningful compaction decision.
+		const hasBlocks = view.blocks.length > 0;
+		const isFirstObservedView = hasBlocks && !this.observedView;
 		const previousBudget = this.previousBudget;
-		this.observedView = true;
+		if (hasBlocks) this.observedView = true;
 		this.previousBudget = view.budget;
 		// Preserve the previous plan for early-return paths. The normal replan path clears
 		// lastPlan before reaching those paths, but valid suffix groups may still need replay.
@@ -237,13 +238,6 @@ export class MyCustomizeConductor implements Conductor {
 			: view.protectedFromIndex;
 		const preGroupBlocks = view.blocks.slice(preGroupFromIndex, view.protectedFromIndex);
 		const preGroupBlockIds = new Set(preGroupBlocks.map((b) => b.id));
-		// Pre-group blocks that are currently folded (e.g. from a prior pass when they were in
-		// the frozen prefix) must be actively restored — clearConductorState preserves folds in
-		// the frozen range, but the pre-group contract is "never fold until grouped".
-		const preGroupRestoreIds = preGroupBlocks
-			.filter((b) => b.folded && !b.held && b.order < view.frozenFromIndex)
-			.map((b) => b.id);
-		this.pendingPreGroupRestore = preGroupRestoreIds;
 		let preGroupTokens = 0;
 		// Helper: attempt to emit a GROUP command from a candidate block list.
 		// Defined at method scope so the early rollover check (DEC-002) after the main fold

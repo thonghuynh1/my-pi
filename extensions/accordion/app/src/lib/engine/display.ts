@@ -18,11 +18,11 @@
  * is also in `peeked` (you can't peek a group that's already unfolded).
  *
  * Kept pure (no store, no runes) so the layout transform is unit-testable on its own and
- * the component stays thin. Groups are always entirely older than the protected tail, so a
- * group never straddles the grid's older/protected split — callers may safely build over
- * either slice. A group whose first member is absent from the given block list is dropped
- * defensively (its members render as plain blocks rather than as ungrouped strays), which
- * only arises if an invariant is already broken.
+ * the component stays thin. A group is rendered only when every member is present in the
+ * supplied block slice. Otherwise the group is ignored and its visible members render as
+ * plain blocks. This preserves Pre-Group and protected blocks excluded at slice boundaries.
+ * Complete groups are preserved regardless of member kind, including user and MCP blocks
+ * as required by ADR-0005.
  */
 import type { Block, Group } from "./types";
 
@@ -37,20 +37,22 @@ export type DisplayRow =
 	 */
 	| { type: "groupOpen"; group: Group; members: Block[]; live: boolean };
 
+/** Build rows from complete groups; incomplete groups are ignored so visible members stay plain. */
 export function buildDisplay(
 	blocks: Block[],
 	groups: Group[],
 	peeked: ReadonlySet<string> = new Set(),
 ): DisplayRow[] {
+	const byId = new Map<string, Block>();
+	for (const b of blocks) byId.set(b.id, b);
+
 	const firstMember = new Map<string, Group>();
 	const memberOf = new Map<string, Group>();
 	for (const g of groups) {
-		if (!g.memberIds.length) continue;
+		if (!g.memberIds.length || !g.memberIds.every((id) => byId.has(id))) continue;
 		firstMember.set(g.memberIds[0], g);
 		for (const id of g.memberIds) memberOf.set(id, g);
 	}
-	const byId = new Map<string, Block>();
-	for (const b of blocks) byId.set(b.id, b);
 
 	const rows: DisplayRow[] = [];
 	const emitted = new Set<Group>();
@@ -61,12 +63,8 @@ export function buildDisplay(
 			continue;
 		}
 		if (firstMember.get(b.id) === g) {
-			// Emit the group once, at its first member; the rest of its range is skipped below.
-			// NOTE: a member id absent from `blocks` is silently dropped here, so the group can
-			// render with fewer tiles than `memberIds`. Safe for the only caller (always the full
-			// `olderBlocks` slice, which covers every older block); a future caller passing a
-			// trimmed slice would lose member tiles without warning.
-			const members = g.memberIds.map((id) => byId.get(id)).filter((x): x is Block => !!x);
+			// Emit the complete group once, at its first member; the rest is skipped below.
+			const members = g.memberIds.map((id) => byId.get(id)).filter((member): member is Block => member !== undefined);
 			if (!g.folded) {
 				// UNFOLDED — members live. folded=false always wins over peek.
 				rows.push({ type: "groupOpen", group: g, members, live: true });
@@ -79,8 +77,8 @@ export function buildDisplay(
 			}
 			emitted.add(g);
 		} else if (!emitted.has(g)) {
-			// A member whose group was never emitted (its first member is absent from this
-			// slice — an invariant violation): render it as a plain block so no tile is lost.
+			// Overlapping group metadata can prevent this group from emitting at its first
+			// member. Keep the visible block rather than losing it.
 			rows.push({ type: "block", block: b });
 		}
 		// else: already emitted with its group → skip (it's behind/inside the parent).

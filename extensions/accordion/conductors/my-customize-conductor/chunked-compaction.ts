@@ -82,21 +82,57 @@ export function noOpenToolPairAcrossPreGroupTail(view: ConductorView, preGroupFr
 }
 
 export function trimOpenToolPairs(ids: string[], allBlocks: readonly ViewBlock[]): string[] {
-	const selected = new Set(ids);
-	const insideByCallId = new Map<string, string[]>();
-	for (const block of allBlocks) {
-		if (block.callId && selected.has(block.id)) {
-			const members = insideByCallId.get(block.callId) ?? [];
-			members.push(block.id);
-			insideByCallId.set(block.callId, members);
+	const blockById = new Map(allBlocks.map((block) => [block.id, block]));
+	const tokensById = new Map(allBlocks.map((block) => [block.id, block.tokens]));
+	const messageKey = (id: string): string => blockById.get(id)?.messageKey ?? id;
+	const wholeMessageRun = (candidate: string[]): string[] => {
+		let run = candidate;
+		while (run.length > 0) {
+			const selected = new Set(run);
+			const firstKey = messageKey(run[0]);
+			if (allBlocks.some((block) => (block.messageKey ?? block.id) === firstKey && !selected.has(block.id))) {
+				run = run.filter((id) => messageKey(id) !== firstKey);
+				continue;
+			}
+			const lastKey = messageKey(run[run.length - 1]);
+			if (allBlocks.some((block) => (block.messageKey ?? block.id) === lastKey && !selected.has(block.id))) {
+				run = run.filter((id) => messageKey(id) !== lastKey);
+				continue;
+			}
+			break;
 		}
+		return run;
+	};
+	let trimmed = wholeMessageRun([...ids]);
+
+	while (trimmed.length >= 2) {
+		const selected = new Set(trimmed);
+		const remove = new Set<string>();
+		for (const block of allBlocks) {
+			if (!block.callId || !selected.has(block.id)) continue;
+			const hasOutsidePartner = allBlocks.some((partner) => partner.callId === block.callId && !selected.has(partner.id));
+			if (hasOutsidePartner) remove.add(block.id);
+		}
+		if (remove.size === 0) break;
+
+		const runs: string[][] = [];
+		let run: string[] = [];
+		for (const id of trimmed) {
+			if (remove.has(id)) {
+				if (run.length > 0) runs.push(run);
+				run = [];
+			} else {
+				run.push(id);
+			}
+		}
+		if (run.length > 0) runs.push(run);
+		trimmed = runs.map(wholeMessageRun).reduce<string[]>((best, candidate) => {
+			const bestTokens = best.reduce((sum, id) => sum + (tokensById.get(id) ?? 0), 0);
+			const candidateTokens = candidate.reduce((sum, id) => sum + (tokensById.get(id) ?? 0), 0);
+			return candidateTokens > bestTokens ? candidate : best;
+		}, []);
 	}
-	const remove = new Set<string>();
-	for (const [callId, insideIds] of insideByCallId) {
-		const hasOutsidePartner = allBlocks.some((block) => block.callId === callId && !selected.has(block.id));
-		if (hasOutsidePartner) for (const id of insideIds) remove.add(id);
-	}
-	const trimmed = ids.filter((id) => !remove.has(id));
+
 	return trimmed.length < 2 ? [] : trimmed;
 }
 

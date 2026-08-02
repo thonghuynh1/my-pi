@@ -2019,6 +2019,18 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		expect(chunkedCompaction.trimOpenToolPairs(ids, [...preGroup, call, tail])).toEqual(preGroup.map((block) => block.id));
 	});
 
+	it("trimOpenToolPairs keeps the group contiguous when an interior call pairs with the protected tail", () => {
+		const before = Array.from({ length: 3 }, (_, i) => chunkedBlock(`before-${i}`, i));
+		const assistantText = chunkedBlock("assistant-text", 3, 4_000, { messageKey: "assistant-message" });
+		const call = chunkedBlock("interior-call", 4, 2_000, { kind: "tool_call", callId: "pair", toolName: "bash", messageKey: "assistant-message" });
+		const after = Array.from({ length: 3 }, (_, i) => chunkedBlock(`after-${i}`, i + 5));
+		const tail = chunkedBlock("protected-result", 8, 100, { kind: "tool_result", callId: "pair", toolName: "bash", protected: true });
+		const selected = [...before, assistantText, call, ...after];
+
+		expect(chunkedCompaction.trimOpenToolPairs(selected.map((block) => block.id), [...selected, tail]))
+			.toEqual(before.map((block) => block.id));
+	});
+
 	it("pre-existing frozen-grouping pressure valve is unaffected", () => {
 		const frozen = [
 			chunkedBlock("f0", 0, 5_000, { foldedTokens: 5_000, proactivelyCompressed: true }),
@@ -2419,9 +2431,10 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 			expect(hit, `contextWindow=${contextWindow} should still act on pre-group-position blocks`).toBe(true);
 		}
 	});
-	it("restores folded pre-group blocks that are in the frozen prefix", () => {
-		// A block that was folded when in the frozen prefix enters the pre-group range.
-		// The conductor must emit a restore for it (clearConductorState preserves frozen folds).
+	it("keeps frozen folds out of the next pre-group instead of restoring them", () => {
+		// Reproduction: after lowering the budget, the first request folds old blocks and the
+		// provider freezes them. On the following agent turn Pre-Group must start after that
+		// committed compression; otherwise those blocks snap back to full context.
 		const blocks = [
 			chunkedBlock("pg0", 0, 2_000, { folded: true }),
 			chunkedBlock("pg1", 1, 2_000, { folded: true }),
@@ -2429,15 +2442,13 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 			chunkedBlock("tail", 3, 100, { kind: "user", protected: true }),
 		];
 		const view = rolloverView(blocks, 200_000);
-		// Put frozenFromIndex above the folded blocks so they are in the frozen prefix
+		view.budget = 70_000;
 		view.frozenFromIndex = 2;
-		const plan = new MyCustomizeConductor().conduct(view);
-		const restoreCmd = plan.find((cmd) => cmd.kind === "restore");
-		expect(restoreCmd).toBeDefined();
-		expect(restoreCmd!.ids).toContain("pg0");
-		expect(restoreCmd!.ids).toContain("pg1");
-		// pg2 is above frozenFromIndex, so clearConductorState handles it — no restore needed
-		expect(restoreCmd!.ids).not.toContain("pg2");
+
+		const plan = new ProductionMyCustomizeConductor().conduct(view);
+
+		expect(plan.commands.some((cmd) => cmd.kind === "restore")).toBe(false);
+		expect(plan.preGroup?.memberIds).toEqual(["pg2"]);
 	});
 
 	it("keeps complete turns together at the protected boundary", () => {

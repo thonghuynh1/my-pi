@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { IN_PROCESS_CONDUCTORS, MyCustomizeConductor as ProductionMyCustomizeConductor } from "$conductors";
-import type { Command, Conductor, ConductorHost, ConductorView, ViewBlock } from "$conductors/contract";
+import type { Command, Conductor, ConductorHost, ConductorPlan, ConductorView, ViewBlock } from "$conductors/contract";
 import { foldTag } from "./digest";
 import { compactPath, estSummaryTokens, foldCode, mcpSummary, normalizePstackName, pstackLabel, canonicalMcpIdentity } from "$conductors/my-customize-conductor/mcp-summary";
 import { estimateDefaultGroupDigestCost } from "$conductors/my-customize-conductor/my-customize-conductor";
@@ -1272,6 +1272,58 @@ describe("MyCustomizeConductor", () => {
 		const compacted = compactPath(long);
 		expect(compacted.length).toBeLessThanOrEqual(60);
 		expect(compacted).toContain("file.ts");
+	});
+});
+
+describe("ProductionMyCustomizeConductor Pre-Group membership", () => {
+	const conduct = (blocks: ViewBlock[], budget: number, liveTokens: number, preGroupTokens: number): ConductorPlan =>
+		new ProductionMyCustomizeConductor({ preGroupTokens }).conduct(makeView(blocks, budget, liveTokens, { contextWindow: 400_000 }));
+
+	it("declares exact accumulating membership", () => {
+		const blocks = Array.from({ length: 3 }, (_, i) => vb(`pg:${i}`, "text", i, 4_000, 100));
+		expect(conduct(blocks, 50_000, 12_000, 15_000).preGroup?.memberIds).toEqual(["pg:0", "pg:1", "pg:2"]);
+	});
+
+	it("releases all membership on full rollover", () => {
+		const blocks = Array.from({ length: 4 }, (_, i) => vb(`pg:${i}`, "text", i, 4_000, 100));
+		const result = conduct(blocks, 50_000, 16_000, 15_000);
+		expect(groupedIdsOf(result.commands)).toEqual(new Set(blocks.map((block) => block.id)));
+		expect(result.preGroup?.memberIds).toEqual([]);
+	});
+
+	it("keeps partial complete-turn residue in membership", () => {
+		const blocks = [
+			{ ...vb("turn:1:a", "text", 0, 4_000, 100), turn: 1 },
+			{ ...vb("turn:1:b", "text", 1, 4_000, 100), turn: 1 },
+			{ ...vb("turn:2:partial", "text", 2, 4_000, 100), turn: 2 },
+			{ ...vb("tail", "text", 3, 1_000, 100, { protected: true }), turn: 2 },
+		];
+		const result = conduct(blocks, 11_000, 13_000, 10_000);
+		expect(groupedIdsOf(result.commands)).toEqual(new Set(["turn:1:a", "turn:1:b"]));
+		expect(result.preGroup?.memberIds).toEqual(["turn:2:partial"]);
+	});
+
+	it("waits with open tool-pair membership intact", () => {
+		const blocks = [
+			vb("pg:text", "text", 0, 4_000, 100),
+			vb("pg:call", "tool_call", 1, 4_000, 4_000, { callId: "call:1", toolName: "bash" }),
+			vb("tail:result", "tool_result", 2, 1_000, 100, { protected: true, callId: "call:1", toolName: "bash" }),
+		];
+		const result = conduct(blocks, 50_000, 9_000, 7_000);
+		expect(result.commands).toEqual([]);
+		expect(result.preGroup?.memberIds).toEqual(["pg:text", "pg:call"]);
+	});
+
+	it("releases below-target membership on budget-pressure rollover", () => {
+		const blocks = [vb("pg:a", "text", 0, 5_000, 100), vb("pg:b", "text", 1, 5_000, 100)];
+		const conductor = new ProductionMyCustomizeConductor({ preGroupTokens: 15_000 });
+		const view = makeView(blocks, 8_000, 7_000, { contextWindow: 400_000 });
+		conductor.conduct(view);
+
+		const result = conductor.conduct({ ...view, liveTokens: 10_000 });
+
+		expect(groupedIdsOf(result.commands)).toEqual(new Set(["pg:a", "pg:b"]));
+		expect(result.preGroup?.memberIds).toEqual([]);
 	});
 });
 

@@ -6,21 +6,7 @@ import { AccordionStore } from "../../engine/store.svelte";
 import type { Block, ParsedSession } from "../../engine/types";
 import type { Conductor, ConductorHost, ConductorPlan, ConductorResult } from "$conductors/contract";
 
-vi.hoisted(() => {
-	Object.defineProperty(window, "matchMedia", { writable: true, value: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }) });
-	Object.defineProperty(HTMLCanvasElement.prototype, "getContext", { configurable: true, value: () => ({
-		setTransform: () => {}, scale: () => {}, clearRect: () => {}, fillRect: () => {}, beginPath: () => {}, closePath: () => {}, fill: () => {}, stroke: () => {}, arc: () => {}, moveTo: () => {}, lineTo: () => {}, arcTo: () => {}, measureText: () => ({ width: 0 }), fillText: () => {}, drawImage: () => {}, save: () => {}, restore: () => {}, createLinearGradient: () => ({ addColorStop: () => {} }),
-	}) });
-	Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 800 });
-	Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 500 });
-	Object.defineProperty(HTMLCanvasElement.prototype, "getBoundingClientRect", { configurable: true, value: () => new DOMRect(0, 0, 800, 500) });
-	(globalThis as typeof globalThis & { ResizeObserver: typeof ResizeObserver }).ResizeObserver = class {
-		constructor(private readonly callback: ResizeObserverCallback) {}
-		observe(target: Element) { this.callback([{ contentRect: new DOMRect(0, 0, 800, 500), target } as ResizeObserverEntry], this as unknown as ResizeObserver); }
-		unobserve() {}
-		disconnect() {}
-	} as unknown as typeof ResizeObserver;
-});
+import "./ContextMap.test-support";
 
 function block(id: string, order: number, tokens = 1_000): Block {
 	return { id, order, turn: order + 1, kind: "text", text: id, tokens, override: null, autoFolded: false, by: null, proactivelyCompressed: false };
@@ -84,10 +70,12 @@ describe("ContextMap Pre-Group transcript", () => {
 		expect(screen.getByRole("region", { name: "Pre-Group" })).toHaveTextContent("10k / 15k · 67% · accumulating");
 	});
 
-	it("shows accumulating pre-group progress in transcript", () => {
+	it("shows accumulating pre-group progress and lifecycle in transcript", () => {
 		const store = storeWith(["pg:1", "pg:2"], progress());
 		renderTranscript(store);
-		expect(screen.getByRole("region", { name: "Pre-Group" })).toHaveTextContent("10k / 15k · 67% · accumulating");
+		const region = screen.getByRole("region", { name: "Pre-Group" });
+		expect(region).toHaveTextContent("10k / 15k · 67% · accumulating");
+		expect(region).toHaveTextContent("stays full until safe rollover");
 	});
 
 	it("labels above-target membership as waiting for safe rollover", () => {

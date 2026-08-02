@@ -1184,6 +1184,7 @@
 					{#if b.id === firstPreGroupId}
 						<section class="tr-pre-group" aria-label="Pre-Group" data-region="pre-group">
 							<strong>Pre-Group</strong>
+							<span>stays full until safe rollover</span>
 							{#if preGroupProgressText}<span class="mono">{preGroupProgressText}</span>{/if}
 						</section>
 					{/if}

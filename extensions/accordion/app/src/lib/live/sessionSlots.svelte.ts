@@ -373,20 +373,25 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 				attachActiveConductor(slot.store);
 			}
 			const cw = msg.contextWindow;
+			let contextWindow: number | undefined;
+			let budget: number | undefined;
 			if (typeof cw === "number" && cw > 0) {
 				const prev = slot.store.contextWindow;
-				slot.store.setContextWindow(cw);
-				if (!budgetLive || (prev !== null && prev !== cw)) {
-					slot.store.setBudget(Math.min(cw, 100_000));
+				contextWindow = cw;
+				const windowChanged = prev !== null && prev !== cw;
+				if (!budgetLive || windowChanged) {
+					budget = Math.min(cw, 100_000);
 					budgetLive = true;
 				}
 			}
 			attachActiveConductor(slot.store);
-			slot.store.appendBlocks(msg.blocks.map(wireToBlock));
-			// Slice 0c: broker sync handler must also route the harness frame into
-			// the slot store, otherwise the map header / dashboard show the breakdown
-			// in direct mode but not in broker mode — the wire carries it either way.
-			if (msg.harness && typeof msg.harness === "object") slot.store.setHarnessBreakdown(msg.harness);
+			const harness = msg.harness && typeof msg.harness === "object" ? msg.harness : undefined;
+			slot.store.applySync({
+				harness,
+				blocks: msg.blocks.map(wireToBlock),
+				contextWindow,
+				budget,
+			});
 			const plan: { ops: FoldOp[]; groups: GroupOp[]; steeringOff?: boolean; budgetExceeded?: boolean } = slot.folding.enabled
 				? { ops: computeFoldOps(slot.store), groups: computeGroupOps(slot.store), budgetExceeded: slot.store.fullTokens * slot.store.calibration > slot.store.budget }
 				: { ops: [], groups: [], steeringOff: true };

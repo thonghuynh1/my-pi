@@ -31,6 +31,35 @@ interface GroupShape {
 	carrier: string | null;
 }
 
+export interface HarnessBreakdown {
+	totalTokens: number | null;
+	systemPromptTokens: number | null;
+	actualWireTokens?: number | null;
+	messagesTokens?: number | null;
+	toolsTokens?: number | null;
+	systemPayloadTokens?: number | null;
+	frozenFromIndex?: number | null;
+}
+
+function arraysEqual<T>(a: readonly T[], b: readonly T[]): boolean {
+	return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function harnessEqual(a: HarnessBreakdown | null, b: HarnessBreakdown | null): boolean {
+	return (
+		a === b ||
+		(a !== null &&
+			b !== null &&
+			a.totalTokens === b.totalTokens &&
+			a.systemPromptTokens === b.systemPromptTokens &&
+			a.actualWireTokens === b.actualWireTokens &&
+			a.messagesTokens === b.messagesTokens &&
+			a.toolsTokens === b.toolsTokens &&
+			a.systemPayloadTokens === b.systemPayloadTokens &&
+			a.frozenFromIndex === b.frozenFromIndex)
+	);
+}
+
 // The fold-ranking (which kinds fold first) moved to `conductors/builtin/builtin.ts` — it is the
 // built-in conductor's STRATEGY, not an engine constant. The store now only enforces
 // provider-validity and applies whatever conductor is attached (ADR 0007).
@@ -203,6 +232,7 @@ export class AccordionStore {
 	private lastCmds: Command[] = [];
 	/** The complete next Pre-Group membership declared by the last normalized plan. */
 	private preGroupMemberIds = $state<string[]>([]);
+	private preGroupSet = $derived(new Set(this.preGroupMemberIds));
 	/** Re-entrancy latch: a command that itself re-folds (e.g. `group`) must not recurse. */
 	private conducting = false;
 	/**
@@ -863,7 +893,7 @@ export class AccordionStore {
 	/** True only for a current block named by authoritative plan metadata. */
 	isPreGroup(blockOrId: Block | string): boolean {
 		const id = typeof blockOrId === "string" ? blockOrId : blockOrId.id;
-		return this.preGroupMemberIds.includes(id) && this.index.has(id);
+		return this.preGroupSet.has(id);
 	}
 	/** Ordered, validated membership as durable IDs. */
 	get preGroupIds(): readonly string[] {
@@ -939,10 +969,9 @@ export class AccordionStore {
 			this.emit("conductor", "invalid conductor plan", "Pre-Group memberIds must be an array");
 			return { commands: result.commands, preGroup: { memberIds: [] } };
 		}
-		const blockOrder = new Map(this.blocks.map((block, index) => [block.id, index]));
 		const memberIds = [...new Set(result.preGroup.memberIds)]
-			.filter((id) => typeof id === "string" && blockOrder.has(id))
-			.sort((a, b) => (blockOrder.get(a) ?? 0) - (blockOrder.get(b) ?? 0));
+			.filter((id) => typeof id === "string" && this.index.has(id))
+			.sort((a, b) => (this.index.get(a) ?? 0) - (this.index.get(b) ?? 0));
 		return { commands: result.commands, preGroup: { memberIds } };
 	}
 
@@ -982,7 +1011,8 @@ export class AccordionStore {
 			const plan = this.normalizeConductorResult(result);
 			// Membership and commands become visible together. A rollover can consume a region
 			// only because the next plan has already released those IDs.
-			this.preGroupMemberIds = plan.preGroup?.memberIds ?? [];
+			const memberIds = plan.preGroup?.memberIds ?? [];
+			if (!arraysEqual(this.preGroupMemberIds, memberIds)) this.preGroupMemberIds = memberIds;
 			const cmds = plan.commands;
 			const groupIdsBeforeApply = new Set(this.groups.map((group) => group.id));
 			// Every conductor's folds are attributed uniformly — no conductor is special by id.
@@ -1267,20 +1297,47 @@ export class AccordionStore {
 		this.calibration = this.calibration * (1 - a) + clamped * a;
 	}
 
-	setHarnessBreakdown(h: {
-		totalTokens: number | null;
-		systemPromptTokens: number | null;
-		actualWireTokens?: number | null;
-		messagesTokens?: number | null;
-		toolsTokens?: number | null;
-		systemPayloadTokens?: number | null;
-		frozenFromIndex?: number | null;
-	} | null): void {
+	private _applyHarness(h: HarnessBreakdown | null): boolean {
+		if (harnessEqual(this.harnessBreakdown, h)) return false;
 		this.harnessBreakdown = h;
 		const rawFrozen = typeof h?.frozenFromIndex === "number" && Number.isFinite(h.frozenFromIndex) ? h.frozenFromIndex : 0;
 		this.frozenFromIndex = Math.max(0, Math.min(this.blocks.length, Math.floor(rawFrozen)));
 		this.updateCalibration();
+		return true;
+	}
+
+	setHarnessBreakdown(h: HarnessBreakdown | null): void {
+		this._applyHarness(h);
 		this.refold();
+	}
+
+	/**
+	 * Transactional sync: apply harness, blocks, contextWindow, and budget in one
+	 * pass with exactly one refold(). Used by sync handlers to avoid 2-4× refold
+	 * per message. Standalone setters remain for UI controls and tests.
+	 */
+	applySync(opts: {
+		harness?: HarnessBreakdown;
+		blocks: Block[];
+		contextWindow?: number;
+		budget?: number;
+	}): boolean {
+		let changed = false;
+		if (opts.contextWindow != null && opts.contextWindow !== this.contextWindow) {
+			this.contextWindow = opts.contextWindow;
+			changed = true;
+		}
+		if (opts.budget != null) {
+			const budget = Math.max(1000, Math.round(opts.budget));
+			if (budget !== this.budget) {
+				this.budget = budget;
+				changed = true;
+			}
+		}
+		if (opts.harness !== undefined && this._applyHarness(opts.harness)) changed = true;
+		if (this._dedupeAndAppend(opts.blocks) > 0) changed = true;
+		if (changed) this.refold();
+		return changed;
 	}
 
 	/**
@@ -1296,17 +1353,21 @@ export class AccordionStore {
 	 * source of truth therefore never holds two blocks with the same id — including
 	 * a duplicate id within a single batch.
 	 */
-	appendBlocks(blocks: Block[]): void {
-		if (!blocks.length) return;
+	private _dedupeAndAppend(blocks: Block[]): number {
+		if (!blocks.length) return 0;
 		const fresh: Block[] = [];
 		for (const b of blocks) {
 			if (this.index.has(b.id)) continue; // already committed (or dup within this batch)
 			this.index.set(b.id, this.blocks.length + fresh.length);
 			fresh.push(b);
 		}
-		if (!fresh.length) return;
+		if (!fresh.length) return 0;
 		this.blocks.push(...fresh);
-		this.refold();
+		return fresh.length;
+	}
+
+	appendBlocks(blocks: Block[]): void {
+		if (this._dedupeAndAppend(blocks) > 0) this.refold();
 	}
 
 	/**

@@ -1,23 +1,8 @@
-import WebSocket from "ws";
+import WebSocket, { WebSocketServer } from "ws";
+import { PROTOCOL_VERSION } from "../../src/lib/live/protocol";
+import type { HelloMessage, PlanMessage, StreamMessage, SyncMessage, WireBlock } from "../../src/lib/live/protocol";
 import { blk, mockHarness } from "../fixtures/helpers";
-import type { WireBlock } from "../../src/lib/live/protocol";
 import type { PerfScenario } from "./scenarios";
-
-export interface PerfHello {
-	type: "hello";
-	protocolVersion: 1;
-	sessionId: string;
-	meta: { title: string; cwd: string; model: string; contextWindow: number };
-}
-
-export interface PerfSync {
-	type: "sync";
-	reqId: number;
-	full: true;
-	blocks: WireBlock[];
-	contextWindow: number;
-	harness: typeof mockHarness;
-}
 
 export function generateBlocks(setup: PerfScenario["setup"], start = 0): WireBlock[] {
 	const tokens = setup.tokensPerBlock ?? 150;
@@ -35,83 +20,242 @@ export function generateBlocks(setup: PerfScenario["setup"], start = 0): WireBlo
 	});
 }
 
-export function createHelloFrame(): PerfHello {
+export function createHelloFrame(): HelloMessage {
 	return {
 		type: "hello",
-		protocolVersion: 1,
+		protocolVersion: PROTOCOL_VERSION,
 		sessionId: "perf-bench",
-		meta: { title: "Perf Benchmark", cwd: "/tmp", model: "benchmark", contextWindow: 200_000 },
+		meta: {
+			title: "Perf Benchmark",
+			cwd: "/tmp",
+			model: "benchmark",
+			contextWindow: 200_000,
+			format: "pi",
+		},
 	};
 }
 
-export function createSyncFrame(scenario: PerfScenario, blocks = generateBlocks(scenario.setup)): PerfSync {
-	return { type: "sync", reqId: 1, full: true, blocks, contextWindow: 200_000, harness: mockHarness };
+export function createSyncFrame(
+	scenario: PerfScenario,
+	blocks = generateBlocks(scenario.setup),
+	options: { reqId?: number; full?: boolean } = {},
+): SyncMessage {
+	return {
+		type: "sync",
+		reqId: options.reqId ?? 1,
+		full: options.full ?? true,
+		blocks,
+		contextWindow: 200_000,
+		harness: mockHarness,
+	};
 }
 
-export class PerfInjector {
-	private nextReqId = 1;
-	private readonly pending = new Map<number, (value: unknown) => void>();
+function isPlanReply(value: unknown): value is Pick<PlanMessage, "type" | "reqId"> {
+	if (typeof value !== "object" || value === null || !("type" in value) || !("reqId" in value)) return false;
+	return value.type === "plan" && typeof value.reqId === "number";
+}
 
-	constructor(private readonly ws: WebSocket) {
-		ws.on("message", (raw) => {
+interface PendingPlan {
+	resolve: () => void;
+	reject: (error: Error) => void;
+	timer: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * A small fake extension. The live protocol makes the extension the WebSocket server
+ * and the browser app the client, so this class sends frames through the real
+ * connectLive() path instead of bypassing the app with direct store hydration.
+ */
+export class PerfExtensionServer {
+	private readonly wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+	private readonly listening: Promise<void>;
+	private readonly connected: Promise<void>;
+	private resolveConnected: () => void = () => {};
+	private socket: WebSocket | null = null;
+	private nextReqId = 1;
+	private readonly pending = new Map<number, PendingPlan>();
+
+	constructor() {
+		this.listening = new Promise<void>((resolve, reject) => {
+			this.wss.once("listening", resolve);
+			this.wss.once("error", reject);
+		});
+		this.connected = new Promise<void>((resolve) => {
+			this.resolveConnected = resolve;
+		});
+		this.wss.on("connection", (socket) => this.handleConnection(socket));
+	}
+
+	async waitForListening(): Promise<void> {
+		await this.listening;
+	}
+
+	get port(): number {
+		const address = this.wss.address();
+		if (address === null || typeof address === "string") throw new Error("Perf WebSocket server is not listening");
+		return address.port;
+	}
+
+	private handleConnection(socket: WebSocket): void {
+		if (this.socket !== null && this.socket.readyState === WebSocket.OPEN) this.socket.close();
+		this.socket = socket;
+		socket.on("message", (raw) => {
+			let parsed: unknown;
 			try {
-				const message: unknown = JSON.parse(raw.toString());
-				if (typeof message === "object" && message !== null && "reqId" in message && typeof message.reqId === "number") {
-					this.pending.get(message.reqId)?.(message);
-					this.pending.delete(message.reqId);
-				}
+				parsed = JSON.parse(raw.toString());
 			} catch {
-				// Ignore non-JSON frames. The protocol response still controls completion.
+				return;
+			}
+			if (!isPlanReply(parsed)) return;
+			const pending = this.pending.get(parsed.reqId);
+			if (!pending) return;
+			clearTimeout(pending.timer);
+			this.pending.delete(parsed.reqId);
+			pending.resolve();
+		});
+		socket.on("close", () => {
+			if (this.socket !== socket) return;
+			this.socket = null;
+			const error = new Error("Accordion browser socket closed during performance run");
+			for (const [reqId, pending] of this.pending) {
+				clearTimeout(pending.timer);
+				this.pending.delete(reqId);
+				pending.reject(error);
 			}
 		});
+		this.sendFrame(createHelloFrame());
+		this.resolveConnected();
 	}
 
-	private send(message: object): void {
-		this.ws.send(JSON.stringify(message));
+	private sendFrame(frame: HelloMessage | StreamMessage | SyncMessage): void {
+		if (this.socket === null || this.socket.readyState !== WebSocket.OPEN) throw new Error("Accordion browser is not connected to the perf WebSocket server");
+		this.socket.send(JSON.stringify(frame));
 	}
 
-	waitForPlan(reqId: number, timeoutMs = 10_000): Promise<unknown> {
+	private waitForPlan(reqId: number, timeoutMs = 30_000): Promise<void> {
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pending.delete(reqId);
 				reject(new Error(`Timed out waiting for plan ${reqId}`));
 			}, timeoutMs);
-			this.pending.set(reqId, (message) => {
-				clearTimeout(timer);
-				resolve(message);
-			});
+			this.pending.set(reqId, { resolve, reject, timer });
 		});
 	}
 
-	async sendSync(blocks: WireBlock[], full = true): Promise<void> {
+	async waitForConnection(timeoutMs = 15_000): Promise<void> {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				this.connected,
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(() => reject(new Error("Timed out waiting for the Accordion browser to connect")), timeoutMs);
+				}),
+			]);
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+		}
+	}
+
+	async sendSync(scenario: PerfScenario, blocks: WireBlock[], full: boolean): Promise<void> {
 		const reqId = this.nextReqId++;
 		const reply = this.waitForPlan(reqId);
-		this.send({ ...createSyncFrame({ setup: { blockCount: 0 }, name: "sync", action: { type: "full-reset" }, thresholds: {} }, blocks), reqId, full });
+		try {
+			this.sendFrame(createSyncFrame(scenario, blocks, { reqId, full }));
+		} catch (error) {
+			const pending = this.pending.get(reqId);
+			if (pending) {
+				clearTimeout(pending.timer);
+				this.pending.delete(reqId);
+			}
+			throw error;
+		}
 		await reply;
 	}
 
-	async run(scenario: PerfScenario): Promise<void> {
+	async prepare(scenario: PerfScenario): Promise<void> {
+		await this.waitForConnection();
+		await this.sendSync(scenario, generateBlocks(scenario.setup), true);
+	}
+
+	async runNetworkAction(scenario: PerfScenario): Promise<void> {
 		const action = scenario.action;
-		this.send(createHelloFrame());
-		await this.sendSync(generateBlocks(scenario.setup));
-		if (action.type === "append") {
-			await this.sendSync(generateBlocks({ ...scenario.setup, blockCount: action.blocks }, scenario.setup.blockCount), false);
-		} else if (action.type === "full-reset") {
-			await this.sendSync(generateBlocks(scenario.setup));
-		} else if (action.type === "rapid-fire") {
-			for (let i = 0; i < action.messages; i++) {
-				await this.sendSync(generateBlocks({ ...scenario.setup, blockCount: 1 }, scenario.setup.blockCount + i), false);
-				await new Promise((resolve) => setTimeout(resolve, action.intervalMs));
+		switch (action.type) {
+			case "append":
+				await this.sendSync(
+					scenario,
+					generateBlocks({ ...scenario.setup, blockCount: action.blocks }, scenario.setup.blockCount),
+					false,
+				);
+				return;
+			case "full-reset":
+				await this.sendSync(scenario, generateBlocks(scenario.setup), true);
+				return;
+			case "rapid-fire":
+				for (let i = 0; i < action.messages; i++) {
+					await this.sendSync(
+						scenario,
+						generateBlocks({ ...scenario.setup, blockCount: 1 }, scenario.setup.blockCount + i),
+						false,
+					);
+					await new Promise((resolve) => setTimeout(resolve, action.intervalMs));
+				}
+				return;
+			case "idle-with-ghosts":
+				this.startGhosts(scenario);
+				return;
+			case "budget-drag":
+			case "group-range":
+				return;
+			default: {
+				const _exhaustive: never = action;
+				void _exhaustive;
 			}
 		}
 	}
+
+	private startGhosts(scenario: PerfScenario): void {
+		const count = Math.max(1, Math.min(5, Math.ceil((scenario.setup.foldedPct ?? 0) / 10)));
+		const kinds: StreamMessage["kind"][] = ["thinking", "text", "tool_call"];
+		for (let i = 0; i < count; i++) {
+			this.sendFrame({ type: "stream", phase: "start", kind: kinds[i % kinds.length], contentIndex: i });
+		}
+	}
+
+	stopGhosts(): void {
+		if (this.socket === null || this.socket.readyState !== WebSocket.OPEN) return;
+		this.sendFrame({ type: "stream", phase: "abort", kind: "text", contentIndex: -1 });
+	}
+
+	async close(): Promise<void> {
+		const error = new Error("Perf server closed");
+		for (const [reqId, pending] of this.pending) {
+			clearTimeout(pending.timer);
+			this.pending.delete(reqId);
+			pending.reject(error);
+		}
+		this.socket?.terminate();
+		this.socket = null;
+		await new Promise<void>((resolve) => {
+			let done = false;
+			let timer: ReturnType<typeof setTimeout>;
+			const finish = (): void => {
+				if (done) return;
+				done = true;
+				clearTimeout(timer);
+				resolve();
+			};
+			timer = setTimeout(finish, 1_000);
+			try {
+				this.wss.close(finish);
+			} catch {
+				finish();
+			}
+		});
+	}
 }
 
-export async function connectInjector(url: string): Promise<{ socket: WebSocket; injector: PerfInjector }> {
-	const socket = new WebSocket(url);
-	await new Promise<void>((resolve, reject) => {
-		socket.once("open", resolve);
-		socket.once("error", () => reject(new Error(`Could not connect to app at ${url}. Is the app running?`)));
-	});
-	return { socket, injector: new PerfInjector(socket) };
+export async function startPerfServer(): Promise<PerfExtensionServer> {
+	const server = new PerfExtensionServer();
+	await server.waitForListening();
+	return server;
 }

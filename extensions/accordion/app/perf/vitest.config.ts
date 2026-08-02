@@ -14,6 +14,7 @@ export default defineConfig({
       { find: /^\$lib\//, replacement: `${libDir}/` },
       { find: /^\$conductors$/, replacement: conductorsDir },
       { find: /^\$conductors\//, replacement: `${conductorsDir}/` },
+      { find: /^ws$/, replacement: path.resolve(__dirname, "node_modules/ws/index.js") },
     ],
   },
   test: {

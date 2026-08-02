@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node", "vitest/globals"],
+    "noImplicitAny": false
+  },
+  "include": ["./runes.d.ts", "./fixtures/**/*.ts", "./store/**/*.ts", "./browser/**/*.ts"]
+}

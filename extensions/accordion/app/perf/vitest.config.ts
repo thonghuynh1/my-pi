@@ -18,6 +18,6 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["store/**/*.test.ts", "store/**/*.bench.ts"],
+    include: ["store/**/*.test.ts", "store/**/*.bench.ts", "browser/**/*.test.ts"],
   },
 });

@@ -4,7 +4,6 @@ import {
 	CHUNKED_COMPACTION_PREFIX,
 	DEFAULT_PRE_GROUP_TOKENS,
 	MIN_CONTEXT_WINDOW_FOR_CHUNKED_COMPACTION,
-	PRE_GROUP_OVERFLOW_CAP,
 } from "./constants";
 
 export interface MyCustomizeConductorOpts {
@@ -54,14 +53,11 @@ export function computePreGroupFromIndex(
 	let from = end - 1;
 	let sum = newest.tokens;
 	if (sum >= target) return from;
-	const cap = target * PRE_GROUP_OVERFLOW_CAP;
 	for (let i = end - 2; i >= 0; i--) {
 		const next = view.blocks[i];
 		if (isGroupBoundaryFn(next)) break;
-		const nextSum = sum + next.tokens;
-		if (nextSum > cap) break;
 		from = i;
-		sum = nextSum;
+		sum += next.tokens;
 		if (sum >= target) break;
 	}
 	return from;
@@ -347,4 +343,4 @@ export function buildMcpRetrievalIndex(
 	return `MCP retrieval index\n${entries.join("\n")}`;
 }
 
-export { DEFAULT_PRE_GROUP_TOKENS, PRE_GROUP_OVERFLOW_CAP, MIN_CONTEXT_WINDOW_FOR_CHUNKED_COMPACTION, foldCode };
+export { DEFAULT_PRE_GROUP_TOKENS, MIN_CONTEXT_WINDOW_FOR_CHUNKED_COMPACTION, foldCode };

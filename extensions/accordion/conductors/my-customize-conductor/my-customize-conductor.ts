@@ -110,15 +110,16 @@ export class MyCustomizeConductor implements Conductor {
 			const range: [number, number] = [Math.min(...groupBlocks.map((block) => block.turn)), Math.max(...groupBlocks.map((block) => block.turn))];
 			const index = chunkedCompaction.buildMcpRetrievalIndex(groupBlocks, callById);
 			const digest = chunkedCompaction.composeDigest(chunkedCompaction.digestHeader(chunkedCompaction.corpusContentHash(groupBlocks), ids.length, range), chunkedCompaction.digestBody(groupBlocks), chunkedCompaction.digestMembersFooter(ids.map(foldCode))) + (index ? `\n\n${index}` : "");
-			this.rolloverCount++;
 			this.tokensSavedByRollover += saving;
 			this.lastEstimatedGroupSaving = saving;
 			return { kind: "group", ids, digest };
 		};
 
-		const onBoundary = view.protectedFromIndex === view.blocks.length || view.blocks[view.protectedFromIndex]?.kind === "user";
+		const protectedStart = view.protectedFromIndex;
+		const onBoundary = protectedStart === view.blocks.length ||
+			protectedStart > 0 && view.blocks[protectedStart - 1]?.turn !== view.blocks[protectedStart]?.turn;
 		if (preGroupTarget > 0 && preGroupTokens >= dynamicTarget && onBoundary && chunkedCompaction.noOpenToolPairAcrossPreGroupTail(view, from)) {
-			const selected = chunkedCompaction.selectCompactionRange(view, from);
+			const selected = chunkedCompaction.selectCompactionRange(view, view.frozenFromIndex);
 			const eligible = selected ? view.blocks.slice(selected.fromIndex, selected.toIndexExclusive) : preGroupBlocks;
 			const commands: Command[] = [];
 			let segment: ViewBlock[] = [];
@@ -140,6 +141,7 @@ export class MyCustomizeConductor implements Conductor {
 			}
 			flush();
 			if (commands.length > 0) {
+				this.rolloverCount++;
 				const plan = [...prior, ...commands];
 				this.lastPlan = plan;
 				return this.finishConduct(plan, preGroupTokens, preGroupTarget, true, members(new Set(commands.flatMap((c) => c.kind === "group" ? c.ids : []))));

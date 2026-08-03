@@ -1327,6 +1327,29 @@ describe("ProductionMyCustomizeConductor Pre-Group membership", () => {
 	});
 });
 
+describe("rollover-only conduct", () => {
+	it("tolerates over-budget content until the dynamic trigger is met", () => {
+		const blocks = Array.from({ length: 5 }, (_, i) => vb(`between:${i}`, "text", i, 2_000, 100));
+		const tail = vb("between:tail", "user", blocks.length, 100, 100, { protected: true });
+		const result = new ProductionMyCustomizeConductor().conduct({
+			...makeView([...blocks, tail], 70_000, 85_000, { contextWindow: 128_000 }),
+		});
+		expect(result.commands.filter((command) => command.kind === "fold" || command.kind === "replace" || command.kind === "group")).toEqual([]);
+	});
+
+	it("emits multiple 15k groups in one rollover", () => {
+		const blocks = Array.from({ length: 15 }, (_, i) => vb(`roll:${i}`, "text", i, 3_000, 100, { text: `block ${i}` }));
+		const tail = vb("roll:tail", "user", blocks.length, 100, 100, { protected: true });
+		const result = new ProductionMyCustomizeConductor().conduct({
+			...makeView([...blocks, tail], 70_000, 100_000, { contextWindow: 128_000 }),
+		});
+		const groups = result.commands.filter((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
+		expect(groups).toHaveLength(3);
+		expect(result.commands.some((command) => command.kind === "fold")).toBe(false);
+		expect(groups.every((group) => group.ids.length === 5)).toBe(true);
+	});
+});
+
 describe("canonicalMcpIdentity", () => {
 	it("canonical MCP identity ignores JSON key order", () => {
 		const callA = JSON.stringify({ tool: "skill-reference", server: "eng", args: { name: "poteto-mode", version: 1 } });

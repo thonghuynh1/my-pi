@@ -55,6 +55,16 @@ import {
 	type EvidencePacketV1,
 	type VerificationReportV1,
 } from "./lib/evidence-packet.ts";
+import {
+	PACKET_RUNTIME_CAPS,
+	initialPacketRuntimeState,
+	packetTimeoutSeconds,
+	reportToolsOnly,
+	shouldReserveReport,
+	transitionPacketRuntime,
+	type PacketRuntimeState,
+} from "./lib/packet-runtime-policy.ts";
+import { reconcileVerification, type PacketTermination } from "./lib/reconciliation.ts";
 
 type SubagentType = "explore" | "shell" | "custom";
 type AgentSource = "user" | "project";
@@ -144,6 +154,8 @@ interface SubagentDetails {
 	packetAccepted?: boolean;
 	packetDiagnostics?: string[];
 	verification?: VerificationReportV1;
+	incomplete?: boolean;
+	termination?: PacketTermination;
 }
 
 type AssistantUsage = {
@@ -974,11 +986,17 @@ export function selectSubagentModel(
 	};
 }
 
-function normalizeTimeoutSeconds(params: unknown): SubagentParamsType {
+export function normalizeTimeoutSeconds(params: unknown): SubagentParamsType {
 	if (!params || typeof params !== "object") return params as SubagentParamsType;
 	const input = params as Record<string, unknown>;
 	const packet = input.evidencePacket === undefined ? { ok: false } : selectEvidencePacket(input.evidencePacket);
-	if (packet.ok) return params as SubagentParamsType;
+	if (packet.ok) {
+		const requested = input.timeoutSeconds;
+		if (typeof requested === "number" && requested > 0) {
+			return { ...input, timeoutSeconds: packetTimeoutSeconds(requested) } as SubagentParamsType;
+		}
+		return { ...input, timeoutSeconds: PACKET_RUNTIME_CAPS.timeoutSeconds } as SubagentParamsType;
+	}
 	if (typeof input.timeoutSeconds === "number" && input.timeoutSeconds > 0 && input.timeoutSeconds < 600) {
 		return { ...input, timeoutSeconds: 600 } as SubagentParamsType;
 	}
@@ -1141,7 +1159,9 @@ async function runSubagent(
 	const config = resolveRunConfig(params, cwd);
 	const packetValidation = params.evidencePacket === undefined ? undefined : selectEvidencePacket(params.evidencePacket);
 	const packet = packetValidation?.ok ? packetValidation.value : undefined;
-	const packetDiagnostics = packetValidation && !packetValidation.ok ? packetValidation.errors : [];
+	const packetDiagnostics = packetValidation && !packetValidation.ok
+		? ["Evidence packet rejected; running ordinary prose mode. Prose output is not structured verification.", ...packetValidation.errors]
+		: [];
 	const inheritedModel = ctx.model;
 	const modelSelection = selectSubagentModel(config.model, inheritedModel, ctx.modelRegistry);
 	const selectedModel = modelSelection.model;
@@ -1156,7 +1176,9 @@ async function runSubagent(
 
 	const timeoutController = new AbortController();
 	let timeout: NodeJS.Timeout | undefined;
-	const timeoutSeconds = packet ? Math.min(packet.limits?.timeoutSeconds ?? 300, 300) : params.timeoutSeconds;
+	const timeoutSeconds = packet
+		? packetTimeoutSeconds(packet.limits?.timeoutSeconds ?? params.timeoutSeconds)
+		: params.timeoutSeconds;
 	if (timeoutSeconds && timeoutSeconds > 0) timeout = setTimeout(() => timeoutController.abort(), timeoutSeconds * 1000);
 
 	let finalMessages: Message[] = [];
@@ -1165,6 +1187,9 @@ async function runSubagent(
 	const toolCalls: Array<{ name: string; args: unknown; isError?: boolean }> = [];
 	let session: Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"] | undefined;
 	let verificationReport: VerificationReportV1 | undefined;
+	let runtimeState: PacketRuntimeState | undefined = packet ? initialPacketRuntimeState(packet.limits) : undefined;
+	let termination: PacketTermination = "completed";
+	let reportPromptSent = false;
 	const liveStatus: RunningSubagentStatus = {
 		id: toolCallId,
 		type: config.type,
@@ -1226,6 +1251,7 @@ async function runSubagent(
 				const validated = validateVerificationReport(report, packet);
 				if (!validated.ok) return { content: [{ type: "text" as const, text: `Invalid verification report: ${validated.errors.join("; ")}` }], details: { valid: false, errors: validated.errors } };
 				verificationReport = validated.value;
+				runtimeState = runtimeState ? transitionPacketRuntime(runtimeState, { type: "report-accepted" }) : runtimeState;
 				return { content: [{ type: "text" as const, text: "Verification report accepted." }], details: { valid: true } };
 			},
 		} satisfies ToolDefinition<any, unknown> : undefined;
@@ -1272,8 +1298,21 @@ async function runSubagent(
 		const abortChild = () => {
 			void session?.abort();
 		};
-		ctx.signal?.addEventListener("abort", abortChild, { once: true });
-		timeoutController.signal.addEventListener("abort", abortChild, { once: true });
+		ctx.signal?.addEventListener("abort", () => {
+			termination = "cancelled";
+			abortChild();
+		}, { once: true });
+		timeoutController.signal.addEventListener("abort", () => {
+			termination = "timeout";
+			abortChild();
+		}, { once: true });
+
+		const activateReportOnly = () => {
+			if (!packet || !session || !runtimeState || !shouldReserveReport(runtimeState)) return;
+			session.setActiveToolsByName(["report_verification"]);
+			liveStatus.preview = "source limits reached; report verification only";
+			publishStatus();
+		};
 
 		const bindSession = (nextSession: Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"]) => {
 			session = nextSession;
@@ -1303,6 +1342,11 @@ async function runSubagent(
 					break;
 				}
 				case "tool_execution_start": {
+					const isReport = event.toolName === "report_verification";
+					if (runtimeState) {
+						runtimeState = transitionPacketRuntime(runtimeState, { type: isReport ? "report-call-start" : "source-call-start" });
+						if (reportToolsOnly(runtimeState)) activateReportOnly();
+					}
 					toolCalls.push({ name: event.toolName, args: event.args });
 					liveStatus.currentTool = event.toolName;
 					liveStatus.preview = `running ${event.toolName}`;
@@ -1328,6 +1372,10 @@ async function runSubagent(
 				}
 				case "turn_end": {
 					turns += 1;
+					if (runtimeState) {
+						runtimeState = transitionPacketRuntime(runtimeState, { type: "turn-end" });
+						if (reportToolsOnly(runtimeState)) activateReportOnly();
+					}
 					publishStatus();
 					break;
 				}
@@ -1344,20 +1392,25 @@ async function runSubagent(
 		bindSession(created.session);
 
 		const prompt = packet ? `${buildEvidencePacketPrompt(packet)}\n\nParent task: ${params.task}` : `Task: ${params.task}\n\nReturn only the useful findings for the parent agent.`;
-		const runPrompt = () =>
+		const runPrompt = (promptText: string) =>
 			Promise.race([
-				session!.prompt(prompt),
+				session!.prompt(promptText),
 				new Promise<never>((_, reject) => {
 					ctx.signal?.addEventListener("abort", () => reject(new Error("Subagent was aborted.")), { once: true });
 					timeoutController.signal.addEventListener(
 						"abort",
-						() => reject(new Error(`Subagent timed out after ${params.timeoutSeconds} seconds.`)),
+						() => reject(new Error(`Subagent timed out after ${timeoutSeconds ?? 0} seconds.`)),
 						{ once: true },
 					);
 				}),
 			]);
 		try {
-			await runPrompt();
+			await runPrompt(prompt);
+			if (packet && runtimeState && reportToolsOnly(runtimeState) && !verificationReport && !reportPromptSent) {
+				reportPromptSent = true;
+				activateReportOnly();
+				await runPrompt("Source investigation is complete. Use report_verification now. Report every owned claim exactly once. Do not call any source tools.");
+			}
 		} catch (error) {
 			const fallbackModel = inheritedModel;
 			const canRetryPromptWithInheritedModel = Boolean(
@@ -1371,15 +1424,21 @@ async function runSubagent(
 			liveStatus.preview = `override ${config.model} failed, using inherited model`;
 			const retryCreated = await createChildSession(resolvedModel);
 			bindSession(retryCreated.session);
-			await runPrompt();
+			await runPrompt(prompt);
 		}
 
+		if (packet && !verificationReport && termination === "completed") {
+			termination = runtimeState && runtimeState.turns >= runtimeState.limits.maxSourceTurns
+				? "turn-limit"
+				: runtimeState && runtimeState.toolCalls >= runtimeState.limits.maxSourceToolCalls ? "tool-limit" : "error";
+		}
+		const reconciled = packet ? reconcileVerification(packet, verificationReport, termination) : undefined;
 		const output = finalAssistantText(finalMessages) || streamingText.trim() || "(subagent completed with no output)";
 		return {
 			type: config.type,
 			name: config.name,
 			...(packetValidation ? { mode: packet ? "packet" as const : "prose-fallback" as const, packetAccepted: Boolean(packet), packetDiagnostics } : {}),
-			...(verificationReport ? { verification: verificationReport } : {}),
+			...(reconciled ? { verification: { claims: reconciled.claims, newLeads: reconciled.newLeads }, incomplete: reconciled.incomplete, termination: reconciled.termination } : {}),
 			task: params.task,
 			cwd,
 			tools: config.tools,
@@ -1401,11 +1460,17 @@ async function runSubagent(
 		};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
+		if (packet && termination === "completed") {
+			termination = runtimeState && runtimeState.turns >= runtimeState.limits.maxSourceTurns
+				? "turn-limit"
+				: runtimeState && runtimeState.toolCalls >= runtimeState.limits.maxSourceToolCalls ? "tool-limit" : "error";
+		}
+		const reconciled = packet ? reconcileVerification(packet, verificationReport, termination) : undefined;
 		return {
 			type: config.type,
 			name: config.name,
 			...(packetValidation ? { mode: packet ? "packet" as const : "prose-fallback" as const, packetAccepted: Boolean(packet), packetDiagnostics } : {}),
-			...(verificationReport ? { verification: verificationReport } : {}),
+			...(reconciled ? { verification: { claims: reconciled.claims, newLeads: reconciled.newLeads }, incomplete: reconciled.incomplete, termination: reconciled.termination } : {}),
 			task: params.task,
 			cwd,
 			tools: config.tools,
@@ -1743,9 +1808,12 @@ export default function (pi: ExtensionAPI) {
 				}
 				const icon = details.status === "completed" ? theme.fg("success", "✓") : theme.fg("error", "✗");
 				let text = `${icon} ${theme.fg("toolTitle", theme.bold(`${details.type}:${details.name}`))}`;
+				if (details.mode === "prose-fallback") text += theme.fg("warning", " • prose fallback");
+				if (details.incomplete) text += theme.fg("warning", ` • incomplete${details.termination ? ` (${details.termination})` : ""}`);
 				text += theme.fg("dim", ` • ${details.turns} turn${details.turns === 1 ? "" : "s"}`);
 				text += theme.fg("dim", ` • ${details.toolCalls.length} tool${details.toolCalls.length === 1 ? "" : "s"}`);
 				if (details.error) text += `\n${theme.fg("error", details.error)}`;
+				if (details.mode === "prose-fallback" && details.packetDiagnostics?.length) text += `\n${theme.fg("warning", details.packetDiagnostics[0])}`;
 				if (expanded) {
 					text += `\n\n${theme.fg("muted", "Task:")} ${details.task}`;
 					if (details.toolCalls.length > 0) {

@@ -1,3 +1,8 @@
+
+---
+status: closed
+---
+
 Status: ready-for-agent
 
 # Walking skeleton: broad aiKnow evidence to structured child verification

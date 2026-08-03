@@ -68,6 +68,9 @@ export function buildEvidencePacketPrompt(packet: EvidencePacketV1, effectiveLim
 
 export function resolveEvidencePacket(value: unknown): PacketSelection {
 	if (value === undefined) return { provided: false };
+	if (typeof value === "string") {
+		try { value = JSON.parse(value); } catch { /* fall through to validation */ }
+	}
 	const validation = selectEvidencePacket(value);
 	if (validation.ok) {
 		return { provided: true, packet: validation.value, mode: "packet", packetAccepted: true, packetDiagnostics: [] };

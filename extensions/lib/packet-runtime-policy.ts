@@ -84,8 +84,8 @@ export function transitionPacketRuntime(state: PacketRuntimeState, event: Packet
 		return next.toolCalls >= next.limits.maxSourceToolCalls ? { ...next, phase: "report-only" } : next;
 	}
 	if (event.type === "report-call-start") {
-		if (state.phase !== "report-only" || state.reportCalls >= 1 || state.toolCalls >= state.limits.maxToolCalls || state.turns >= state.limits.maxTurns) return state;
-		return { ...state, toolCalls: state.toolCalls + 1, reportCalls: state.reportCalls + 1 };
+		if ((state.phase !== "report-only" && state.phase !== "investigating") || state.reportCalls >= 1 || state.toolCalls >= state.limits.maxToolCalls || state.turns >= state.limits.maxTurns) return state;
+		return { ...state, phase: "report-only", toolCalls: state.toolCalls + 1, reportCalls: state.reportCalls + 1 };
 	}
 	return state;
 }

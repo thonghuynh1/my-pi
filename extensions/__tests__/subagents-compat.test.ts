@@ -111,6 +111,21 @@ test("omitted packet preserves the ordinary result projection", () => {
 	assert.deepEqual(projectPacketResult({ provided: false }, undefined, "completed"), {});
 });
 
+test("JSON string packets are deserialized and accepted", () => {
+	const asString = JSON.stringify(validPacket);
+	const selection = resolveEvidencePacket(asString);
+	assert.equal(selection.mode, "packet");
+	assert.equal(selection.packetAccepted, true);
+	if (selection.mode !== "packet") return;
+	assert.equal(selection.packet.packetId, "packet");
+	assert.equal(selection.packet.groupId, "group");
+
+	// Malformed JSON string falls back gracefully
+	const broken = resolveEvidencePacket("{not json");
+	assert.equal(broken.mode, "prose-fallback");
+	assert.equal(broken.packetAccepted, false);
+});
+
 test("partial packet reports synthesize unresolved claims", () => {
 	const selection = resolveEvidencePacket({
 		...validPacket,

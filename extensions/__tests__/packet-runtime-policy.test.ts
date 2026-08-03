@@ -70,3 +70,22 @@ test("packet timeout versus prose normalization", () => {
 	assert.equal(normalizeTimeoutSeconds({ type: "explore", task: "x", timeoutSeconds: 120 }).timeoutSeconds, 600);
 	assert.equal(normalizeTimeoutSeconds({ type: "explore", task: "x", evidencePacket: { version: 2 }, timeoutSeconds: 120 }).timeoutSeconds, 600);
 });
+
+test("early report submission during investigating phase transitions to report-only", () => {
+	let state = initialPacketRuntimeState();
+	// Simulate a few source calls (well below limits)
+	state = transitionPacketRuntime(state, { type: "source-call-start" });
+	state = transitionPacketRuntime(state, { type: "source-call-start" });
+	state = transitionPacketRuntime(state, { type: "turn-end" });
+	assert.equal(state.phase, "investigating");
+	assert.equal(state.turns, 1);
+	assert.equal(state.toolCalls, 2);
+	// Child finishes early and submits report while still investigating
+	state = transitionPacketRuntime(state, { type: "report-call-start" });
+	assert.equal(state.phase, "report-only");
+	assert.equal(state.reportCalls, 1);
+	assert.equal(state.toolCalls, 3);
+	// Report accepted transitions to finished
+	state = transitionPacketRuntime(state, { type: "report-accepted" });
+	assert.equal(state.phase, "finished");
+});

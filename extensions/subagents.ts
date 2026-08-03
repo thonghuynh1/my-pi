@@ -1409,7 +1409,7 @@ async function runSubagent(
 				case "tool_execution_start": {
 					const isReport = event.toolName === "report_verification";
 					const operationAllowed = !runtimeState || (isReport
-						? runtimeState.phase === "report-only" && runtimeState.reportCalls === 0 && runtimeState.toolCalls < runtimeState.limits.maxToolCalls && runtimeState.turns < runtimeState.limits.maxTurns
+						? (runtimeState.phase === "report-only" || runtimeState.phase === "investigating") && runtimeState.reportCalls === 0 && runtimeState.toolCalls < runtimeState.limits.maxToolCalls && runtimeState.turns < runtimeState.limits.maxTurns
 						: canStartSourceOperation(runtimeState));
 					if (!operationAllowed) {
 						activateReportOnly(true);

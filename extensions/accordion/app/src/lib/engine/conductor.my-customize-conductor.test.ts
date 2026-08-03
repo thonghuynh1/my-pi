@@ -269,6 +269,36 @@ describe("MyCustomizeConductor", () => {
 		expect(result).toEqual([]);
 	});
 
+	it("hardCap emergency oldest-first", () => {
+		const blocks = [
+			vb("f:20", "text", 20, 50_000, 100, { text: "later" }),
+			vb("f:3", "text", 3, 7_000, 100, { text: "third" }),
+			vb("f:10", "text", 10, 8_000, 100, { text: "middle" }),
+			vb("f:1", "text", 1, 5_000, 100, { text: "oldest" }),
+			vb("f:15", "text", 15, 6_000, 100, { text: "later" }),
+		];
+		const view = makeView(blocks, 70_000, 210_000, { frozenFromIndex: 30, contextWindow: 200_000 });
+		const result = new MyCustomizeConductor().conduct(view);
+
+		expect(result.filter((command) => command.kind === "fold").flatMap((command) => command.ids)).toEqual(["f:1", "f:3"]);
+		expect(projected(view, result)).toBeLessThanOrEqual(200_000);
+	});
+
+	it("hardCap respects FOLDABLE_KINDS", () => {
+		const blocks = [
+			vb("u:0", "user", 0, 50_000, 50_000, { text: "task" }),
+			vb("c:1", "tool_call", 1, 50_000, 50_000, { toolName: "bash", callId: "c:1", text: "bash command" }),
+			vb("f:2", "text", 2, 15_000, 100, { text: "old context" }),
+		];
+		const view = makeView(blocks, 70_000, 210_000, { frozenFromIndex: 3, contextWindow: 200_000 });
+		const result = new MyCustomizeConductor().conduct(view);
+		const commandIds = result.flatMap((command) => command.kind === "fold" ? command.ids : command.kind === "replace" ? [command.id] : []);
+
+		expect(commandIds).not.toContain("u:0");
+		expect(commandIds).not.toContain("c:1");
+		expect(commandIds).toContain("f:2");
+	});
+
 	it("is registered as a collaborative in-process conductor", () => {
 		const entry = IN_PROCESS_CONDUCTORS.find((c) => c.id === "my-customize-conductor");
 		expect(entry).toBeDefined();

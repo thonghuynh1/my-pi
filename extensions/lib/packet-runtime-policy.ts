@@ -6,11 +6,23 @@ export const PACKET_RUNTIME_CAPS = {
 	timeoutSeconds: 300,
 } as const;
 
+export type PacketRuntimeCapConfig = {
+	maxTurns: number;
+	maxToolCalls: number;
+	maxSourceTurns?: number;
+	maxSourceToolCalls?: number;
+	timeoutSeconds: number;
+};
+
 export type PacketRuntimeLimits = {
 	maxTurns: number;
 	maxToolCalls: number;
 	maxSourceTurns: number;
 	maxSourceToolCalls: number;
+};
+
+export type PacketEffectiveLimits = PacketRuntimeLimits & {
+	timeoutSeconds: number;
 };
 
 export type PacketRuntimePhase = "investigating" | "report-only" | "finished";
@@ -22,35 +34,57 @@ export type PacketRuntimeEvent =
 	| { type: "report-accepted" }
 	| { type: "terminate" };
 
-export function packetRuntimeLimits(requested?: { maxTurns?: number; maxToolCalls?: number }): PacketRuntimeLimits {
-	const maxTurns = Math.min(Math.max(2, Math.floor(requested?.maxTurns ?? PACKET_RUNTIME_CAPS.maxTurns)), PACKET_RUNTIME_CAPS.maxTurns);
-	const maxToolCalls = Math.min(Math.max(2, Math.floor(requested?.maxToolCalls ?? PACKET_RUNTIME_CAPS.maxToolCalls)), PACKET_RUNTIME_CAPS.maxToolCalls);
-	return { maxTurns, maxToolCalls, maxSourceTurns: Math.min(maxTurns - 1, 15), maxSourceToolCalls: Math.min(maxToolCalls - 1, 29) };
+export function packetRuntimeLimits(
+	requested?: { maxTurns?: number; maxToolCalls?: number },
+	caps: PacketRuntimeCapConfig = PACKET_RUNTIME_CAPS,
+): PacketRuntimeLimits {
+	const maxTurns = Math.min(Math.max(1, Math.floor(requested?.maxTurns ?? caps.maxTurns)), caps.maxTurns);
+	const maxToolCalls = Math.min(Math.max(1, Math.floor(requested?.maxToolCalls ?? caps.maxToolCalls)), caps.maxToolCalls);
+	const maxSourceTurns = caps.maxSourceTurns ?? Math.max(0, caps.maxTurns - 1);
+	const maxSourceToolCalls = caps.maxSourceToolCalls ?? Math.max(0, caps.maxToolCalls - 1);
+	return {
+		maxTurns,
+		maxToolCalls,
+		maxSourceTurns: Math.max(0, Math.min(maxTurns - 1, maxSourceTurns)),
+		maxSourceToolCalls: Math.max(0, Math.min(maxToolCalls - 1, maxSourceToolCalls)),
+	};
 }
 
-export function initialPacketRuntimeState(requested?: { maxTurns?: number; maxToolCalls?: number }): PacketRuntimeState {
-	return { phase: "investigating", turns: 0, toolCalls: 0, reportCalls: 0, limits: packetRuntimeLimits(requested) };
+export function initialPacketRuntimeState(
+	requested?: { maxTurns?: number; maxToolCalls?: number },
+	caps?: PacketRuntimeCapConfig,
+): PacketRuntimeState {
+	const limits = packetRuntimeLimits(requested, caps);
+	const phase: PacketRuntimePhase = limits.maxSourceTurns === 0 || limits.maxSourceToolCalls === 0 ? "report-only" : "investigating";
+	return { phase, turns: 0, toolCalls: 0, reportCalls: 0, limits };
 }
 
 export function canStartSourceOperation(state: PacketRuntimeState): boolean {
 	return state.phase === "investigating" && state.turns < state.limits.maxSourceTurns && state.toolCalls < state.limits.maxSourceToolCalls;
 }
 
-export function shouldReserveReport(state: PacketRuntimeState): boolean {
-	return state.phase === "investigating" && (state.turns >= state.limits.maxSourceTurns || state.toolCalls >= state.limits.maxSourceToolCalls);
-}
-
 export function transitionPacketRuntime(state: PacketRuntimeState, event: PacketRuntimeEvent): PacketRuntimeState {
-	if (event.type === "turn-end") return { ...state, turns: state.turns + 1 };
+	if (event.type === "turn-end") {
+		const turns = Math.min(state.turns + 1, state.limits.maxTurns);
+		if (state.phase === "finished") {
+			return state.reportCalls > 0 && state.turns < state.limits.maxTurns ? { ...state, turns } : state;
+		}
+		const phase = state.phase === "investigating" && turns >= state.limits.maxSourceTurns ? "report-only" : state.phase;
+		return { ...state, turns, phase };
+	}
 	if (state.phase === "finished") return state;
-	if (event.type === "terminate" || event.type === "report-accepted") return { ...state, phase: "finished" };
+	if (event.type === "terminate") return { ...state, phase: "finished" };
+	if (event.type === "report-accepted") {
+		if (state.phase !== "report-only" || state.reportCalls !== 1) return state;
+		return { ...state, phase: "finished" };
+	}
 	if (event.type === "source-call-start") {
-		if (!canStartSourceOperation(state)) return { ...state, phase: "report-only" };
+		if (!canStartSourceOperation(state)) return state;
 		const next = { ...state, toolCalls: state.toolCalls + 1 };
-		return shouldReserveReport(next) ? { ...next, phase: "report-only" } : next;
+		return next.toolCalls >= next.limits.maxSourceToolCalls ? { ...next, phase: "report-only" } : next;
 	}
 	if (event.type === "report-call-start") {
-		if (state.phase !== "report-only" || state.reportCalls >= 1 || state.toolCalls >= state.limits.maxToolCalls) return state;
+		if (state.phase !== "report-only" || state.reportCalls >= 1 || state.toolCalls >= state.limits.maxToolCalls || state.turns >= state.limits.maxTurns) return state;
 		return { ...state, toolCalls: state.toolCalls + 1, reportCalls: state.reportCalls + 1 };
 	}
 	return state;
@@ -58,7 +92,7 @@ export function transitionPacketRuntime(state: PacketRuntimeState, event: Packet
 
 export function reportToolsOnly(state: PacketRuntimeState): boolean { return state.phase === "report-only"; }
 
-export function packetTimeoutSeconds(requested: number | undefined): number {
-	if (requested === undefined || !Number.isFinite(requested) || requested <= 0) return PACKET_RUNTIME_CAPS.timeoutSeconds;
-	return Math.min(Math.floor(requested), PACKET_RUNTIME_CAPS.timeoutSeconds);
+export function packetTimeoutSeconds(requested: number | undefined, cap: number = PACKET_RUNTIME_CAPS.timeoutSeconds): number {
+	if (requested === undefined || !Number.isFinite(requested) || requested <= 0) return cap;
+	return Math.max(1, Math.min(Math.floor(requested), cap));
 }

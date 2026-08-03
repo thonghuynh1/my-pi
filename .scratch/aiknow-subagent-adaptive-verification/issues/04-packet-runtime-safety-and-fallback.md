@@ -1,3 +1,8 @@
+---
+Status: ready-for-agent
+status: closed
+---
+
 Status: ready-for-agent
 
 # Enforce packet runtime ceilings, structured incompleteness, and explicit fallback

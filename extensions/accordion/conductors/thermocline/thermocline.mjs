@@ -37,6 +37,7 @@ import { scoreCandidates, tailTextFromView } from "./scorer.mjs";
 
 const ID = "thermocline";
 const LABEL = "Thermocline";
+const CONDUCTOR_PROTOCOL_VERSION = 4;
 const PORT = Number(process.env.THERMO_PORT || 7703);
 const URL = `ws://127.0.0.1:${PORT}`;
 
@@ -70,7 +71,7 @@ function advertise() {
 	mkdirSync(REG_DIR, { recursive: true });
 	const entry = {
 		registryProtocol: 1,
-		conductorProtocol: 4,
+		conductorProtocol: CONDUCTOR_PROTOCOL_VERSION,
 		id: ID,
 		label: LABEL,
 		url: URL,
@@ -737,7 +738,7 @@ function onConnection(ws) {
 	ws.send(
 		JSON.stringify({
 			type: "conductor/hello",
-			conductorProtocol: 4,
+			conductorProtocol: CONDUCTOR_PROTOCOL_VERSION,
 			id: ID,
 			label: LABEL,
 			wants: { content: "full" }, // need block text for probe + digest prompts

@@ -45,7 +45,6 @@ export type ValidationResult<T> =
 	| { ok: false; errors: string[] };
 
 const statuses = new Set(["confirmed", "contradicted", "unresolved"]);
-const priorities = new Set(["material", "normal"]);
 
 function record(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -96,6 +95,17 @@ export function validateEvidencePacket(value: unknown): ValidationResult<Evidenc
 		if (typeof anchorCount !== "number" || !Number.isInteger(anchorCount) || anchorCount < 1) errors.push("shape.anchorCount is invalid");
 		if (!nonEmpty(value.shape.subsystem) || typeof value.shape.crossFileFlow !== "boolean") errors.push("shape is invalid");
 	}
+	if (value.crossGroupReferences !== undefined) {
+		if (!Array.isArray(value.crossGroupReferences)) errors.push("crossGroupReferences are invalid");
+		else value.crossGroupReferences.forEach((reference, index) => {
+			if (!record(reference) || !nonEmpty(reference.groupId) || !nonEmpty(reference.path) || !nonEmpty(reference.reason)) {
+				errors.push(`crossGroupReferences[${index}] is invalid`);
+				return;
+			}
+			if (reference.line !== undefined && (typeof reference.line !== "number" || !Number.isInteger(reference.line) || reference.line < 1)) errors.push(`crossGroupReferences[${index}].line is invalid`);
+			if (reference.symbol !== undefined && !nonEmpty(reference.symbol)) errors.push(`crossGroupReferences[${index}].symbol is invalid`);
+		});
+	}
 	if (value.limits !== undefined) {
 		if (!record(value.limits)) errors.push("limits are invalid");
 		else for (const limit of [value.limits.maxTurns, value.limits.maxToolCalls, value.limits.timeoutSeconds]) if (limit !== undefined && (!Number.isInteger(limit) || (limit as number) < 1)) errors.push("limits are invalid");
@@ -144,16 +154,4 @@ export function validateVerificationReport(report: unknown, packet: EvidencePack
 		return { id: lead.id, summary: lead.summary, material: lead.material, anchors };
 	}).filter((lead): lead is VerificationReportV1["newLeads"][number] => lead !== undefined);
 	return errors.length ? { ok: false, errors } : { ok: true, value: { claims, newLeads } };
-}
-
-export function buildEvidencePacketPrompt(packet: EvidencePacketV1): string {
-	return [
-		"Verify the selected evidence packet slice using native source tools.",
-		`Packet ${packet.packetId}, group ${packet.groupId}.`,
-		"Owned claims:",
-		...packet.claims.map(claim => `- ${claim.id} [${claim.priority}]: ${claim.summary}`),
-		"Routing anchors:",
-		...packet.anchors.map(anchor => `- ${anchor.path}:${anchor.line}${anchor.endLine ? `-${anchor.endLine}` : ""} ${anchor.symbol}`),
-		"Report every owned claim exactly once with report_verification. Indexed summaries are unverified until native evidence confirms them.",
-	].join("\n");
 }

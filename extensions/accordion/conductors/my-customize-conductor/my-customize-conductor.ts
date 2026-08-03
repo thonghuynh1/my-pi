@@ -238,6 +238,8 @@ export class MyCustomizeConductor implements Conductor {
 			: view.protectedFromIndex;
 		const preGroupBlocks = view.blocks.slice(preGroupFromIndex, view.protectedFromIndex);
 		const preGroupBlockIds = new Set(preGroupBlocks.map((b) => b.id));
+		const preGroupMemberIds = (excluded?: ReadonlySet<string>): string[] =>
+			preGroupBlocks.filter((block) => !excluded?.has(block.id)).map((block) => block.id);
 		let preGroupTokens = 0;
 		// Helper: attempt to emit a GROUP command from a candidate block list.
 		// Defined at method scope so the early rollover check (DEC-002) after the main fold
@@ -287,7 +289,7 @@ export class MyCustomizeConductor implements Conductor {
 					const newIds = new Set(cmds.flatMap((command) => command.kind === "group" ? command.ids : []));
 					const retained = this.replayablePreviousGroups(view, newIds);
 					this.rememberReplayableGroups(retained);
-					return this.finishConduct([...retained, ...cmds], preGroupTokens, preGroupTarget, true, preGroupBlocks.filter((b) => !newIds.has(b.id)).map((b) => b.id));
+					return this.finishConduct([...retained, ...cmds], preGroupTokens, preGroupTarget, true, preGroupMemberIds(newIds));
 				}
 			}
 		}
@@ -299,14 +301,14 @@ export class MyCustomizeConductor implements Conductor {
 			const retained = this.replayablePreviousGroups(view);
 			if (retained.length > 0) {
 				this.rememberReplayableGroups(retained);
-				return this.finishConduct(retained, preGroupTokens, preGroupTarget, false, preGroupBlocks.map((b) => b.id));
+				return this.finishConduct(retained, preGroupTokens, preGroupTarget, false, preGroupMemberIds());
 			}
 			this.lastPlan = null;
 			this.lastSavings.clear();
 			this.lastSemanticKey = null;
 			this.lastFrozenGroupEpochKey = null;
 			this.lastViewKey = null;
-			return this.finishConduct([], preGroupTokens, preGroupTarget, false, preGroupBlocks.map((b) => b.id));
+			return this.finishConduct([], preGroupTokens, preGroupTarget, false, preGroupMemberIds());
 		}
 
 		const allCandidates = view.blocks.filter(
@@ -339,7 +341,7 @@ export class MyCustomizeConductor implements Conductor {
 		// invalidate the hold so stale beacon text does not survive mode changes or newer poteto blocks.
 		if (this.lastSemanticKey !== null && this.lastSemanticKey !== semanticKey) this.lastFrozenGroupEpochKey = null;
 		if (this.lastPlan !== null && this.lastSemanticKey === semanticKey && this.lastViewKey === viewKey) {
-			return this.finishConduct(this.lastPlan, preGroupTokens, preGroupTarget, false, preGroupBlocks.map((b) => b.id));
+			return this.finishConduct(this.lastPlan, preGroupTokens, preGroupTarget, false, preGroupMemberIds());
 		}
 		if (this.lastPlan !== null && this.lastSemanticKey === semanticKey) {
 			let projectedHeld = view.liveTokens;
@@ -348,7 +350,7 @@ export class MyCustomizeConductor implements Conductor {
 				if (b && !b.held && !b.protected && !b.grouped) projectedHeld -= saving.tokens;
 			}
 			if (projectedHeld <= HOLD_BAND * cap) {
-				return this.finishConduct(this.lastPlan, preGroupTokens, preGroupTarget, false, preGroupBlocks.map((b) => b.id));
+				return this.finishConduct(this.lastPlan, preGroupTokens, preGroupTarget, false, preGroupMemberIds());
 			}
 		}
 		this.lastPlan = null;
@@ -469,7 +471,7 @@ export class MyCustomizeConductor implements Conductor {
 				this.lastSavings = savingsFor(cmds);
 				this.lastSemanticKey = semanticKey;
 				this.lastViewKey = viewKey;
-				return this.finishConduct(cmds, preGroupTokens, preGroupTarget, true, preGroupBlocks.filter((b) => !groupedIds.has(b.id)).map((b) => b.id));
+				return this.finishConduct(cmds, preGroupTokens, preGroupTarget, true, preGroupMemberIds(groupedIds));
 			}
 		}
 
@@ -496,7 +498,7 @@ export class MyCustomizeConductor implements Conductor {
 				const newIds = new Set(cmds.flatMap((command) => command.kind === "group" ? command.ids : []));
 				const retained = this.replayablePreviousGroups(view, newIds, priorPlan);
 				this.rememberReplayableGroups(retained);
-				return this.finishConduct([...retained, ...cmds], preGroupTokens, preGroupTarget, true, preGroupBlocks.filter((b) => !newIds.has(b.id)).map((b) => b.id));
+				return this.finishConduct([...retained, ...cmds], preGroupTokens, preGroupTarget, true, preGroupMemberIds(newIds));
 			}
 		}
 
@@ -570,7 +572,7 @@ export class MyCustomizeConductor implements Conductor {
 		this.lastSemanticKey = semanticKey;
 		this.lastViewKey = viewKey;
 
-		return this.finishConduct(cmds, preGroupTokens, preGroupTarget, false, preGroupBlocks.map((b) => b.id));
+		return this.finishConduct(cmds, preGroupTokens, preGroupTarget, false, preGroupMemberIds());
 	}
 }
 

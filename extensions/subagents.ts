@@ -15,8 +15,7 @@ import {
 	loadCapabilityVisibilitySettings,
 	type CapabilityVisibilitySettings,
 } from "./lib/capability-visibility.ts";
-import { StringEnum } from "@earendil-works/pi-ai";
-import type { Message } from "@earendil-works/pi-ai";
+import { StringEnum, type Message } from "@earendil-works/pi-ai";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
@@ -49,22 +48,33 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import {
-	buildEvidencePacketPrompt,
-	selectEvidencePacket,
 	validateVerificationReport,
 	type EvidencePacketV1,
 	type VerificationReportV1,
 } from "./lib/evidence-packet.ts";
 import {
+	buildEvidencePacketPrompt,
+	formatPacketResultForParent,
+	projectPacketResult,
+	resolveEvidencePacket,
+	type PacketSelection,
+} from "./lib/subagent-runtime.ts";
+import {
 	PACKET_RUNTIME_CAPS,
+	canStartSourceOperation,
 	initialPacketRuntimeState,
 	packetTimeoutSeconds,
 	reportToolsOnly,
-	shouldReserveReport,
 	transitionPacketRuntime,
+	type PacketEffectiveLimits,
 	type PacketRuntimeState,
 } from "./lib/packet-runtime-policy.ts";
-import { reconcileVerification, type PacketTermination } from "./lib/reconciliation.ts";
+import { type PacketTermination } from "./lib/reconciliation.ts";
+import {
+	parseRoutingConfig,
+	resolveRoutingConfig,
+	type EffectiveRoutingConfig,
+} from "./lib/routing-policy.ts";
 
 type SubagentType = "explore" | "shell" | "custom";
 type AgentSource = "user" | "project";
@@ -116,6 +126,7 @@ interface RunConfig {
 	prompt: string;
 	tools: string[];
 	model?: string;
+	routing: EffectiveRoutingConfig;
 	source?: AgentSource;
 	filePath?: string;
 }
@@ -142,7 +153,7 @@ interface SubagentDetails {
 	cwd: string;
 	tools: string[];
 	model?: string;
-	status: "completed" | "error";
+	status: "completed" | "error" | "running";
 	output: string;
 	error?: string;
 	turns: number;
@@ -153,6 +164,10 @@ interface SubagentDetails {
 	mode?: "packet" | "prose-fallback";
 	packetAccepted?: boolean;
 	packetDiagnostics?: string[];
+	packetId?: string;
+	groupId?: string;
+	shape?: EvidencePacketV1["shape"];
+	effectiveLimits?: PacketEffectiveLimits;
 	verification?: VerificationReportV1;
 	incomplete?: boolean;
 	termination?: PacketTermination;
@@ -339,7 +354,7 @@ const SubagentParams = Type.Object({
 	),
 	timeoutSeconds: Type.Optional(
 		Type.Number({
-			description: "Optional timeout in seconds. Default: no timeout. If provided, values below 600 are raised to 600.",
+			description: "Optional timeout in seconds. Packet calls honor up to 300 seconds; ordinary calls use a 600-second minimum.",
 			minimum: 1,
 		}),
 	),
@@ -482,6 +497,16 @@ export function readSubagentTypeDefaults(cwd: string): SubagentTypeDefaults {
 		else merged.default = undefined;
 	}
 	return merged;
+}
+
+export function readSubagentRoutingConfig(cwd: string): EffectiveRoutingConfig {
+	const layers = getSubagentDefaultsSearchDirs(cwd).map((dir) => {
+		if (!dir) return undefined;
+		const raw = readJsonObjectFile(getCustomAgentModelsPath(dir));
+		const block = raw && isRecord(raw.subagents) ? raw.subagents : undefined;
+		return parseRoutingConfig(block?.routing);
+	});
+	return resolveRoutingConfig({ package: layers[0], user: layers[1], project: layers[2] });
 }
 
 // Picks the canonical dir to write subagents.default into when the user saves
@@ -897,6 +922,7 @@ class SubagentModelsEditor extends Container {
 }
 
 function resolveRunConfig(params: SubagentParamsType, cwd: string): RunConfig {
+	const routing = readSubagentRoutingConfig(cwd);
 	if (params.type === "explore") {
 		const defaults = readSubagentTypeDefaults(cwd);
 		return {
@@ -906,6 +932,7 @@ function resolveRunConfig(params: SubagentParamsType, cwd: string): RunConfig {
 			prompt: EXPLORE_PROMPT,
 			tools: ["read", "grep", "find", "ls"],
 			model: params.model ?? defaults.default,
+			routing,
 		};
 	}
 
@@ -918,6 +945,7 @@ function resolveRunConfig(params: SubagentParamsType, cwd: string): RunConfig {
 			prompt: SHELL_PROMPT,
 			tools: ["read", "grep", "find", "ls", "bash"],
 			model: params.model ?? defaults.default,
+			routing,
 		};
 	}
 
@@ -939,6 +967,7 @@ function resolveRunConfig(params: SubagentParamsType, cwd: string): RunConfig {
 		prompt: agent.prompt,
 		tools: agent.tools && agent.tools.length > 0 ? agent.tools : ["read", "grep", "find", "ls"],
 		model: params.model ?? agent.model,
+		routing,
 		source: agent.source,
 		filePath: agent.filePath,
 	};
@@ -989,8 +1018,8 @@ export function selectSubagentModel(
 export function normalizeTimeoutSeconds(params: unknown): SubagentParamsType {
 	if (!params || typeof params !== "object") return params as SubagentParamsType;
 	const input = params as Record<string, unknown>;
-	const packet = input.evidencePacket === undefined ? { ok: false } : selectEvidencePacket(input.evidencePacket);
-	if (packet.ok) {
+	const packet = resolveEvidencePacket(input.evidencePacket);
+	if (packet.mode === "packet") {
 		const requested = input.timeoutSeconds;
 		if (typeof requested === "number" && requested > 0) {
 			return { ...input, timeoutSeconds: packetTimeoutSeconds(requested) } as SubagentParamsType;
@@ -1019,6 +1048,22 @@ function finalAssistantText(messages: unknown[]): string {
 		if (text.trim()) return text.trim();
 	}
 	return "";
+}
+
+function assistantFailureReason(messages: unknown[]): string | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i] as { role?: string; stopReason?: string; errorMessage?: string } | undefined;
+		if (message?.role !== "assistant") continue;
+		if (message.stopReason === "error") return message.errorMessage || "The subagent model returned an error.";
+		if (message.stopReason === "aborted") return "The subagent was aborted.";
+	}
+	return undefined;
+}
+
+function packetLimitTermination(state: PacketRuntimeState): PacketTermination {
+	if (state.turns >= state.limits.maxSourceTurns) return "turn-limit";
+	if (state.toolCalls >= state.limits.maxSourceToolCalls) return "tool-limit";
+	return "error";
 }
 
 function truncateForToolResult(text: string, maxBytes = 50 * 1024): string {
@@ -1154,14 +1199,13 @@ async function runSubagent(
 	params: SubagentParamsType,
 	onUpdate: ((partial: { content: Array<{ type: "text"; text: string }>; details?: Partial<SubagentDetails> }) => void) | undefined,
 	statusSink?: SubagentStatusSink,
+	signal?: AbortSignal,
 ): Promise<SubagentDetails> {
+	const packetSelection: PacketSelection = resolveEvidencePacket(params.evidencePacket);
+	params = normalizeTimeoutSeconds(params);
 	const cwd = path.resolve(ctx.cwd, normalizePathArgument(params.cwd ?? "."));
 	const config = resolveRunConfig(params, cwd);
-	const packetValidation = params.evidencePacket === undefined ? undefined : selectEvidencePacket(params.evidencePacket);
-	const packet = packetValidation?.ok ? packetValidation.value : undefined;
-	const packetDiagnostics = packetValidation && !packetValidation.ok
-		? ["Evidence packet rejected; running ordinary prose mode. Prose output is not structured verification.", ...packetValidation.errors]
-		: [];
+	const packet = packetSelection.mode === "packet" ? packetSelection.packet : undefined;
 	const inheritedModel = ctx.model;
 	const modelSelection = selectSubagentModel(config.model, inheritedModel, ctx.modelRegistry);
 	const selectedModel = modelSelection.model;
@@ -1176,20 +1220,38 @@ async function runSubagent(
 
 	const timeoutController = new AbortController();
 	let timeout: NodeJS.Timeout | undefined;
-	const timeoutSeconds = packet
-		? packetTimeoutSeconds(packet.limits?.timeoutSeconds ?? params.timeoutSeconds)
-		: params.timeoutSeconds;
-	if (timeoutSeconds && timeoutSeconds > 0) timeout = setTimeout(() => timeoutController.abort(), timeoutSeconds * 1000);
-
 	let finalMessages: Message[] = [];
 	let streamingText = "";
 	let turns = 0;
 	const toolCalls: Array<{ name: string; args: unknown; isError?: boolean }> = [];
 	let session: Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"] | undefined;
+	let unsubscribeSession: (() => void) | undefined;
 	let verificationReport: VerificationReportV1 | undefined;
-	let runtimeState: PacketRuntimeState | undefined = packet ? initialPacketRuntimeState(packet.limits) : undefined;
+	let runtimeState: PacketRuntimeState | undefined = packet ? initialPacketRuntimeState(packet.limits, config.routing) : undefined;
 	let termination: PacketTermination = "completed";
 	let reportPromptSent = false;
+	let reportOnlyRequested = false;
+	let reportAbortPromise: Promise<void> | undefined;
+	const timeoutSeconds = packet
+		? packetTimeoutSeconds(packet.limits?.timeoutSeconds ?? params.timeoutSeconds, Math.min(PACKET_RUNTIME_CAPS.timeoutSeconds, config.routing.timeoutSeconds))
+		: params.timeoutSeconds;
+	const effectiveLimits: PacketEffectiveLimits | undefined = packet && runtimeState
+		? { ...runtimeState.limits, timeoutSeconds: timeoutSeconds ?? PACKET_RUNTIME_CAPS.timeoutSeconds }
+		: undefined;
+	const abortChild = (): Promise<void> => session?.abort() ?? Promise.resolve();
+	const markTermination = (reason: Exclude<PacketTermination, "completed" | "turn-limit" | "tool-limit">): void => {
+		if (verificationReport) return;
+		if (termination === "completed") termination = reason;
+		if (runtimeState) runtimeState = transitionPacketRuntime(runtimeState, { type: "terminate" });
+		void abortChild();
+	};
+	const onCancelled = () => markTermination("cancelled");
+	const onTimedOut = () => markTermination("timeout");
+	ctx.signal?.addEventListener("abort", onCancelled, { once: true });
+	if (signal && signal !== ctx.signal) signal.addEventListener("abort", onCancelled, { once: true });
+	timeoutController.signal.addEventListener("abort", onTimedOut, { once: true });
+	if (ctx.signal?.aborted || signal?.aborted) onCancelled();
+	if (timeoutSeconds && timeoutSeconds > 0) timeout = setTimeout(() => timeoutController.abort(), timeoutSeconds * 1000);
 	const liveStatus: RunningSubagentStatus = {
 		id: toolCallId,
 		type: config.type,
@@ -1248,10 +1310,15 @@ async function runSubagent(
 				newLeads: Type.Array(Type.Object({ id: Type.String(), summary: Type.String(), material: Type.Boolean(), anchors: Type.Array(Type.Object({ path: Type.String(), line: Type.Integer({ minimum: 1 }), endLine: Type.Optional(Type.Integer({ minimum: 1 })), symbol: Type.String(), kind: Type.Optional(Type.String()) })) })),
 			}),
 			execute: async (_toolCallId: string, report: VerificationReportV1) => {
+				if (!runtimeState || runtimeState.phase !== "report-only" || runtimeState.reportCalls !== 1) {
+					return { content: [{ type: "text" as const, text: "Invalid verification report: the reserved report operation is not active." }], details: { valid: false, errors: ["report operation is not active"] } };
+				}
 				const validated = validateVerificationReport(report, packet);
 				if (!validated.ok) return { content: [{ type: "text" as const, text: `Invalid verification report: ${validated.errors.join("; ")}` }], details: { valid: false, errors: validated.errors } };
 				verificationReport = validated.value;
-				runtimeState = runtimeState ? transitionPacketRuntime(runtimeState, { type: "report-accepted" }) : runtimeState;
+				runtimeState = transitionPacketRuntime(runtimeState, { type: "report-accepted" });
+				session?.setActiveToolsByName([]);
+				queueMicrotask(() => { void abortChild(); });
 				return { content: [{ type: "text" as const, text: "Verification report accepted." }], details: { valid: true } };
 			},
 		} satisfies ToolDefinition<any, unknown> : undefined;
@@ -1260,17 +1327,20 @@ async function runSubagent(
 				services,
 				sessionManager: SessionManager.inMemory(cwd),
 				model,
-				tools: packet ? [...config.tools, "report_verification"] : config.tools,
+				tools: packet
+					? (runtimeState && reportToolsOnly(runtimeState) ? ["report_verification"] : [...config.tools, "report_verification"])
+					: config.tools,
 				customTools: reportTool ? [reportTool] : undefined,
 				thinkingLevel: pi.getThinkingLevel(),
 			});
 		let created: Awaited<ReturnType<typeof createAgentSessionFromServices>>;
 		try {
+			if (termination !== "completed") throw new Error(`Subagent ${termination} before session creation.`);
 			created = await createChildSession(resolvedModel);
 		} catch (error) {
 			const fallbackModel = inheritedModel;
 			const canFallbackToInheritedModel = Boolean(
-				config.model && fallbackModel && !sameModel(resolvedModel, fallbackModel),
+				termination === "completed" && config.model && fallbackModel && !sameModel(resolvedModel, fallbackModel),
 			);
 			if (!canFallbackToInheritedModel || !fallbackModel) throw error;
 			resolvedModel = fallbackModel;
@@ -1278,6 +1348,10 @@ async function runSubagent(
 			liveStatus.preview = `override ${config.model} failed, using inherited model`;
 			publishStatus();
 			created = await createChildSession(resolvedModel);
+		}
+		if (termination !== "completed") {
+			created.session.dispose();
+			throw new Error(`Subagent ${termination} before prompt.`);
 		}
 		const resetAttemptState = () => {
 			finalMessages = [];
@@ -1295,36 +1369,27 @@ async function runSubagent(
 			liveStatus.contextPercent = null;
 		};
 
-		const abortChild = () => {
-			void session?.abort();
-		};
-		ctx.signal?.addEventListener("abort", () => {
-			termination = "cancelled";
-			abortChild();
-		}, { once: true });
-		timeoutController.signal.addEventListener("abort", () => {
-			termination = "timeout";
-			abortChild();
-		}, { once: true });
-
-		const activateReportOnly = () => {
-			if (!packet || !session || !runtimeState || !shouldReserveReport(runtimeState)) return;
+		const activateReportOnly = (abortCurrentTurn = false) => {
+			if (!packet || !session || !runtimeState || !reportToolsOnly(runtimeState)) return;
+			reportOnlyRequested = true;
 			session.setActiveToolsByName(["report_verification"]);
 			liveStatus.preview = "source limits reached; report verification only";
 			publishStatus();
+			if (abortCurrentTurn) reportAbortPromise = abortChild().catch(() => undefined);
 		};
 
 		const bindSession = (nextSession: Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"]) => {
+			unsubscribeSession?.();
 			session = nextSession;
 			publishStatus();
-			nextSession.subscribe((event) => {
+			unsubscribeSession = nextSession.subscribe((event) => {
 				switch (event.type) {
 				case "agent_start": {
 					liveStatus.preview = "agent session started";
 					publishStatus();
 					onUpdate?.({
 						content: [{ type: "text", text: `Started ${config.type} subagent: ${config.name}` }],
-						details: { type: config.type, name: config.name, task: params.task, cwd, tools: config.tools, status: "completed" },
+						details: { type: config.type, name: config.name, task: params.task, cwd, tools: config.tools, status: "running" },
 					});
 					break;
 				}
@@ -1343,9 +1408,16 @@ async function runSubagent(
 				}
 				case "tool_execution_start": {
 					const isReport = event.toolName === "report_verification";
+					const operationAllowed = !runtimeState || (isReport
+						? runtimeState.phase === "report-only" && runtimeState.reportCalls === 0 && runtimeState.toolCalls < runtimeState.limits.maxToolCalls && runtimeState.turns < runtimeState.limits.maxTurns
+						: canStartSourceOperation(runtimeState));
+					if (!operationAllowed) {
+						activateReportOnly(true);
+						break;
+					}
 					if (runtimeState) {
 						runtimeState = transitionPacketRuntime(runtimeState, { type: isReport ? "report-call-start" : "source-call-start" });
-						if (reportToolsOnly(runtimeState)) activateReportOnly();
+						if (reportToolsOnly(runtimeState)) activateReportOnly(!isReport);
 					}
 					toolCalls.push({ name: event.toolName, args: event.args });
 					liveStatus.currentTool = event.toolName;
@@ -1371,10 +1443,17 @@ async function runSubagent(
 					break;
 				}
 				case "turn_end": {
-					turns += 1;
 					if (runtimeState) {
 						runtimeState = transitionPacketRuntime(runtimeState, { type: "turn-end" });
+						turns = runtimeState.turns;
 						if (reportToolsOnly(runtimeState)) activateReportOnly();
+						if (!verificationReport && runtimeState.turns >= runtimeState.limits.maxTurns) {
+							termination = termination === "completed" ? packetLimitTermination(runtimeState) : termination;
+							runtimeState = transitionPacketRuntime(runtimeState, { type: "terminate" });
+							void abortChild();
+						}
+					} else {
+						turns += 1;
 					}
 					publishStatus();
 					break;
@@ -1390,13 +1469,17 @@ async function runSubagent(
 		};
 
 		bindSession(created.session);
+		if (runtimeState && reportToolsOnly(runtimeState)) activateReportOnly();
 
-		const prompt = packet ? `${buildEvidencePacketPrompt(packet)}\n\nParent task: ${params.task}` : `Task: ${params.task}\n\nReturn only the useful findings for the parent agent.`;
+		const prompt = packet ? `${buildEvidencePacketPrompt(packet, effectiveLimits)}\n\nParent task: ${params.task}` : `Task: ${params.task}\n\nReturn only the useful findings for the parent agent.`;
 		const runPrompt = (promptText: string) =>
 			Promise.race([
 				session!.prompt(promptText),
 				new Promise<never>((_, reject) => {
+					if (ctx.signal?.aborted || signal?.aborted) return reject(new Error("Subagent was aborted."));
+					if (timeoutController.signal.aborted) return reject(new Error(`Subagent timed out after ${timeoutSeconds ?? 0} seconds.`));
 					ctx.signal?.addEventListener("abort", () => reject(new Error("Subagent was aborted.")), { once: true });
+					signal?.addEventListener("abort", () => reject(new Error("Subagent was aborted.")), { once: true });
 					timeoutController.signal.addEventListener(
 						"abort",
 						() => reject(new Error(`Subagent timed out after ${timeoutSeconds ?? 0} seconds.`)),
@@ -1406,45 +1489,63 @@ async function runSubagent(
 			]);
 		try {
 			await runPrompt(prompt);
-			if (packet && runtimeState && reportToolsOnly(runtimeState) && !verificationReport && !reportPromptSent) {
-				reportPromptSent = true;
-				activateReportOnly();
-				await runPrompt("Source investigation is complete. Use report_verification now. Report every owned claim exactly once. Do not call any source tools.");
-			}
 		} catch (error) {
 			const fallbackModel = inheritedModel;
 			const canRetryPromptWithInheritedModel = Boolean(
-				config.model && fallbackModel && !sameModel(resolvedModel, fallbackModel) && turns === 0 && toolCalls.length === 0,
+				termination === "completed" && !reportOnlyRequested && config.model && fallbackModel && !sameModel(resolvedModel, fallbackModel) && turns === 0 && toolCalls.length === 0,
 			);
-			if (!canRetryPromptWithInheritedModel || !fallbackModel) throw error;
-			await session?.abort();
-			resetAttemptState();
-			resolvedModel = fallbackModel;
-			liveStatus.model = `${resolvedModel.provider}/${resolvedModel.id}`;
-			liveStatus.preview = `override ${config.model} failed, using inherited model`;
-			const retryCreated = await createChildSession(resolvedModel);
-			bindSession(retryCreated.session);
-			await runPrompt(prompt);
+			if (reportOnlyRequested && termination === "completed") {
+				await reportAbortPromise;
+			} else if (!canRetryPromptWithInheritedModel || !fallbackModel) {
+				throw error;
+			} else {
+				await session?.abort();
+				session?.dispose();
+				unsubscribeSession?.();
+				unsubscribeSession = undefined;
+				resetAttemptState();
+				resolvedModel = fallbackModel;
+				liveStatus.model = `${resolvedModel.provider}/${resolvedModel.id}`;
+				liveStatus.preview = `override ${config.model} failed, using inherited model`;
+				const retryCreated = await createChildSession(resolvedModel);
+				bindSession(retryCreated.session);
+				await runPrompt(prompt);
+			}
+		}
+		if (packet && reportOnlyRequested && !verificationReport && !reportPromptSent && termination === "completed") {
+			reportPromptSent = true;
+			activateReportOnly();
+			await reportAbortPromise;
+			try {
+				await runPrompt("Source investigation is complete. Use report_verification now. Report every owned claim exactly once. Do not call any source tools.");
+			} catch (error) {
+				if (!verificationReport || termination !== "completed") throw error;
+			}
 		}
 
 		if (packet && !verificationReport && termination === "completed") {
-			termination = runtimeState && runtimeState.turns >= runtimeState.limits.maxSourceTurns
-				? "turn-limit"
-				: runtimeState && runtimeState.toolCalls >= runtimeState.limits.maxSourceToolCalls ? "tool-limit" : "error";
+			termination = runtimeState ? packetLimitTermination(runtimeState) : "error";
 		}
-		const reconciled = packet ? reconcileVerification(packet, verificationReport, termination) : undefined;
+		if (termination === "completed" && !verificationReport) {
+			const failure = assistantFailureReason(finalMessages);
+			if (failure) termination = "error";
+		}
+		const packetProjection = projectPacketResult(packetSelection, verificationReport, termination, effectiveLimits);
 		const output = finalAssistantText(finalMessages) || streamingText.trim() || "(subagent completed with no output)";
+		const parentOutput = formatPacketResultForParent(packetSelection, packetProjection, output);
+		const failure = assistantFailureReason(finalMessages);
+		const runFailed = termination === "timeout" || termination === "cancelled" || termination === "error" || Boolean(failure && !verificationReport) || Boolean(packetProjection.incomplete);
 		return {
 			type: config.type,
 			name: config.name,
-			...(packetValidation ? { mode: packet ? "packet" as const : "prose-fallback" as const, packetAccepted: Boolean(packet), packetDiagnostics } : {}),
-			...(reconciled ? { verification: { claims: reconciled.claims, newLeads: reconciled.newLeads }, incomplete: reconciled.incomplete, termination: reconciled.termination } : {}),
+			...packetProjection,
 			task: params.task,
 			cwd,
 			tools: config.tools,
 			model: `${resolvedModel.provider}/${resolvedModel.id}`,
-			status: "completed",
-			output,
+			status: runFailed ? "error" : "completed",
+			output: parentOutput,
+			...(runFailed ? { error: failure ?? (packetProjection.incomplete ? `Structured verification incomplete (${termination}).` : `Subagent terminated (${termination}).`) } : {}),
 			turns,
 			toolCalls,
 			customAgentPath: config.filePath,
@@ -1460,23 +1561,19 @@ async function runSubagent(
 		};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		if (packet && termination === "completed") {
-			termination = runtimeState && runtimeState.turns >= runtimeState.limits.maxSourceTurns
-				? "turn-limit"
-				: runtimeState && runtimeState.toolCalls >= runtimeState.limits.maxSourceToolCalls ? "tool-limit" : "error";
-		}
-		const reconciled = packet ? reconcileVerification(packet, verificationReport, termination) : undefined;
+		if (packet && termination === "completed") termination = runtimeState ? packetLimitTermination(runtimeState) : "error";
+		const packetProjection = projectPacketResult(packetSelection, verificationReport, termination, effectiveLimits);
+		const output = streamingText.trim();
 		return {
 			type: config.type,
 			name: config.name,
-			...(packetValidation ? { mode: packet ? "packet" as const : "prose-fallback" as const, packetAccepted: Boolean(packet), packetDiagnostics } : {}),
-			...(reconciled ? { verification: { claims: reconciled.claims, newLeads: reconciled.newLeads }, incomplete: reconciled.incomplete, termination: reconciled.termination } : {}),
+			...packetProjection,
 			task: params.task,
 			cwd,
 			tools: config.tools,
 			model: resolvedModel ? `${resolvedModel.provider}/${resolvedModel.id}` : undefined,
 			status: "error",
-			output: streamingText.trim(),
+			output: formatPacketResultForParent(packetSelection, packetProjection, output),
 			error: message,
 			turns,
 			toolCalls,
@@ -1494,6 +1591,12 @@ async function runSubagent(
 	} finally {
 		statusSink?.(undefined);
 		if (timeout) clearTimeout(timeout);
+		unsubscribeSession?.();
+		try {
+			await session?.abort();
+		} catch {
+			// The result is already settled; disposal below is the final cleanup boundary.
+		}
 		session?.dispose();
 	}
 }
@@ -1762,7 +1865,7 @@ export default function (pi: ExtensionAPI) {
 					if (status) activeSubagents.set(toolCallId, status);
 					else activeSubagents.delete(toolCallId);
 					refreshSubagentStatusWidget(ctx);
-				});
+				}, _signal);
 				const u = result.usage;
 				if (u) {
 					subagentState.totalCostUsd += u.costUsd ?? 0;
@@ -1806,16 +1909,36 @@ export default function (pi: ExtensionAPI) {
 					const text = result.content[0];
 					return new Text(text?.type === "text" ? text.text : "", 0, 0);
 				}
-				const icon = details.status === "completed" ? theme.fg("success", "✓") : theme.fg("error", "✗");
+				const icon = details.status === "completed"
+					? theme.fg("success", "✓")
+					: details.status === "error" ? theme.fg("error", "✗") : theme.fg("warning", "…");
 				let text = `${icon} ${theme.fg("toolTitle", theme.bold(`${details.type}:${details.name}`))}`;
 				if (details.mode === "prose-fallback") text += theme.fg("warning", " • prose fallback");
+				if (details.mode === "packet" && details.packetId && details.groupId) {
+					text += theme.fg("dim", ` • packet ${details.packetId}/${details.groupId}`);
+				}
 				if (details.incomplete) text += theme.fg("warning", ` • incomplete${details.termination ? ` (${details.termination})` : ""}`);
+				else if (details.termination) text += theme.fg("dim", ` • ${details.termination}`);
 				text += theme.fg("dim", ` • ${details.turns} turn${details.turns === 1 ? "" : "s"}`);
 				text += theme.fg("dim", ` • ${details.toolCalls.length} tool${details.toolCalls.length === 1 ? "" : "s"}`);
 				if (details.error) text += `\n${theme.fg("error", details.error)}`;
 				if (details.mode === "prose-fallback" && details.packetDiagnostics?.length) text += `\n${theme.fg("warning", details.packetDiagnostics[0])}`;
 				if (expanded) {
 					text += `\n\n${theme.fg("muted", "Task:")} ${details.task}`;
+					if (details.mode === "packet") {
+						const claimCount = details.verification?.claims.length ?? 0;
+						const leadCount = details.verification?.newLeads.length ?? 0;
+						text += `\n\n${theme.fg("muted", "Packet:")} ${details.packetId ?? "?"}/${details.groupId ?? "?"}`;
+						if (details.effectiveLimits) {
+							const limits = details.effectiveLimits;
+							text += `\n${theme.fg("muted", "Effective limits:")} ${limits.maxTurns} turns, ${limits.maxToolCalls} tools, ${limits.timeoutSeconds}s`;
+						}
+						text += `\n${theme.fg("muted", "Outcome:")} ${details.incomplete ? "incomplete" : "complete"}${details.termination ? ` (${details.termination})` : ""} • ${claimCount} claims • ${leadCount} leads`;
+					}
+					if (details.usage) {
+						const usage = details.usage;
+						text += `\n\n${theme.fg("muted", "Usage:")} ${compactNumber(usage.inputTokens)} input, ${compactNumber(usage.outputTokens)} output, ${compactNumber(usage.cacheTokens)} cache, ${compactNumber(usage.totalTokens)} total, ${formatMoney(usage.costUsd)}`;
+					}
 					if (details.toolCalls.length > 0) {
 						text += `\n\n${theme.fg("muted", "Tools:")}`;
 						for (const call of details.toolCalls) {

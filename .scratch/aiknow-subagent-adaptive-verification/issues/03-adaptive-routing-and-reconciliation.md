@@ -1,3 +1,8 @@
+---
+Status: ready-for-agent
+status: closed
+---
+
 Status: ready-for-agent
 
 # Deterministic adaptive routing and bounded reconciliation policy
@@ -45,3 +50,4 @@ Covers US-002; DEC-005, DEC-006, DEC-007, DEC-008, DEC-010, DEC-011; RB-005, RB-
 - Local: `01-walking-skeleton-evidence-packet.md`
   - Provides `EvidencePacketV1`, claim IDs, shape, limits, and verification outcomes.
   - This issue consumes those types in pure policy functions; tests import the real canonical validator/types rather than duplicate stubs.
+

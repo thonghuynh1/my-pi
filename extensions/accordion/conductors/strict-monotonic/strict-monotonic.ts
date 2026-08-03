@@ -43,7 +43,7 @@ export class StrictMonotonicConductor implements Conductor {
 
 		// Pure age-order candidates. No kind rank on purpose (see file header).
 		const candidates = view.blocks
-			.filter((b) => !b.held && !b.protected && !b.grouped && b.foldedTokens < b.tokens)
+			.filter((b) => !b.held && !b.protected && !b.grouped && !b.folded && b.foldedTokens < b.tokens)
 			.sort((a, b) => a.order - b.order);
 
 		const ids: string[] = [];

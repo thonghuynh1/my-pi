@@ -1,3 +1,8 @@
+---
+Status: ready-for-agent
+status: closed
+---
+
 Status: ready-for-agent
 
 # Graph-grouped aiKnow packet candidates and delivery controls
@@ -20,22 +25,22 @@ Covers US-002; DEC-008, DEC-009, DEC-010, DEC-012; RB-003, RB-007, RB-008, RB-01
 
 ## Acceptance criteria
 
-- [ ] Graph-connected anchors group together while graph/path-disconnected subsystems remain independent with one claim owner.
+- [x] Graph-connected anchors group together while graph/path-disconnected subsystems remain independent with one claim owner.
   - Run: `npx vitest run src/test/pi-claim-grouper.test.ts` (cwd `C:/Hackathon/aiKnow/aiKnow`)
   - Test: planned `graph connectivity and independent subsystem partition`
   - Expected: caller/callee/shared-symbol fixtures form one group; unrelated path families form separate groups; no claim ID appears twice.
   - Fails when: grouping is directory-only, one-child-per-claim, or duplicates ownership.
-- [ ] Missing or capped relationship edges use deterministic path-family fallback.
+- [x] Missing or capped relationship edges use deterministic path-family fallback.
   - Run: `npx vitest run src/test/pi-claim-grouper.test.ts` (cwd `C:/Hackathon/aiKnow/aiKnow`)
   - Test: planned `path fallback with incomplete graph`
   - Expected: repeated runs produce identical IDs/groups and merge only matching path families.
   - Fails when: absent edges collapse all groups, fragment every claim, or produce unstable ordering.
-- [ ] Inclusion semantics distinguish all three override branches.
+- [x] Inclusion semantics distinguish all three override branches.
   - Run: `npx vitest run src/test/pi-aiknow-broad-packet.test.ts` (cwd `C:/Hackathon/aiKnow/aiKnow`)
   - Test: planned `automatic forced and suppressed packet delivery`
   - Expected: omitted includes broad/hybrid but not narrow; true includes narrow; false omits broad; no second tool call occurs.
   - Fails when: packets appear on every search, are details-only, or override is ignored.
-- [ ] Packet generation hydrates relationship details internally and emits objective shape through real registered adapter wiring.
+- [x] Packet generation hydrates relationship details internally and emits objective shape through real registered adapter wiring.
   - Run: `npx vitest run src/test/pi-aiknow-broad-packet.test.ts src/test/pi-claim-grouper.test.ts` (cwd `C:/Hackathon/aiKnow/aiKnow`)
   - Test: planned `registered search consumes enriched relationship identities`
   - Expected: fixture with `includeDetails` absent still yields correct fileCount, anchorCount, subsystem, and crossFileFlow; producer output contains no execution strategy.

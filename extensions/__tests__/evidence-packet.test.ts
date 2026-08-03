@@ -7,11 +7,38 @@ import { selectEvidencePacket, validateEvidencePacket, validateVerificationRepor
 
 const fixture = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "evidence-packet-v1.json"), "utf8"));
 
-test("canonical fixture and invalid variants", () => {
+test("canonical EvidencePacketV1 fixture", () => {
+	assert.deepEqual(fixture, {
+		version: 1,
+		packetId: "packet-v1",
+		groupId: "group-1",
+		claims: [{
+			id: "claim-1",
+			summary: "The selected symbol is defined in the native source.",
+			priority: "material",
+		}],
+		anchors: [{
+			path: "src/example.ts",
+			line: 10,
+			symbol: "example",
+			kind: "function",
+		}],
+		shape: {
+			fileCount: 1,
+			anchorCount: 1,
+			subsystem: "example",
+			crossFileFlow: false,
+		},
+	});
 	assert.equal(selectEvidencePacket(fixture).ok, true);
+});
+
+test("invalid evidence packet variants are rejected", () => {
 	assert.equal(selectEvidencePacket({ ...fixture, version: 2 }).ok, false);
 	assert.equal(selectEvidencePacket({ ...fixture, claims: undefined }).ok, false);
 	assert.equal(selectEvidencePacket({ ...fixture, claims: [{ ...fixture.claims[0] }, { ...fixture.claims[0] }] }).ok, false);
+	assert.equal(selectEvidencePacket({ ...fixture, crossGroupReferences: [{ groupId: "g", path: "src/a.ts", reason: "missing line" }] }).ok, true);
+	assert.equal(selectEvidencePacket({ ...fixture, crossGroupReferences: [{ groupId: "g", path: "src/a.ts" }] }).ok, false);
 });
 
 test("verification report requires every claim exactly once and native evidence for resolved claims", () => {

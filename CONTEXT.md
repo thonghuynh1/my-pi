@@ -75,3 +75,22 @@ The exact conductor-owned contiguous region between Accordion’s older foldable
 ## Human Accordion Budget Minimum
 
 The 50,000-token minimum enforced by human Accordion budget controls. `AccordionStore.setBudget()` intentionally preserves lower programmatic budgets; below the conductor's active Pre-Group target, `MyCustomizeConductor` uses safe fallback planning.
+
+## Subagent Evidence Packet
+
+An optional, source-agnostic structured input that gives a Subagent known facts, code anchors, claims to verify, and bounded investigation guidance; callers that omit it retain the existing prose-task behavior.
+
+## Relationships
+
+- An indexed discovery tool such as aiKnow may supply findings that the parent converts into a **Subagent Evidence Packet**.
+- A Subagent may receive zero or one **Subagent Evidence Packet**; the packet never makes aiKnow a prerequisite for delegation.
+- Indexed file, line, and symbol pointers are routing evidence; behavioral summaries remain claims until targeted source verification confirms them.
+
+## Example dialogue
+
+> **Dev:** "Can I still launch a Subagent without aiKnow?"
+> **Domain expert:** "Yes. The Evidence Packet is optional; it only narrows verification when an upstream discovery source has useful evidence."
+
+## Flagged ambiguities
+
+- "aiKnow context" previously implied an aiKnow-specific Subagent dependency — resolved: the canonical term is **Subagent Evidence Packet**, and it is source-agnostic.

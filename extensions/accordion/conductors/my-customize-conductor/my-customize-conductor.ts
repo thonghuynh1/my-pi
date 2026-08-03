@@ -3,7 +3,6 @@
 import type { Command, Conductor, ConductorHost, ConductorPlan, ConductorView, ViewBlock } from "../contract";
 import { availableCap, contextWindowCap } from "../contract";
 import { FOLDABLE_KINDS } from "../cold-score/score";
-import { buildGraph, markReachable } from "../garbage-collector/edges";
 import {
 	estSummaryTokens,
 	foldCode,
@@ -151,7 +150,10 @@ export class MyCustomizeConductor implements Conductor {
 		if (view.liveTokens > hardCap) {
 			const emergency: Command[] = [];
 			let live = view.liveTokens;
-			for (const block of view.blocks.filter((candidate) => !candidate.held && !candidate.protected && !candidate.grouped && FOLDABLE_KINDS.has(candidate.kind))) {
+			const frozenCandidates = view.blocks
+				.filter((candidate) => candidate.order < view.frozenFromIndex && !candidate.held && !candidate.protected && !candidate.grouped && FOLDABLE_KINDS.has(candidate.kind))
+				.sort((a, b) => a.order - b.order);
+			for (const block of frozenCandidates) {
 				if (live <= hardCap) break;
 				const summary = isMcpResult(block) ? mcpSummary(block, block.callId ? callById.get(block.callId) : undefined) : undefined;
 				if (summary && estSummaryTokens(summary) < block.tokens) { emergency.push({ kind: "replace", id: block.id, content: summary, recoverable: true }); live -= block.tokens - estSummaryTokens(summary); }

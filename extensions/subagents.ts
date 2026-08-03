@@ -48,6 +48,13 @@ import {
 	type SettingItem,
 } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
+import {
+	buildEvidencePacketPrompt,
+	selectEvidencePacket,
+	validateVerificationReport,
+	type EvidencePacketV1,
+	type VerificationReportV1,
+} from "./lib/evidence-packet.ts";
 
 type SubagentType = "explore" | "shell" | "custom";
 type AgentSource = "user" | "project";
@@ -133,6 +140,10 @@ interface SubagentDetails {
 	customAgentPath?: string;
 	customAgentSource?: AgentSource;
 	usage?: SubagentUsage;
+	mode?: "packet" | "prose-fallback";
+	packetAccepted?: boolean;
+	packetDiagnostics?: string[];
+	verification?: VerificationReportV1;
 }
 
 type AssistantUsage = {
@@ -320,6 +331,7 @@ const SubagentParams = Type.Object({
 			minimum: 1,
 		}),
 	),
+	evidencePacket: Type.Optional(Type.Unknown({ description: "Optional selected EvidencePacketV1 slice. Invalid packets visibly fall back to prose." })),
 });
 
 type SubagentParamsType = Static<typeof SubagentParams>;
@@ -965,6 +977,8 @@ export function selectSubagentModel(
 function normalizeTimeoutSeconds(params: unknown): SubagentParamsType {
 	if (!params || typeof params !== "object") return params as SubagentParamsType;
 	const input = params as Record<string, unknown>;
+	const packet = input.evidencePacket === undefined ? { ok: false } : selectEvidencePacket(input.evidencePacket);
+	if (packet.ok) return params as SubagentParamsType;
 	if (typeof input.timeoutSeconds === "number" && input.timeoutSeconds > 0 && input.timeoutSeconds < 600) {
 		return { ...input, timeoutSeconds: 600 } as SubagentParamsType;
 	}
@@ -1125,6 +1139,9 @@ async function runSubagent(
 ): Promise<SubagentDetails> {
 	const cwd = path.resolve(ctx.cwd, normalizePathArgument(params.cwd ?? "."));
 	const config = resolveRunConfig(params, cwd);
+	const packetValidation = params.evidencePacket === undefined ? undefined : selectEvidencePacket(params.evidencePacket);
+	const packet = packetValidation?.ok ? packetValidation.value : undefined;
+	const packetDiagnostics = packetValidation && !packetValidation.ok ? packetValidation.errors : [];
 	const inheritedModel = ctx.model;
 	const modelSelection = selectSubagentModel(config.model, inheritedModel, ctx.modelRegistry);
 	const selectedModel = modelSelection.model;
@@ -1139,15 +1156,15 @@ async function runSubagent(
 
 	const timeoutController = new AbortController();
 	let timeout: NodeJS.Timeout | undefined;
-	if (params.timeoutSeconds && params.timeoutSeconds > 0) {
-		timeout = setTimeout(() => timeoutController.abort(), params.timeoutSeconds * 1000);
-	}
+	const timeoutSeconds = packet ? Math.min(packet.limits?.timeoutSeconds ?? 300, 300) : params.timeoutSeconds;
+	if (timeoutSeconds && timeoutSeconds > 0) timeout = setTimeout(() => timeoutController.abort(), timeoutSeconds * 1000);
 
 	let finalMessages: Message[] = [];
 	let streamingText = "";
 	let turns = 0;
 	const toolCalls: Array<{ name: string; args: unknown; isError?: boolean }> = [];
 	let session: Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"] | undefined;
+	let verificationReport: VerificationReportV1 | undefined;
 	const liveStatus: RunningSubagentStatus = {
 		id: toolCallId,
 		type: config.type,
@@ -1197,12 +1214,28 @@ async function runSubagent(
 			},
 		});
 
+		const reportTool = packet ? {
+			name: "report_verification",
+			label: "Report verification",
+			description: "Submit exactly one structured outcome for every owned evidence claim.",
+			parameters: Type.Object({
+				claims: Type.Array(Type.Object({ claimId: Type.String(), status: Type.Union([Type.Literal("confirmed"), Type.Literal("contradicted"), Type.Literal("unresolved")]), explanation: Type.String(), evidence: Type.Array(Type.Object({ path: Type.String(), line: Type.Integer({ minimum: 1 }), endLine: Type.Optional(Type.Integer({ minimum: 1 })), symbol: Type.String() })) })),
+				newLeads: Type.Array(Type.Object({ id: Type.String(), summary: Type.String(), material: Type.Boolean(), anchors: Type.Array(Type.Object({ path: Type.String(), line: Type.Integer({ minimum: 1 }), endLine: Type.Optional(Type.Integer({ minimum: 1 })), symbol: Type.String(), kind: Type.Optional(Type.String()) })) })),
+			}),
+			execute: async (_toolCallId: string, report: VerificationReportV1) => {
+				const validated = validateVerificationReport(report, packet);
+				if (!validated.ok) return { content: [{ type: "text" as const, text: `Invalid verification report: ${validated.errors.join("; ")}` }], details: { valid: false, errors: validated.errors } };
+				verificationReport = validated.value;
+				return { content: [{ type: "text" as const, text: "Verification report accepted." }], details: { valid: true } };
+			},
+		} satisfies ToolDefinition<any, unknown> : undefined;
 		const createChildSession = (model: ActiveModel) =>
 			createAgentSessionFromServices({
 				services,
 				sessionManager: SessionManager.inMemory(cwd),
 				model,
-				tools: config.tools,
+				tools: packet ? [...config.tools, "report_verification"] : config.tools,
+				customTools: reportTool ? [reportTool] : undefined,
 				thinkingLevel: pi.getThinkingLevel(),
 			});
 		let created: Awaited<ReturnType<typeof createAgentSessionFromServices>>;
@@ -1310,7 +1343,7 @@ async function runSubagent(
 
 		bindSession(created.session);
 
-		const prompt = `Task: ${params.task}\n\nReturn only the useful findings for the parent agent.`;
+		const prompt = packet ? `${buildEvidencePacketPrompt(packet)}\n\nParent task: ${params.task}` : `Task: ${params.task}\n\nReturn only the useful findings for the parent agent.`;
 		const runPrompt = () =>
 			Promise.race([
 				session!.prompt(prompt),
@@ -1345,6 +1378,8 @@ async function runSubagent(
 		return {
 			type: config.type,
 			name: config.name,
+			...(packetValidation ? { mode: packet ? "packet" as const : "prose-fallback" as const, packetAccepted: Boolean(packet), packetDiagnostics } : {}),
+			...(verificationReport ? { verification: verificationReport } : {}),
 			task: params.task,
 			cwd,
 			tools: config.tools,
@@ -1369,6 +1404,8 @@ async function runSubagent(
 		return {
 			type: config.type,
 			name: config.name,
+			...(packetValidation ? { mode: packet ? "packet" as const : "prose-fallback" as const, packetAccepted: Boolean(packet), packetDiagnostics } : {}),
+			...(verificationReport ? { verification: verificationReport } : {}),
 			task: params.task,
 			cwd,
 			tools: config.tools,

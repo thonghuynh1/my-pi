@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "packetId": "packet-v1",
+  "groupId": "group-1",
+  "claims": [
+    {
+      "id": "claim-1",
+      "summary": "The selected symbol is defined in the native source.",
+      "priority": "material"
+    }
+  ],
+  "anchors": [
+    {
+      "path": "src/example.ts",
+      "line": 10,
+      "symbol": "example",
+      "kind": "function"
+    }
+  ],
+  "shape": {
+    "fileCount": 1,
+    "anchorCount": 1,
+    "subsystem": "example",
+    "crossFileFlow": false
+  }
+}

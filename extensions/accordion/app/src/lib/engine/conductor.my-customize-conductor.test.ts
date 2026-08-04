@@ -326,12 +326,12 @@ describe("ProductionMyCustomizeConductor Pre-Group membership", () => {
 	});
 
 	it("releases below-target membership on budget-pressure rollover", () => {
-		const blocks = [vb("pg:a", "text", 0, 5_000, 100), vb("pg:b", "text", 1, 5_000, 100)];
+		const blocks = [vb("pg:a", "text", 0, 8_000, 100, { text: "a" }), vb("pg:b", "text", 1, 8_000, 100, { text: "b" })];
 		const conductor = new ProductionMyCustomizeConductor({ preGroupTokens: 15_000 });
 		const view = makeView(blocks, 8_000, 7_000, { contextWindow: 400_000 });
 		conductor.conduct(view);
 
-		const result = conductor.conduct({ ...view, liveTokens: 10_000 });
+		const result = conductor.conduct({ ...view, liveTokens: 18_000 });
 
 		expect(groupedIdsOf(result.commands)).toEqual(new Set(["pg:a", "pg:b"]));
 		expect(result.preGroup?.memberIds).toEqual([]);
@@ -455,6 +455,70 @@ describe("rollover-only conduct", () => {
 		expect(new Set(secondGroups.flatMap((group) => group.ids))).toEqual(
 			new Set([...firstBlocks, ...newBlocks].map((block) => block.id)),
 		);
+	});
+
+	it("releases all pre-group membership on full rollover", () => {
+		// 10 × 2k = 20k. Slicing at 15k: first 8 (16k) → group, last 2 (4k) → group. All grouped.
+		const blocks = Array.from({ length: 10 }, (_, i) => vb(`mem:${i}`, "text", i, 2_000, 100, { text: `block ${i}` }));
+		const tail = vb("mem:tail", "user", blocks.length, 100, 100, { protected: true });
+		const result = new ProductionMyCustomizeConductor().conduct(
+			makeView([...blocks, tail], 10_000, 22_000, { contextWindow: 128_000 }),
+		);
+		const grouped = groupedIdsOf(result.commands);
+
+		expect(grouped).toEqual(new Set(blocks.map((block) => block.id)));
+		expect(result.preGroup?.memberIds).toEqual([]);
+	});
+
+	it("retains single-block residue in pre-group membership", () => {
+		// 9 × 2k = 18k. Slicing at 15k: first 8 (16k) → group, last 1 (2k) → too few for a group.
+		const blocks = Array.from({ length: 9 }, (_, i) => vb(`res:${i}`, "text", i, 2_000, 100, { text: `block ${i}` }));
+		const tail = vb("res:tail", "user", blocks.length, 100, 100, { protected: true });
+		const conductor = new ProductionMyCustomizeConductor();
+		const result = conductor.conduct(
+			makeView([...blocks, tail], 10_000, 20_000, { contextWindow: 128_000 }),
+		);
+		const grouped = groupedIdsOf(result.commands);
+
+		expect(grouped.has("res:8")).toBe(false);
+		expect(result.preGroup?.memberIds).toContain("res:8");
+	});
+
+	it("hardCap emergency groups are replayable on the next pass", () => {
+		const blocks = Array.from({ length: 10 }, (_, i) => vb(`hc:${i}`, "text", i, 3_000, 100, { text: `block ${i}` }));
+		const tail = vb("hc:tail", "user", blocks.length, 100, 100, { protected: true });
+		const conductor = new ProductionMyCustomizeConductor();
+		const first = conductor.conduct(makeView([...blocks, tail], 15_000, 30_100, { contextWindow: 20_000 }));
+		expect(first.commands.length).toBeGreaterThan(0);
+		const second = conductor.conduct(makeView([...blocks, tail], 15_000, 25_000, { contextWindow: 128_000 }));
+		const firstGroups = first.commands.filter((c): c is Extract<Command, { kind: "group" }> => c.kind === "group");
+		const secondGroups = second.commands.filter((c): c is Extract<Command, { kind: "group" }> => c.kind === "group");
+
+		expect(secondGroups.length).toBeGreaterThanOrEqual(firstGroups.length);
+		for (const group of firstGroups) {
+			expect(secondGroups).toContainEqual(group);
+		}
+	});
+
+	it("excludes host-preserved (grouped) blocks from pre-group membership", () => {
+		// Simulate the view AFTER the host preserved rollover groups:
+		// old blocks are grouped:true, new blocks are ungrouped.
+		const old = Array.from({ length: 6 }, (_, i) => vb(`old:${i}`, "text", i, 3_000, 100, { text: `old ${i}`, grouped: true }));
+		const fresh = Array.from({ length: 3 }, (_, i) => vb(`fresh:${i}`, "text", i + 6, 3_000, 100, { text: `fresh ${i}` }));
+		const tail = vb("tail", "user", 9, 100, 100, { protected: true });
+		const conductor = new ProductionMyCustomizeConductor();
+		const result = conductor.conduct(
+			makeView([...old, ...fresh, tail], 70_000, 30_000, { contextWindow: 128_000 }),
+		);
+
+		// Grouped blocks must NOT appear in pre-group membership.
+		for (const id of old.map((b) => b.id)) {
+			expect(result.preGroup?.memberIds).not.toContain(id);
+		}
+		// Fresh ungrouped blocks CAN appear.
+		for (const id of fresh.map((b) => b.id)) {
+			expect(result.preGroup?.memberIds).toContain(id);
+		}
 	});
 });
 

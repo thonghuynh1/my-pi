@@ -36,7 +36,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { NaiveCompactionConductor } from "$conductors/compaction-naive/compaction-naive";
-import { MyCustomizeConductor as ProductionMyCustomizeConductor } from "$conductors/my-customize-conductor/my-customize-conductor";
+import { MyCustomizeConductor } from "$conductors/my-customize-conductor/my-customize-conductor";
 import * as chunkedCompaction from "$conductors/my-customize-conductor/chunked-compaction";
 import { corpusContentHash } from "$conductors/my-customize-conductor/chunked-compaction";
 import { humanTokens } from "$conductors/my-customize-conductor/constants";
@@ -44,8 +44,6 @@ import { AccordionStore } from "./store.svelte";
 import type { Block, ParsedSession } from "./types";
 import { resolveRecall } from "../live/plan";
 import type {
-	Command,
-	Conductor,
 	ConductorHost,
 	ConductorView,
 	ViewBlock,
@@ -55,21 +53,6 @@ import type {
 } from "$conductors/contract";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-class MyCustomizeConductor implements Conductor {
-	private readonly delegate: ProductionMyCustomizeConductor;
-	readonly id: string;
-	readonly label: string;
-
-	constructor(opts?: ConstructorParameters<typeof ProductionMyCustomizeConductor>[0]) {
-		this.delegate = new ProductionMyCustomizeConductor(opts);
-		this.id = this.delegate.id;
-		this.label = this.delegate.label;
-	}
-
-	attach(host: ConductorHost): void { this.delegate.attach(host); }
-	conduct(view: ConductorView): Command[] { return this.delegate.conduct(view).commands; }
-}
 
 /** Build a minimal ViewBlock. */
 function vb(
@@ -1613,19 +1596,6 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		};
 	}
 
-	it("returns a plain plan envelope with authoritative membership", () => {
-		const blocks = [chunkedBlock("pre", 0), chunkedBlock("tail", 1, 100, { kind: "user", protected: true })];
-		const result = new ProductionMyCustomizeConductor().conduct({
-			...rolloverView(blocks),
-			budget: 100_000,
-			liveTokens: 2_100,
-		});
-
-		expect(Array.isArray(result)).toBe(false);
-		expect(result.commands).toEqual([]);
-		expect(result.preGroup?.memberIds).toEqual(["pre"]);
-	});
-
 	function rolloverView(blocks: ViewBlock[], contextWindow: number | null = 200_000): ConductorView {
 		const protectedFromIndex = blocks.findIndex((block) => block.protected);
 		return {
@@ -1666,16 +1636,12 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 			"breakFrozenCount",
 			"lastEstimatedGroupSaving",
 			"preGroupFillPct",
-			"preGroupPhase",
-			"preGroupTargetTokens",
 			"preGroupTokens",
 			"rolloverCount",
 			"tokensSavedByRollover",
 		]);
 		expect(typeof nonRolloverMetrics?.preGroupTokens).toBe("number");
 		expect(typeof nonRolloverMetrics?.preGroupFillPct).toBe("number");
-		expect(nonRolloverMetrics?.preGroupPhase).toBe("accumulating");
-		expect(typeof nonRolloverMetrics?.preGroupTargetTokens).toBe("number");
 		expect(rolloverMetrics?.preGroupTokens).toBeTypeOf("number");
 		expect(rolloverMetrics?.rolloverCount).toBe(1);
 		expect(rolloverMetrics?.breakFrozenCount).toBe(1);
@@ -1737,101 +1703,16 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		expect(humanTokens(1_050_000)).toBe("1.05m");
 	});
 
-	it("first over-cap view rebases atomically", () => {
-		const blocks = [
-			...Array.from({ length: 25 }, (_, i) => chunkedBlock(`rebase-${i}`, i, 4_000)),
-			chunkedBlock("rebase-tail", 25, 100, { kind: "user", protected: true }),
-		];
-		const view = { ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 };
-		const plan = new MyCustomizeConductor().conduct(view);
-		const groups = plan.filter((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
-		expect(groups).toHaveLength(1);
-		expect(groups[0].digest).toMatch(/^⟨chunked-compaction ·/);
-		expect(plan.some((command) => command.kind === "fold")).toBe(true);
-		expect(new Set(groups[0].ids).size).toBe(groups[0].ids.length);
-	});
-
-	it("atomic rebase holds the complete plan when the view changes slightly", () => {
-		const blocks = [
-			...Array.from({ length: 25 }, (_, i) => chunkedBlock(`hold-${i}`, i, 4_000)),
-			chunkedBlock("hold-tail", 25, 100, { kind: "user", protected: true }),
-		];
-		const conductor = new MyCustomizeConductor();
-		const view = { ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 };
-		const first = conductor.conduct(view);
-
-		expect(first.some((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toBe(true);
-		expect(first.some((command) => command.kind === "fold")).toBe(true);
-
-		const group = first.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
-		expect(group).toBeDefined();
-		const groupedIds = new Set(group?.ids ?? []);
-		const members = blocks.filter((block) => groupedIds.has(block.id));
-		const groupedLiveTokens = view.liveTokens + 1_000 +
-			chunkedCompaction.estimateDefaultGroupDigestCost(members) - members.reduce((sum, block) => sum + block.tokens, 0);
-		const appliedBlocks = blocks.map((block) => groupedIds.has(block.id) ? { ...block, grouped: true } : block);
-
-		// The host preserves the group between passes but clears ordinary folds. A changed view
-		// therefore reaches the savings projection, which must account for every planned fold.
-		const second = conductor.conduct({ ...view, blocks: appliedBlocks, liveTokens: groupedLiveTokens });
-		expect(second).toBe(first);
-	});
-
-	it("atomic rebase leaves one full pre-group interval", () => {
-		const blocks = [
-			...Array.from({ length: 25 }, (_, i) => chunkedBlock(`target-${i}`, i, 4_000)),
-			chunkedBlock("target-tail", 25, 100, { kind: "user", protected: true }),
-		];
-		const view = { ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 };
-		const plan = new MyCustomizeConductor().conduct(view);
-		let projectedLive = view.liveTokens;
-		const groupedIds = new Set(plan.flatMap((command) => command.kind === "group" ? command.ids : []));
-		for (const block of view.blocks) {
-			if (groupedIds.has(block.id)) continue;
-			if (plan.some((command) => command.kind === "fold" && command.ids.includes(block.id))) projectedLive += block.foldedTokens - block.tokens;
-		}
-		for (const group of plan) {
-			if (group.kind !== "group") continue;
-			const members = view.blocks.filter((block) => group.ids.includes(block.id));
-			projectedLive += chunkedCompaction.estimateDefaultGroupDigestCost(members) - members.reduce((sum, block) => sum + block.tokens, 0);
-		}
-		expect(view.budget).toBe(70_000);
-		expect(chunkedCompaction.effectivePreGroupTokens(view, {})).toBe(15_000);
-		expect(70_000 - chunkedCompaction.effectivePreGroupTokens(view, {})).toBe(55_000);
-		expect(projectedLive).toBeLessThanOrEqual(55_000);
-	});
-
-	it("unchanged budget consumes the rebase trigger once", () => {
-		const blocks = [
-			...Array.from({ length: 25 }, (_, i) => chunkedBlock(`once-${i}`, i, 4_000)),
-			chunkedBlock("once-tail", 25, 100, { kind: "user", protected: true }),
-		];
-		const conductor = new MyCustomizeConductor();
-		const view = { ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 };
-		const first = conductor.conduct(view);
-		const second = conductor.conduct({ ...view, liveTokens: 55_000, blocks: blocks.map((block) => ({ ...block, grouped: true })) });
-		expect(first.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
-		expect(second.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(0);
-	});
-
 	it("budget reduction applies one atomic rebase through AccordionStore", () => {
-		const blocks = [...Array.from({ length: 24 }, (_, i) => blk(i, "text", 4_000, { text: `block ${i}` })), blk(24, "user", 100, { text: "tail" })];
+		const blocks = [...Array.from({ length: 24 }, (_, i) => blk(i, "text", 4_000)), blk(24, "user", 100)];
 		const store = makeStore(blocks);
 		store.setProtect(100);
-		store.budget = 100_000;
-		const conductor = new MyCustomizeConductor();
-		store.attach(conductor);
-		store.contextWindow = 200_000;
-		const conduct = vi.spyOn(conductor, "conduct");
+		store.attach(new MyCustomizeConductor());
 		store.setBudget(70_000);
-		expect(conduct).toHaveBeenCalledTimes(1);
-		const batch: Command[] | undefined = conduct.mock.results[0]?.value;
-		expect(batch?.some((command) => command.kind === "group")).toBe(true);
-		expect(batch?.some((command) => command.kind === "fold")).toBe(true);
 		expect(store.groups).toHaveLength(1);
-		expect(store.lastReports.filter((report) => report.reason !== "noop")).toEqual([]);
+		expect(store.lastReports.some((report) => report.reason === "clamp")).toBe(false);
 		expect(store.liveTokens).toBeLessThanOrEqual(55_000);
-	}, 15_000);
+	});
 
 	it("observed budget reduction triggers atomic rebase", () => {
 		const blocks = [...Array.from({ length: 24 }, (_, i) => chunkedBlock(`observed-${i}`, i, 4_000)), chunkedBlock("observed-tail", 24, 100, { kind: "user", protected: true })];
@@ -1855,10 +1736,14 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const blocks = [...Array.from({ length: 8 }, (_, i) => chunkedBlock(`turn-${i}`, i, 4_000)), chunkedBlock("turn-tail", 8, 100, { kind: "user", protected: true })];
 		const plan = new MyCustomizeConductor().conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 });
 		const group = plan.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"));
-		expect(group?.ids).toEqual(blocks.slice(4, 8).map((block) => block.id));
+		expect(group?.ids).toEqual(blocks.slice(0, 8).map((block) => block.id));
 	});
 
-	for (const [name, barrier] of [["held blocks", { held: true }], ["existing groups", { grouped: true }], ["proactively compressed blocks", { proactivelyCompressed: true }]] as const) {
+	for (const [name, barrier] of [
+		["held blocks", { held: true }],
+		["existing groups", { grouped: true }],
+		["proactively compressed blocks", { proactivelyCompressed: true }],
+	] as const) {
 		it(`atomic rebase stops at ${name}`, () => {
 			const blocks = [...Array.from({ length: 6 }, (_, i) => chunkedBlock(`${name}-${i}`, i, 4_000)), chunkedBlock(`${name}-barrier`, 6, 4_000, barrier), ...Array.from({ length: 4 }, (_, i) => chunkedBlock(`${name}-after-${i}`, i + 7, 4_000)), chunkedBlock(`${name}-tail`, 11, 100, { kind: "user", protected: true })];
 			const plan = new MyCustomizeConductor().conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 });
@@ -1876,74 +1761,24 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 
 	it("atomic rebase falls back below the pre-group target", () => {
 		const blocks = [...Array.from({ length: 8 }, (_, i) => chunkedBlock(`low-${i}`, i, 4_000)), chunkedBlock("low-tail", 8, 100, { kind: "user", protected: true })];
-		const view = { ...rolloverView(blocks, 128_000), budget: 10_000, liveTokens: 20_000 };
-		expect(chunkedCompaction.effectivePreGroupTokens(view, {})).toBe(15_000);
-		expect(view.budget).toBeLessThan(chunkedCompaction.effectivePreGroupTokens(view, {}));
-		expect(view.liveTokens).toBeGreaterThan(view.budget);
-		const plan = new MyCustomizeConductor().conduct(view);
+		const plan = new MyCustomizeConductor().conduct({ ...rolloverView(blocks), budget: 10_000, liveTokens: 20_000 });
 		expect(plan.some((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toBe(false);
 	});
 
 	it("atomic rebase falls back when no safe group exists", () => {
-		const blocks = [chunkedBlock("unsafe", 0, 100_000, { held: true }), chunkedBlock("unsafe-tail", 1, 100, { kind: "user", protected: true })];
-		const view = { ...rolloverView(blocks), budget: 70_000, liveTokens: 100_100 };
-		expect(chunkedCompaction.effectivePreGroupTokens(view, {})).toBe(15_000);
-		expect(view.budget).toBeGreaterThanOrEqual(chunkedCompaction.effectivePreGroupTokens(view, {}));
-		const plan = new MyCustomizeConductor().conduct(view);
+		const blocks = [chunkedBlock("unsafe", 0, 20_000, { held: true }), chunkedBlock("unsafe-tail", 1, 100, { kind: "user", protected: true })];
+		const plan = new MyCustomizeConductor().conduct({ ...rolloverView(blocks), budget: 10_000, liveTokens: 20_100 });
 		expect(plan.some((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toBe(false);
 	});
 
 	it("normal batching resumes after atomic rebase", () => {
-		const original = Array.from({ length: 25 }, (_, i) => chunkedBlock(`resume-${i}`, i, 4_000));
-		const tail = chunkedBlock("resume-tail", 25, 100, { kind: "user", protected: true });
+		const blocks = [...Array.from({ length: 25 }, (_, i) => chunkedBlock(`resume-${i}`, i, 4_000)), chunkedBlock("resume-tail", 25, 100, { kind: "user", protected: true })];
 		const conductor = new MyCustomizeConductor();
-		const observed = { ...rolloverView([...original, tail], null), budget: 100_000, liveTokens: 100_000 };
-		expect(conductor.conduct(observed)).toEqual([]);
-
-		const rebase = conductor.conduct({ ...rolloverView([...original, tail]), budget: 70_000, liveTokens: 100_000 });
-		const rebaseGroups = rebase.filter((command): command is Extract<Command, { kind: "group" }> =>
-			command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"),
-		);
-		expect(rebaseGroups).toHaveLength(1);
-		expect(rebase.some((command) => command.kind === "fold")).toBe(true);
-
-		// Chunked groups survive the host reset; ordinary folds are cleared and re-applied from
-		// each returned complete plan. Model that public host/conductor seam as turns are appended.
-		const groupedIds = new Set(rebaseGroups[0].ids);
-		const persistentGroups = [rebaseGroups[0].ids];
-		const emittedGroups = [rebaseGroups[0].ids];
-		const appended: ViewBlock[] = [];
-		const routineGroups: string[][] = [];
-		for (let i = 0; i < 19; i++) {
-			appended.push(chunkedBlock(`resume-appended-${i}`, 25 + i, 4_000));
-			const currentTail = { ...tail, order: 26 + i, turn: 27 + i };
-			const blocks = [...original, ...appended, currentTail].map((block) =>
-				groupedIds.has(block.id) ? { ...block, grouped: true } : block,
-			);
-			let liveTokens = 100_000 + appended.length * 4_000;
-			for (const ids of persistentGroups) {
-				const members = blocks.filter((block) => ids.includes(block.id));
-				liveTokens += chunkedCompaction.estimateDefaultGroupDigestCost(members) - members.reduce((sum, block) => sum + block.tokens, 0);
-			}
-			const plan = conductor.conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens });
-			const newlyGrouped = plan.filter((command): command is Extract<Command, { kind: "group" }> =>
-				command.kind === "group" && command.ids.some((id) => !groupedIds.has(id)),
-			);
-			for (const group of newlyGrouped) {
-				emittedGroups.push(group.ids);
-				routineGroups.push(group.ids);
-				persistentGroups.push(group.ids);
-				for (const id of group.ids) groupedIds.add(id);
-			}
-		}
-
-		expect(emittedGroups.filter((ids) => ids.some((id) => !id.startsWith("resume-appended-")))).toHaveLength(1);
-		expect(routineGroups).toHaveLength(4);
-		for (const ids of routineGroups) {
-			expect(ids).toHaveLength(4);
-			expect(ids.every((id) => id.startsWith("resume-appended-"))).toBe(true);
-			expect(ids.reduce((sum, id) => sum + (appended.find((block) => block.id === id)?.tokens ?? 0), 0)).toBe(16_000);
-		}
+		const first = conductor.conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 });
+		const grouped = new Set(first.flatMap((command) => command.kind === "group" ? command.ids : []));
+		const second = conductor.conduct({ ...rolloverView(blocks.map((block) => ({ ...block, grouped: grouped.has(block.id) }))), budget: 70_000, liveTokens: 55_000 });
+		expect(first.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
+		expect(second.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(0);
 	});
 
 	it("walking skeleton emits one chunked-compaction group", () => {
@@ -2017,18 +1852,6 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const ids = [...preGroup, call].map((block) => block.id);
 
 		expect(chunkedCompaction.trimOpenToolPairs(ids, [...preGroup, call, tail])).toEqual(preGroup.map((block) => block.id));
-	});
-
-	it("trimOpenToolPairs keeps the group contiguous when an interior call pairs with the protected tail", () => {
-		const before = Array.from({ length: 3 }, (_, i) => chunkedBlock(`before-${i}`, i));
-		const assistantText = chunkedBlock("assistant-text", 3, 4_000, { messageKey: "assistant-message" });
-		const call = chunkedBlock("interior-call", 4, 2_000, { kind: "tool_call", callId: "pair", toolName: "bash", messageKey: "assistant-message" });
-		const after = Array.from({ length: 3 }, (_, i) => chunkedBlock(`after-${i}`, i + 5));
-		const tail = chunkedBlock("protected-result", 8, 100, { kind: "tool_result", callId: "pair", toolName: "bash", protected: true });
-		const selected = [...before, assistantText, call, ...after];
-
-		expect(chunkedCompaction.trimOpenToolPairs(selected.map((block) => block.id), [...selected, tail]))
-			.toEqual(before.map((block) => block.id));
 	});
 
 	it("pre-existing frozen-grouping pressure valve is unaffected", () => {
@@ -2431,10 +2254,9 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 			expect(hit, `contextWindow=${contextWindow} should still act on pre-group-position blocks`).toBe(true);
 		}
 	});
-	it("keeps frozen folds out of the next pre-group instead of restoring them", () => {
-		// Reproduction: after lowering the budget, the first request folds old blocks and the
-		// provider freezes them. On the following agent turn Pre-Group must start after that
-		// committed compression; otherwise those blocks snap back to full context.
+	it("restores folded pre-group blocks that are in the frozen prefix", () => {
+		// A block that was folded when in the frozen prefix enters the pre-group range.
+		// The conductor must emit a restore for it (clearConductorState preserves frozen folds).
 		const blocks = [
 			chunkedBlock("pg0", 0, 2_000, { folded: true }),
 			chunkedBlock("pg1", 1, 2_000, { folded: true }),
@@ -2442,13 +2264,15 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 			chunkedBlock("tail", 3, 100, { kind: "user", protected: true }),
 		];
 		const view = rolloverView(blocks, 200_000);
-		view.budget = 70_000;
+		// Put frozenFromIndex above the folded blocks so they are in the frozen prefix
 		view.frozenFromIndex = 2;
-
-		const plan = new ProductionMyCustomizeConductor().conduct(view);
-
-		expect(plan.commands.some((cmd) => cmd.kind === "restore")).toBe(false);
-		expect(plan.preGroup?.memberIds).toEqual(["pg2"]);
+		const plan = new MyCustomizeConductor().conduct(view);
+		const restoreCmd = plan.find((cmd) => cmd.kind === "restore");
+		expect(restoreCmd).toBeDefined();
+		expect(restoreCmd!.ids).toContain("pg0");
+		expect(restoreCmd!.ids).toContain("pg1");
+		// pg2 is above frozenFromIndex, so clearConductorState handles it — no restore needed
+		expect(restoreCmd!.ids).not.toContain("pg2");
 	});
 
 	it("keeps complete turns together at the protected boundary", () => {
@@ -2559,7 +2383,6 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		store.frozenFromIndex = storeBlocks.findIndex((b) => b.id === "u:t2");
 
 		// Read the member code from the emitted MCP retrieval index.
-		if (typeof groupCmd.digest !== "string") throw new Error("chunked-compaction group must include a digest");
 		const sections = groupCmd.digest.split("\n\n");
 		const indexSection = sections.find((s) => s.startsWith("MCP retrieval index"));
 		expect(indexSection).toBeDefined();

@@ -90,7 +90,7 @@ describe("ContextMap authoritative Pre-Group region", () => {
 
 	it("runs authoritative pre-group accumulation through rollover", () => {
 		const blocks = [
-			...Array.from({ length: 20 }, (_, i) => block(`pg:${i + 1}`, i, 6_000)),
+			...Array.from({ length: 20 }, (_, i) => block(`pg${i + 1}`, i, 6_000)),
 			block("tail", 20, 100),
 		];
 		const store = storeWith(blocks, 100);
@@ -100,23 +100,23 @@ describe("ContextMap authoritative Pre-Group region", () => {
 		const initial = [...store.preGroupIds];
 		expect(initial).toEqual(blocks.slice(0, 20).map((item) => item.id));
 		expect(initial).not.toContain("tail");
-		expect(store.fold("pg:1", "you")).toBeUndefined();
+		expect(store.fold("pg1", "you")).toBeUndefined();
 		expect(store.preGroupIds).toEqual(initial);
-		expect(store.get("pg:1")?.override).toBeNull();
+		expect(store.get("pg1")?.override).toBeNull();
 
 		store.appendBlocks([
-			...Array.from({ length: 6 }, (_, i) => block(`pg:${i + 21}`, i + 21, 6_000)),
-			block("tail:2", 27, 100),
+			...Array.from({ length: 6 }, (_, i) => block(`pg${i + 21}`, i + 21, 6_000)),
+			block("tail2", 27, 100),
 		]);
 		store.setProtect(100);
 		const groups = store.groups.flatMap((group) => group.memberIds);
 		expect(groups.length).toBeGreaterThan(0);
-		expect(groups).not.toContain("tail:2");
+		expect(groups).not.toContain("tail2");
 		expect(store.preGroupIds).toEqual([]);
 
-		store.appendBlocks([block("pg:residue", 28, 6_000), block("tail:3", 29, 100)]);
+		store.appendBlocks([block("residue", 28, 6_000), block("tail3", 29, 100)]);
 		store.setProtect(100);
-		expect(store.preGroupIds).toContain("pg:residue");
+		expect(store.preGroupIds).toContain("residue");
 		expect(store.preGroupIds.every((id) => !groups.includes(id))).toBe(true);
 	});
 });

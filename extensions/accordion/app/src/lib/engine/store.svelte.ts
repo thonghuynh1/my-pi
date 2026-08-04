@@ -1612,6 +1612,7 @@ export class AccordionStore {
 		b.subst = undefined;
 		this.emit(by, "folded", label(b));
 		this.recordDecision(by, "fold", [id], label(b));
+		this.conductor?.markDirty?.();
 		this.refold();
 		if (by === "you") this.onHumanOverride?.([id], "folded");
 	}
@@ -1631,6 +1632,7 @@ export class AccordionStore {
 		b.subst = undefined; // human override clears conductor-owned content
 		this.emit(by, "unfolded", label(b));
 		this.recordDecision(by, "unfold", [id], label(b));
+		this.conductor?.markDirty?.();
 		this.refold();
 		if (by === "you") this.onHumanOverride?.([id], "unfolded");
 	}
@@ -1653,6 +1655,7 @@ export class AccordionStore {
 		b.subst = undefined; // human override clears conductor-owned content
 		this.emit("you", "pinned", label(b));
 		this.recordDecision("you", "pin", [id], label(b));
+		this.conductor?.markDirty?.();
 		this.refold();
 		this.onHumanOverride?.([id], "pinned");
 	}
@@ -1665,6 +1668,7 @@ export class AccordionStore {
 		b.by = "you";
 		this.emit("you", "unpinned", label(b));
 		this.recordDecision("you", "unpin", [id], label(b));
+		this.conductor?.markDirty?.();
 		this.refold();
 		this.onHumanOverride?.([id], "unpinned");
 	}

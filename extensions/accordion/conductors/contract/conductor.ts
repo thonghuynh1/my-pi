@@ -596,5 +596,8 @@ export interface Conductor {
 	 * call `host.requestRerun()` after the conductor is gone.
 	 */
 	detach?(): void;
+	/** Optional signal from the store that something the conductor tracks has changed
+	 *  (e.g. a block became held/unheld). Avoids O(n) scanning inside conduct(). */
+	markDirty?(): void;
 	conduct(view: ConductorView): ConductorResult;
 }

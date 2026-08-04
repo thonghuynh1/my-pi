@@ -867,17 +867,43 @@ export class AccordionStore {
 		// owns the whole context). blocks.length ⇒ isProtected is false everywhere.
 		if (target === 0) return this.blocks.length;
 		const cap = target * PROTECT_OVERFLOW_CAP;
+		// Pair-snap: extend the tokens-based boundary backward while a tool_call/tool_result
+		// pair would straddle it. The file header commits that a pair is "never structurally
+		// broken"; that promise applies at boundary construction, not only at fold time. The
+		// PROTECT_OVERFLOW_CAP is an advisory for adding older content by tokens — pair
+		// integrity outranks it, matching the same precedence at fold time.
+		const snapPair = (i: number): number => {
+			if (i <= 0) return i;
+			const tailCallIds = new Set<string>();
+			for (let j = i; j < this.blocks.length; j++) {
+				const cid = this.blocks[j].callId;
+				if (cid) tailCallIds.add(cid);
+			}
+			// Walk backward from i-1. Any block whose callId is already in the tail is a
+			// partner of something inside — include it (and everything newer than it) in the
+			// tail, updating tailCallIds so subsequent partners further back are also caught.
+			for (let j = i - 1; j >= 0; j--) {
+				const cid = this.blocks[j].callId;
+				if (!cid || !tailCallIds.has(cid)) continue;
+				for (let k = j; k < i; k++) {
+					const c2 = this.blocks[k].callId;
+					if (c2) tailCallIds.add(c2);
+				}
+				i = j;
+			}
+			return i;
+		};
 		// Always absorb the newest block unconditionally — it is indivisible and the
 		// protected tail must never be empty while target > 0.
 		let sum = this.blocks[this.blocks.length - 1].tokens;
-		if (sum >= target) return this.blocks.length - 1;
+		if (sum >= target) return snapPair(this.blocks.length - 1);
 		for (let i = this.blocks.length - 2; i >= 0; i--) {
 			const next = sum + this.blocks[i].tokens;
 			// Stop before adding an older block that would push the protected tail beyond
 			// the overflow cap.
-			if (next > cap) return i + 1;
+			if (next > cap) return snapPair(i + 1);
 			sum = next;
-			if (sum >= target) return i;
+			if (sum >= target) return snapPair(i);
 		}
 		return 0;
 	});

@@ -1,6 +1,46 @@
 import { describe, it, expect } from "vitest";
 import { AccordionStore } from "./store.svelte";
+import { noOpenToolPairAcrossPreGroupTail, computePreGroupFromIndex } from "$conductors/my-customize-conductor/chunked-compaction";
 import type { Block, ParsedSession } from "./types";
+
+// Regression fixture for the parallel-tool-calls transcript shape produced by
+// gpt-5.6 in the benchmark: ONE assistant message with N tool_calls, followed
+// by N tool_result messages. The newest tool_result is huge (~15k), all its
+// siblings are also large. Pair-snap must pull ALL K tool_calls AND all K
+// tool_results into the protected tail together, so that the pre-group /
+// protected-tail boundary lands ABOVE the assistant thinking that opened the
+// batch, not mid-batch. Otherwise noOpenToolPairAcrossPreGroupTail keeps
+// returning false and the conductor refuses to roll over forever.
+function parallelBatch(
+	start: number,
+	K: number,
+	callIdOffset = 0,
+	resultTokens = 15_000,
+): { blocks: Block[]; next: number } {
+	const blocks: Block[] = [];
+	let idx = start;
+	// One assistant message: [thinking, tool_call_0, tool_call_1, ..., tool_call_{K-1}]
+	blocks.push({ ...blk(idx, "thinking", 200), id: `a:t${start}:p0` });
+	idx++;
+	for (let k = 0; k < K; k++) {
+		const cid = `c${callIdOffset + k}`;
+		blocks.push({
+			...blk(idx, "tool_call", 200, { callId: cid, toolName: "read" }),
+			id: `a:t${start}:p${k + 1}`,
+		});
+		idx++;
+	}
+	// K tool_result messages, biggest last so the tokens-walk starts at the newest.
+	for (let k = 0; k < K; k++) {
+		const cid = `c${callIdOffset + k}`;
+		blocks.push({
+			...blk(idx, "tool_result", resultTokens, { callId: cid, toolName: "read" }),
+			id: `r:${cid}`,
+		});
+		idx++;
+	}
+	return { blocks, next: idx };
+}
 
 /*
  * The store header commits: "a folded block still exists and still carries its callId,
@@ -104,5 +144,51 @@ describe("protectedFromIndex snaps to keep tool_call/tool_result pairs whole", (
 		s.setProtect(3_000);
 
 		expect(s.protectedFromIndex).toBe(0);
+	});
+});
+
+describe("parallel tool_calls: benchmark-shaped transcript", () => {
+	it("pulls the whole assistant(K tool_calls) + K tool_results batch into the tail so no pair straddles", () => {
+		// pi transcript from the benchmark: 8 old text blocks, then one assistant message
+		// with 8 parallel tool_calls, then 8 tool_result messages. Newest tool_result is huge.
+		const older = Array.from({ length: 8 }, (_, i) => blk(i, "text", 3_000));
+		const { blocks: batch } = parallelBatch(8, 8, 0, 15_000);
+		const s = makeStore([...older, ...batch]);
+		// Realistic tail target — one whole file result is already above it.
+		s.setProtect(3_000);
+
+		const pf = s.protectedFromIndex;
+		// Batch is 1 (thinking) + 8 (tool_calls) + 8 (tool_results) = 17 blocks at indices 8..24.
+		// After pair-snap the boundary must be at index 9 (first tool_call) or lower — never
+		// splitting a call/result pair. Any of {9, 8} is acceptable; anything > 9 is a bug.
+		expect(pf).toBeLessThanOrEqual(9);
+
+		// The invariant the conductor actually reads: pair check on the boundary.
+		const view = {
+			blocks: s.blocks.map((b) => ({
+				id: b.id,
+				kind: b.kind,
+				turn: b.turn,
+				order: b.order,
+				tokens: b.tokens,
+				text: b.text,
+				callId: b.callId,
+				toolName: b.toolName,
+				held: false,
+				folded: false,
+				grouped: false,
+				proactivelyCompressed: false,
+				messageKey: b.id,
+			})),
+			protectedFromIndex: pf,
+			frozenFromIndex: 0,
+			liveTokens: 999_999,
+			protectTokens: 3_000,
+		} as unknown as Parameters<typeof noOpenToolPairAcrossPreGroupTail>[0];
+
+		// Pre-group starts at the newest block just before the tail. If snap did its job the
+		// tail contains BOTH members of every callId in the batch, so pair check must pass.
+		const preGroupFromIndex = computePreGroupFromIndex(view, 50_000, (b) => (b as { held?: boolean; folded?: boolean; proactivelyCompressed?: boolean }).held || (b as { folded?: boolean }).folded || (b as { proactivelyCompressed?: boolean }).proactivelyCompressed || false);
+		expect(noOpenToolPairAcrossPreGroupTail(view, preGroupFromIndex)).toBe(true);
 	});
 });

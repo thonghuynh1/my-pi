@@ -106,7 +106,11 @@ export function trimOpenToolPairs(ids: string[], allBlocks: readonly ViewBlock[]
 		const remove = new Set<string>();
 		for (const block of allBlocks) {
 			if (!block.callId || !selected.has(block.id)) continue;
-			const hasOutsidePartner = allBlocks.some((partner) => partner.callId === block.callId && !selected.has(partner.id));
+			// A partner that is already grouped (committed in a preserved host group) is
+			// permanently separated — don't penalize this block for a split that already happened.
+			const hasOutsidePartner = allBlocks.some(
+				(partner) => partner.callId === block.callId && !selected.has(partner.id) && !partner.grouped,
+			);
 			if (hasOutsidePartner) remove.add(block.id);
 		}
 		if (remove.size === 0) break;
@@ -299,11 +303,14 @@ export function selectCompactionRange(view: ConductorView, fromIndex: number): S
 	}
 	if (safeFromIndex >= end) return null;
 
-	// Hard barrier scan: the first held/grouped/proactivelyCompressed block caps the range.
+	// Hard barrier scan: the first held/proactivelyCompressed block caps the range.
+	// Grouped blocks are NOT hard barriers — they are handled as segment boundaries
+	// by the caller's isRolloverGroupBoundary, allowing the range to span across
+	// preserved groups and reach ungrouped content between them.
 	let harderEnd = end;
 	for (let i = safeFromIndex; i < end; i++) {
 		const b = blocks[i];
-		if (b.held || b.grouped || b.proactivelyCompressed) {
+		if (b.held || b.proactivelyCompressed) {
 			harderEnd = i;
 			break;
 		}

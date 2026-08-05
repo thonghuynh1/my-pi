@@ -1,4 +1,6 @@
 export const DEFAULT_PRE_GROUP_TOKENS = 15_000;
+/** Maximum dynamically-derived pre-group target; explicit base targets are preserved. */
+export const MAX_DYNAMIC_PRE_GROUP_TOKENS = 30_000;
 export const MIN_CONTEXT_WINDOW_FOR_CHUNKED_COMPACTION = 128_000;
 export const CHUNKED_COMPACTION_PREFIX = "⟨chunked-compaction ·";
 

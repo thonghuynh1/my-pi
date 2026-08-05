@@ -44,6 +44,7 @@ import { AccordionStore } from "./store.svelte";
 import type { Block, ParsedSession } from "./types";
 import { resolveRecall } from "../live/plan";
 import type {
+	Command,
 	ConductorHost,
 	ConductorView,
 	ViewBlock,
@@ -1635,17 +1636,59 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		expect(Object.keys(nonRolloverMetrics ?? {}).sort()).toEqual([
 			"breakFrozenCount",
 			"lastEstimatedGroupSaving",
+			"newPreGroupTokens",
 			"preGroupFillPct",
+			"preGroupPhase",
+			"preGroupTargetTokens",
 			"preGroupTokens",
+			"rolloverBlockedReason",
 			"rolloverCount",
 			"tokensSavedByRollover",
 		]);
 		expect(typeof nonRolloverMetrics?.preGroupTokens).toBe("number");
 		expect(typeof nonRolloverMetrics?.preGroupFillPct).toBe("number");
+		expect(typeof nonRolloverMetrics?.newPreGroupTokens).toBe("number");
+		expect(typeof nonRolloverMetrics?.rolloverBlockedReason).toBe("string");
 		expect(rolloverMetrics?.preGroupTokens).toBeTypeOf("number");
+		expect(rolloverMetrics?.newPreGroupTokens).toBeTypeOf("number");
+		expect(rolloverMetrics?.rolloverBlockedReason).toBe("none");
 		expect(rolloverMetrics?.rolloverCount).toBe(1);
 		expect(rolloverMetrics?.breakFrozenCount).toBe(1);
 		expect(rolloverCall?.[2]).toBeNull();
+	});
+
+	it("reports why a full pre-group is waiting at an open tool-pair boundary", () => {
+		const host = new MockHost();
+		const conductor = new MyCustomizeConductor();
+		conductor.attach(host);
+		const call = { ...vb("call", { tokens: 500, kind: "tool_call" }), callId: "c1" };
+		const result = { ...vb("result", { tokens: 100, kind: "tool_result" }), callId: "c1" };
+		conductor.conduct(makeView([
+			vb("old:0", { tokens: 10_000 }),
+			vb("old:1", { tokens: 10_000 }),
+			call,
+		], [result], 100_000, 110_000));
+
+		expect(host.statusMetrics.newPreGroupTokens).toBeGreaterThanOrEqual(15_000);
+		expect(host.statusMetrics.rolloverBlockedReason).toBe("open-tool-pair");
+	});
+
+	it("bounds a large dynamic pre-group target", () => {
+		const host = new MockHost();
+		const conductor = new MyCustomizeConductor();
+		conductor.attach(host);
+		const view = rolloverView([
+			...Array.from({ length: 10 }, (_, i) => chunkedBlock(`bounded:${i}`, i, 2_000)),
+			chunkedBlock("bounded:tail", 10, 100, { kind: "user", protected: true }),
+		]);
+		// The normal cap is 100k; a 250k live estimate would previously create a 150k target.
+		view.liveTokens = 250_000;
+
+		conductor.conduct(view);
+
+		expect(host.statusMetrics.preGroupTargetTokens).toBe(30_000);
+		expect(host.statusMetrics.preGroupPhase).toBe("accumulating");
+		expect(host.statusMetrics.rolloverBlockedReason).toBe("below-target");
 	});
 
 	it("rollover-pass setStatus text uses the rollover template", () => {
@@ -1710,7 +1753,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		store.attach(new MyCustomizeConductor());
 		store.setBudget(70_000);
 		expect(store.groups).toHaveLength(1);
-		expect(store.lastReports.some((report) => report.reason === "clamp")).toBe(false);
+		expect(store.lastReports.some((report) => report.reason !== "noop")).toBe(false);
 		expect(store.liveTokens).toBeLessThanOrEqual(55_000);
 	});
 
@@ -1719,7 +1762,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const conductor = new MyCustomizeConductor();
 		conductor.conduct({ ...rolloverView(blocks), budget: 100_000, liveTokens: 50_000 });
 		const plan = conductor.conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 });
-		expect(plan.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
+		expect(plan.commands.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
 	});
 
 	it("later budget reduction can trigger a new rebase", () => {
@@ -1728,14 +1771,14 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const secondBlocks = [...Array.from({ length: 24 }, (_, i) => chunkedBlock(`later-b-${i}`, i, 4_000)), chunkedBlock("later-tail-b", 24, 100, { kind: "user", protected: true })];
 		const first = conductor.conduct({ ...rolloverView(firstBlocks), budget: 70_000, liveTokens: 100_000 });
 		const second = conductor.conduct({ ...rolloverView(secondBlocks), budget: 60_000, liveTokens: 100_000 });
-		expect(first.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
-		expect(second.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
+		expect(first.commands.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
+		expect(second.commands.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
 	});
 
 	it("atomic rebase keeps complete turns in canonical order", () => {
 		const blocks = [...Array.from({ length: 8 }, (_, i) => chunkedBlock(`turn-${i}`, i, 4_000)), chunkedBlock("turn-tail", 8, 100, { kind: "user", protected: true })];
 		const plan = new MyCustomizeConductor().conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 });
-		const group = plan.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"));
+		const group = plan.commands.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"));
 		expect(group?.ids).toEqual(blocks.slice(0, 8).map((block) => block.id));
 	});
 
@@ -1747,7 +1790,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		it(`atomic rebase stops at ${name}`, () => {
 			const blocks = [...Array.from({ length: 6 }, (_, i) => chunkedBlock(`${name}-${i}`, i, 4_000)), chunkedBlock(`${name}-barrier`, 6, 4_000, barrier), ...Array.from({ length: 4 }, (_, i) => chunkedBlock(`${name}-after-${i}`, i + 7, 4_000)), chunkedBlock(`${name}-tail`, 11, 100, { kind: "user", protected: true })];
 			const plan = new MyCustomizeConductor().conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 });
-			const group = plan.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"));
+			const group = plan.commands.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"));
 			expect(group?.ids).toEqual(blocks.slice(0, 6).map((block) => block.id));
 		});
 	}
@@ -1755,66 +1798,66 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 	it("atomic rebase leaves the protected tail raw", () => {
 		const blocks = [...Array.from({ length: 8 }, (_, i) => chunkedBlock(`protected-${i}`, i, 4_000)), chunkedBlock("protected-tail", 8, 100, { kind: "user", protected: true })];
 		const plan = new MyCustomizeConductor().conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 });
-		const acted = plan.flatMap((command) => command.kind === "group" || command.kind === "fold" ? command.ids : command.kind === "replace" ? [command.id] : []);
+		const acted = plan.commands.flatMap((command) => command.kind === "group" || command.kind === "fold" ? command.ids : command.kind === "replace" ? [command.id] : []);
 		expect(acted).not.toContain("protected-tail");
 	});
 
 	it("atomic rebase falls back below the pre-group target", () => {
 		const blocks = [...Array.from({ length: 8 }, (_, i) => chunkedBlock(`low-${i}`, i, 4_000)), chunkedBlock("low-tail", 8, 100, { kind: "user", protected: true })];
 		const plan = new MyCustomizeConductor().conduct({ ...rolloverView(blocks), budget: 10_000, liveTokens: 20_000 });
-		expect(plan.some((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toBe(false);
+		expect(plan.commands.some((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toBe(false);
 	});
 
 	it("atomic rebase falls back when no safe group exists", () => {
 		const blocks = [chunkedBlock("unsafe", 0, 20_000, { held: true }), chunkedBlock("unsafe-tail", 1, 100, { kind: "user", protected: true })];
 		const plan = new MyCustomizeConductor().conduct({ ...rolloverView(blocks), budget: 10_000, liveTokens: 20_100 });
-		expect(plan.some((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toBe(false);
+		expect(plan.commands.some((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toBe(false);
 	});
 
 	it("normal batching resumes after atomic rebase", () => {
 		const blocks = [...Array.from({ length: 25 }, (_, i) => chunkedBlock(`resume-${i}`, i, 4_000)), chunkedBlock("resume-tail", 25, 100, { kind: "user", protected: true })];
 		const conductor = new MyCustomizeConductor();
 		const first = conductor.conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 });
-		const grouped = new Set(first.flatMap((command) => command.kind === "group" ? command.ids : []));
+		const grouped = new Set(first.commands.flatMap((command) => command.kind === "group" ? command.ids : []));
 		const second = conductor.conduct({ ...rolloverView(blocks.map((block) => ({ ...block, grouped: grouped.has(block.id) }))), budget: 70_000, liveTokens: 55_000 });
-		expect(first.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
-		expect(second.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(0);
+		expect(first.commands.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);
+		expect(second.commands.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(0);
 	});
 
 	it("walking skeleton emits one chunked-compaction group", () => {
 		const plan = new MyCustomizeConductor().conduct(rolloverView(rolloverBlocks()));
-		expect(plan).toHaveLength(1);
-		expect(plan[0].kind).toBe("group");
-		if (plan[0].kind !== "group") return;
-		expect(plan[0].ids).toHaveLength(8);
-		expect(plan[0].digest).toMatch(/^⟨chunked-compaction ·/);
-		expect(plan[0].digest).toMatch(/Members: \{#[a-z0-9]+\}/);
+		expect(plan.commands).toHaveLength(1);
+		expect(plan.commands[0].kind).toBe("group");
+		if (plan.commands[0].kind !== "group") return;
+		expect(plan.commands[0].ids).toHaveLength(8);
+		expect(plan.commands[0].digest).toMatch(/^⟨chunked-compaction ·/);
+		expect(plan.commands[0].digest).toMatch(/Members: \{#[a-z0-9]+\}/);
 	});
 
 	it("chunked-compaction digest is byte-identical on replay", () => {
 		const view = rolloverView(rolloverBlocks());
 		const first = new MyCustomizeConductor().conduct(view);
 		const second = new MyCustomizeConductor().conduct(view);
-		expect(first[0].kind).toBe("group");
-		expect(second[0].kind).toBe("group");
-		if (first[0].kind !== "group" || second[0].kind !== "group") return;
-		expect(first[0].digest).toBe(second[0].digest);
+		expect(first.commands[0].kind).toBe("group");
+		expect(second.commands[0].kind).toBe("group");
+		if (first.commands[0].kind !== "group" || second.commands[0].kind !== "group") return;
+		expect(first.commands[0].digest).toBe(second.commands[0].digest);
 	});
 
 	it("no repeat chunked-compaction emission on next conduct pass", () => {
 		const blocks = rolloverBlocks();
 		const first = new MyCustomizeConductor().conduct(rolloverView(blocks));
-		const grouped = blocks.map((block) => first[0].kind === "group" && first[0].ids.includes(block.id) ? { ...block, grouped: true } : block);
+		const grouped = blocks.map((block) => first.commands[0].kind === "group" && first.commands[0].ids.includes(block.id) ? { ...block, grouped: true } : block);
 		const second = new MyCustomizeConductor().conduct(rolloverView(grouped));
-		expect(second.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(0);
+		expect(second.commands.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(0);
 	});
 
 	it("tail-appended recall blocks are not immediately re-grouped", () => {
 		const blocks = rolloverBlocks();
 		const conductor = new MyCustomizeConductor();
 		const first = conductor.conduct(rolloverView(blocks));
-		expect(first[0].kind).toBe("group");
-		const group = first[0];
+		expect(first.commands[0].kind).toBe("group");
+		const group = first.commands[0];
 		if (group.kind !== "group") return;
 		const tailAppendedIds = ["recall:a:chunked-member:p0:0:call", "recall:a:chunked-member:p0:0:result"];
 		const afterRecall = [
@@ -1823,7 +1866,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 			chunkedBlock(tailAppendedIds[1], 10, 2_000, { kind: "tool_result", toolName: "recall" }),
 		];
 		const nextPlan = conductor.conduct(rolloverView(afterRecall));
-		const overlappingGroups = nextPlan.filter(
+		const overlappingGroups = nextPlan.commands.filter(
 			(command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·") && command.ids.some((id) => tailAppendedIds.includes(id)),
 		);
 		expect(overlappingGroups).toHaveLength(0);
@@ -1832,7 +1875,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 	it("chunked-compaction is inert below the context-window gate", () => {
 		for (const contextWindow of [32_000, 64_000, null]) {
 			const plan = new MyCustomizeConductor().conduct(rolloverView(rolloverBlocks(), contextWindow));
-			expect(plan.some((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toBe(false);
+			expect(plan.commands.some((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toBe(false);
 		}
 	});
 
@@ -1842,7 +1885,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const tail = chunkedBlock("result", 9, 100, { kind: "tool_result", callId: "pair", toolName: "bash", protected: true });
 		const plan = new MyCustomizeConductor().conduct(rolloverView([...preGroup, tail]));
 
-		expect(plan.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(0);
+		expect(plan.commands.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(0);
 	});
 
 	it("trimOpenToolPairs removes the in-group half of straddling pairs", () => {
@@ -1865,7 +1908,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		view.frozenFromIndex = 2;
 		view.budget = 100_000;
 		const plan = new MyCustomizeConductor({ preGroupTokens: 200_000 }).conduct(view);
-		const groups = plan.filter((command): command is Extract<typeof command, { kind: "group" }> => command.kind === "group");
+		const groups = plan.commands.filter((command): command is Extract<typeof command, { kind: "group" }> => command.kind === "group");
 		expect(groups.length).toBeGreaterThan(0);
 		expect(groups.some((group) => !(group.digest ?? "").startsWith("⟨chunked-compaction ·"))).toBe(true);
 	});
@@ -1893,7 +1936,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 				protected: true,
 			}));
 			const plan = new MyCustomizeConductor({ preGroupTokens: 10_000 }).conduct(rolloverView(blocks));
-			for (const command of plan) {
+			for (const command of plan.commands) {
 				if (command.kind !== "group" || !(command.digest ?? "").startsWith("⟨chunked-compaction ·")) continue;
 				emitted += 1;
 				const ids = new Set(command.ids);
@@ -1915,15 +1958,15 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		store.frozenFromIndex = 8;
 		const viewBlocks = blocks.map((block, order) => chunkedBlock(block.id, order, block.tokens, { kind: block.kind, text: block.text, protected: order === 10 }));
 		const plan = new MyCustomizeConductor().conduct(rolloverView(viewBlocks));
-		expect(plan).toHaveLength(1);
-		const reports = store.applyCommands(plan, "conductor");
+		expect(plan.commands).toHaveLength(1);
+		const reports = store.applyCommands(plan.commands, "conductor");
 		expect(reports.some((report) => report.reason === "frozen")).toBe(false);
 		expect(store.groups).toHaveLength(1);
-		if (plan[0].kind === "group") expect(store.groups[0].memberIds).toHaveLength(plan[0].ids.length);
+		if (plan.commands[0].kind === "group") expect(store.groups[0].memberIds).toHaveLength(plan.commands[0].ids.length);
 	});
 
-	it("corpus content hash uses the SHA-256 digest shape", () => {
-		expect(corpusContentHash([])).toBe("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+	it("corpus content hash produces a stable fingerprint", () => {
+		expect(corpusContentHash([])).toBe("fnv:811c9dc5");
 	});
 
 	it("pre-group blocks are excluded from fold candidates under budget pressure", () => {
@@ -1939,7 +1982,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		view.liveTokens = 110_000;
 		const plan = new MyCustomizeConductor().conduct(view);
 		const preGroupIds = new Set(["pg0", "pg1", "pg2", "pg3", "pg4"]);
-		for (const cmd of plan) {
+		for (const cmd of plan.commands) {
 			if (cmd.kind === "fold") {
 				for (const id of cmd.ids) expect(preGroupIds.has(id), `fold must not target pre-group block ${id}`).toBe(false);
 			} else if (cmd.kind === "replace") {
@@ -1960,7 +2003,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const view = rolloverView(blocks);
 		view.liveTokens = 110_000;
 		const plan = new MyCustomizeConductor().conduct(view);
-		const actedOnIds = plan.flatMap((cmd) =>
+		const actedOnIds = plan.commands.flatMap((cmd) =>
 			cmd.kind === "fold" ? cmd.ids : cmd.kind === "replace" ? [cmd.id] : [],
 		);
 
@@ -1979,7 +2022,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const view = rolloverView(blocks);
 		view.liveTokens = 110_000;
 		const plan = new MyCustomizeConductor().conduct(view);
-		const actedOnIds = plan.flatMap((cmd) =>
+		const actedOnIds = plan.commands.flatMap((cmd) =>
 			cmd.kind === "fold" ? cmd.ids : cmd.kind === "replace" ? [cmd.id] : [],
 		);
 
@@ -1999,7 +2042,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		view.liveTokens = 110_000;
 
 		const plan = new MyCustomizeConductor().conduct(view);
-		const actedOnIds = plan.flatMap((cmd) =>
+		const actedOnIds = plan.commands.flatMap((cmd) =>
 			cmd.kind === "fold" ? cmd.ids : cmd.kind === "replace" ? [cmd.id] : [],
 		);
 
@@ -2021,7 +2064,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		view.liveTokens = 110_000;
 
 		const plan = new MyCustomizeConductor().conduct(view);
-		const actedOnIds = plan.flatMap((cmd) =>
+		const actedOnIds = plan.commands.flatMap((cmd) =>
 			cmd.kind === "fold" ? cmd.ids : cmd.kind === "replace" ? [cmd.id] : [],
 		);
 
@@ -2040,7 +2083,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const view = rolloverView(blocks);
 		view.liveTokens = 110_000;
 		const plan = new MyCustomizeConductor().conduct(view);
-		const actedOnIds = plan.flatMap((cmd) =>
+		const actedOnIds = plan.commands.flatMap((cmd) =>
 			cmd.kind === "fold" ? cmd.ids : cmd.kind === "replace" ? [cmd.id] : [],
 		);
 
@@ -2059,9 +2102,9 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const view = rolloverView(blocks, 200_000);
 		view.liveTokens = 110_000;
 		const plan = new MyCustomizeConductor().conduct(view);
-		const foldOrReplace = plan.filter((cmd) => cmd.kind === "fold" || cmd.kind === "replace");
+		const foldOrReplace = plan.commands.filter((cmd) => cmd.kind === "fold" || cmd.kind === "replace");
 		expect(foldOrReplace).toHaveLength(0);
-		expect(plan[0].kind).toBe("group");
+		expect(plan.commands[0].kind).toBe("group");
 	});
 
 	it("keeps a suffix group when a later pre-group pass is under budget", () => {
@@ -2076,12 +2119,12 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		];
 		const conductor = new MyCustomizeConductor({ preGroupTokens: 1 });
 		const first = conductor.conduct({ ...rolloverView(blocks), liveTokens: 110_000 });
-		const firstGroups = first.filter((command): command is Extract<typeof command, { kind: "group" }> => command.kind === "group");
+		const firstGroups = first.commands.filter((command): command is Extract<typeof command, { kind: "group" }> => command.kind === "group");
 		expect(firstGroups).toHaveLength(1);
 		expect(firstGroups[0].digest).toBeUndefined(); // normal suffix group, not chunked rollover
 
 		const second = conductor.conduct({ ...rolloverView(blocks), liveTokens: 90_000 });
-		const secondGroups = second.filter((command) => command.kind === "group");
+		const secondGroups = second.commands.filter((command) => command.kind === "group");
 		expect(secondGroups).toHaveLength(1);
 		expect(secondGroups[0]).toEqual(firstGroups[0]);
 	});
@@ -2096,11 +2139,11 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		];
 		const conductor = new MyCustomizeConductor({ preGroupTokens: 12_000 });
 		const first = conductor.conduct({ ...rolloverView(firstBlocks), liveTokens: 110_000 });
-		expect(first.some((command) => command.kind === "group" && command.ids.includes("old0"))).toBe(true);
+		expect(first.commands.some((command) => command.kind === "group" && command.ids.includes("old0"))).toBe(true);
 
 		const secondBlocks = [...firstBlocks.slice(0, 4), chunkedBlock("pre1", 4, 6_000, { foldedTokens: 6_000, turn: 6 }), firstBlocks[4]];
 		const second = conductor.conduct({ ...rolloverView(secondBlocks), liveTokens: 110_000 });
-		const groups = second.filter((command): command is Extract<typeof command, { kind: "group" }> => command.kind === "group");
+		const groups = second.commands.filter((command): command is Extract<typeof command, { kind: "group" }> => command.kind === "group");
 		expect(groups.some((group) => group.ids.includes("old0"))).toBe(true);
 		expect(groups.some((group) => group.digest?.startsWith("⟨chunked-compaction ·") && group.ids.includes("pre0"))).toBe(true);
 	});
@@ -2115,11 +2158,11 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		];
 		const conductor = new MyCustomizeConductor({ preGroupTokens: 20_000 });
 		const first = conductor.conduct({ ...rolloverView(firstBlocks), liveTokens: 110_000 });
-		expect(first.some((command) => command.kind === "group" && command.ids.includes("old0"))).toBe(true);
+		expect(first.commands.some((command) => command.kind === "group" && command.ids.includes("old0"))).toBe(true);
 
 		const secondBlocks = [...firstBlocks.slice(0, 4), chunkedBlock("pre1", 4, 6_000, { turn: 6 }), firstBlocks[4]];
 		const second = conductor.conduct({ ...rolloverView(secondBlocks), liveTokens: 110_000 });
-		const groups = second.filter((command): command is Extract<typeof command, { kind: "group" }> => command.kind === "group");
+		const groups = second.commands.filter((command): command is Extract<typeof command, { kind: "group" }> => command.kind === "group");
 		expect(groups.some((group) => group.ids.includes("old0"))).toBe(true);
 		expect(groups.some((group) => group.digest?.startsWith("⟨chunked-compaction ·") && group.ids.includes("pre0"))).toBe(true);
 	});
@@ -2136,9 +2179,9 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const view = rolloverView(blocks, 200_000);
 		view.liveTokens = 110_000;
 		const plan = new MyCustomizeConductor().conduct(view);
-		expect(plan[0].kind).toBe("group");
-		if (plan[0].kind !== "group") return;
-		expect(plan[0].digest).toMatch(/^⟨chunked-compaction ·/);
+		expect(plan.commands[0].kind).toBe("group");
+		if (plan.commands[0].kind !== "group") return;
+		expect(plan.commands[0].digest).toMatch(/^⟨chunked-compaction ·/);
 	});
 
 	it("early rollover groups a pre-group zone in the frozen prefix", () => {
@@ -2153,8 +2196,8 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 
 		const plan = new MyCustomizeConductor().conduct(view);
 
-		expect(plan).toHaveLength(1);
-		expect(plan[0]).toMatchObject({ kind: "group", ids: ["pg0", "pg1"] });
+		expect(plan.commands).toHaveLength(1);
+		expect(plan.commands[0]).toMatchObject({ kind: "group", ids: ["pg0", "pg1"] });
 	});
 
 	it("early rollover is skipped when liveTokens does not exceed cap", () => {
@@ -2166,7 +2209,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const view = rolloverView(blocks, 200_000);
 		view.liveTokens = 90_000; // below cap (100_000) — no early rollover
 		const plan = new MyCustomizeConductor().conduct(view);
-		const groupCmds = plan.filter((cmd) => cmd.kind === "group");
+		const groupCmds = plan.commands.filter((cmd) => cmd.kind === "group");
 		expect(groupCmds).toHaveLength(0);
 	});
 
@@ -2180,7 +2223,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const view = rolloverView(blocks, 200_000);
 		view.liveTokens = 110_000;
 		const plan = new MyCustomizeConductor().conduct(view);
-		const groupCmds = plan.filter((cmd) => cmd.kind === "group");
+		const groupCmds = plan.commands.filter((cmd) => cmd.kind === "group");
 		expect(groupCmds).toHaveLength(0);
 	});
 
@@ -2196,9 +2239,9 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const view = rolloverView(blocks, 200_000);
 		view.liveTokens = 110_000;
 		const plan = new MyCustomizeConductor().conduct(view);
-		expect(plan[0].kind).toBe("group");
-		if (plan[0].kind !== "group") return;
-		expect(plan[0].ids).toContain("u1");
+		expect(plan.commands[0].kind).toBe("group");
+		if (plan.commands[0].kind !== "group") return;
+		expect(plan.commands[0].ids).toContain("u1");
 	});
 
 	it("early rollover trims a tool_call that has an open partner in the protected tail", () => {
@@ -2213,9 +2256,9 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const view = rolloverView(blocks, 200_000);
 		view.liveTokens = 110_000;
 		const plan = new MyCustomizeConductor().conduct(view);
-		expect(plan[0].kind).toBe("group");
-		if (plan[0].kind !== "group") return;
-		expect(plan[0].ids).not.toContain("tc0");
+		expect(plan.commands[0].kind).toBe("group");
+		if (plan.commands[0].kind !== "group") return;
+		expect(plan.commands[0].ids).not.toContain("tc0");
 	});
 
 	it("pre-group zone crosses user blocks and keeps earlier blocks out of fold candidates", () => {
@@ -2229,7 +2272,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const view = rolloverView(blocks, 200_000);
 		view.liveTokens = 110_000;
 		const plan = new MyCustomizeConductor().conduct(view);
-		const foldedIds = plan.flatMap((cmd) => cmd.kind === "fold" ? cmd.ids : cmd.kind === "replace" ? [cmd.id] : []);
+		const foldedIds = plan.commands.flatMap((cmd) => cmd.kind === "fold" ? cmd.ids : cmd.kind === "replace" ? [cmd.id] : []);
 		expect(foldedIds).not.toContain("old0");
 		expect(foldedIds).not.toContain("pg0");
 		expect(foldedIds).not.toContain("pg1");
@@ -2247,7 +2290,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 			const view = rolloverView(blocks, contextWindow);
 			view.liveTokens = 110_000;
 			const plan = new MyCustomizeConductor().conduct(view);
-			const actedOnIds = plan.flatMap((cmd) =>
+			const actedOnIds = plan.commands.flatMap((cmd) =>
 				cmd.kind === "fold" ? cmd.ids : cmd.kind === "replace" ? [cmd.id] : cmd.kind === "group" ? cmd.ids : [],
 			);
 			const hit = actedOnIds.some((id) => targetIds.has(id));
@@ -2267,7 +2310,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		// Put frozenFromIndex above the folded blocks so they are in the frozen prefix
 		view.frozenFromIndex = 2;
 		const plan = new MyCustomizeConductor().conduct(view);
-		const restoreCmd = plan.find((cmd) => cmd.kind === "restore");
+		const restoreCmd = plan.commands.find((cmd) => cmd.kind === "restore");
 		expect(restoreCmd).toBeDefined();
 		expect(restoreCmd!.ids).toContain("pg0");
 		expect(restoreCmd!.ids).toContain("pg1");
@@ -2341,7 +2384,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 
 		// Run conductor — must emit exactly one GROUP command.
 		const plan = new MyCustomizeConductor().conduct(view);
-		const groupCmds = plan.filter((cmd) => cmd.kind === "group");
+		const groupCmds = plan.commands.filter((cmd) => cmd.kind === "group");
 		expect(groupCmds).toHaveLength(1);
 		const groupCmd = groupCmds[0];
 		if (groupCmd.kind !== "group") return;
@@ -2383,7 +2426,8 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		store.frozenFromIndex = storeBlocks.findIndex((b) => b.id === "u:t2");
 
 		// Read the member code from the emitted MCP retrieval index.
-		const sections = groupCmd.digest.split("\n\n");
+		expect(groupCmd.digest).toBeDefined();
+		const sections = groupCmd.digest!.split("\n\n");
 		const indexSection = sections.find((s) => s.startsWith("MCP retrieval index"));
 		expect(indexSection).toBeDefined();
 		const codeMatch = indexSection!.match(/\{#([a-z0-9]+)\}/);

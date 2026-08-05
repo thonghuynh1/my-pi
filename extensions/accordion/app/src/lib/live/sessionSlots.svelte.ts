@@ -384,7 +384,6 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 					budgetLive = true;
 				}
 			}
-			attachActiveConductor(slot.store);
 			const harness = msg.harness && typeof msg.harness === "object" ? msg.harness : undefined;
 			slot.store.applySync({
 				harness,

@@ -11,6 +11,7 @@ export interface PerfScenario {
 	setup: {
 		blockCount: number;
 		tokensPerBlock?: number;
+		contextWindow?: number;
 		groups?: number;
 		foldedPct?: number;
 	};
@@ -69,5 +70,11 @@ export const SCENARIOS = [
 		setup: { blockCount: 600 },
 		action: { type: "group-range", blockCount: 50 },
 		thresholds: { maxLongTask: 200, maxTotalBlocking: 400 },
+	},
+	{
+		name: "rollover-at-500k",
+		setup: { blockCount: 500, tokensPerBlock: 1000, contextWindow: 500_000 },
+		action: { type: "rapid-fire", messages: 10, intervalMs: 100 },
+		thresholds: { maxLongTask: 50, maxTotalBlocking: 200 },
 	},
 ] satisfies PerfScenario[];

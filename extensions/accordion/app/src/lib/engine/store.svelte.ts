@@ -1026,8 +1026,15 @@ export class AccordionStore {
 			// Ask the active conductor for its complete desired state. `null` ⇒ hold the last
 			// applied batch (a remote one still thinking); `[]` ⇒ clear to raw; no conductor ⇒ raw.
 			let result: ConductorResult;
+			let cap = 0;
 			try {
-				result = this.conductor ? this.conductor.conduct(this.buildView(protectedFrom)) : [];
+				if (this.conductor) {
+					const view = this.buildView(protectedFrom);
+					cap = availableCap(view);
+					result = this.conductor.conduct(view);
+				} else {
+					result = [];
+				}
 			} catch (e) {
 				// A buggy conductor (first-party, not an adversary) must never wedge the store or
 				// abort the live model-call path. Hold the last applied state and surface the error.
@@ -1063,7 +1070,7 @@ export class AccordionStore {
 			// step and the result remains over budget, settle once more after this pass so the
 			// conductor can plan folds against the committed group.
 			const createdGroup = this.groups.some((group) => !groupIdsBeforeApply.has(group.id));
-			if (createdGroup && this.liveTokens > availableCap(this.buildView(protectedFrom)) && this.conductor) {
+			if (createdGroup && this.liveTokens > cap && this.conductor) {
 				this.requestConductorRerun(this.conductor, this.conductorEpoch);
 			}
 		} finally {

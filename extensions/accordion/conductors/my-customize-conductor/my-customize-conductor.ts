@@ -441,6 +441,17 @@ export class MyCustomizeConductor implements Conductor {
 		const cap = availableCap(view);
 		const hardCap = contextWindowCap(view);
 		const blockCount = view.blocks.length;
+
+		// O(1) pre-guard: five scalar checks — if nothing material changed, return
+		// the cached result directly without any O(n) work. Safe because block IDs
+		// are content-anchored and append-only; blockCount unchanged + !dirty
+		// guarantees viewKey is unchanged. (DEC-002 Option D)
+		if (!this.dirty && this.lastResult && blockCount === this.lastBlockCount && cap <= this.lastCap && view.liveTokens <= hardCap) {
+			return this.lastResult;
+		}
+
+		// --- All O(n) work lives below the pre-guard ---
+
 		const viewKey = view.blocks.map((block) => block.id).join("\u0000");
 		const previousViewKey = this.lastViewKey;
 		this.lastViewKey = viewKey;
@@ -478,7 +489,8 @@ export class MyCustomizeConductor implements Conductor {
 		const pairSafe = chunkedCompaction.noOpenToolPairAcrossPreGroupTail(view, preGroupFromIndex);
 		const blockedReason = rolloverBlockedReason(view.liveTokens, cap, preGroupTarget, newPreGroupTokens, pairSafe);
 
-		// Fast path: nothing changed and no emergency. Skip expensive index builds.
+		// Secondary fast path: viewKey unchanged after O(n) computation. Keeps
+		// the original behavioral contract as a second line of defence.
 		if (!this.dirty && previousViewKey === viewKey && this.lastPlan && blockCount === this.lastBlockCount && cap <= this.lastCap && view.liveTokens <= hardCap) {
 			return this.finishConduct(prior, preGroupTokens, preGroupTarget, false, preGroupMembers(priorIds), {
 				newPreGroupTokens,
@@ -590,7 +602,9 @@ export class MyCustomizeConductor implements Conductor {
 				this.tokensSavedByRollover += early.saving;
 				this.lastEstimatedGroupSaving = early.groupSaving;
 				const consumed = commandIds(early.commands);
-				const plan = [...this.replayPriorCommands(view, consumed), ...early.commands];
+				const folds = view.liveTokens > cap ? this.planFoldsToCap(view, preGroupFromIndex, cap, early.saving, consumed) : [];
+				const commands = [...early.commands, ...folds];
+				const plan = [...this.replayPriorCommands(view, commandIds(commands)), ...commands];
 				this.lastPlan = plan;
 				this.dirty = false;
 				this.lastCap = cap;

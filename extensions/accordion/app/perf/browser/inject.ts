@@ -20,7 +20,7 @@ export function generateBlocks(setup: PerfScenario["setup"], start = 0): WireBlo
 	});
 }
 
-export function createHelloFrame(): HelloMessage {
+export function createHelloFrame(contextWindow = 200_000): HelloMessage {
 	return {
 		type: "hello",
 		protocolVersion: PROTOCOL_VERSION,
@@ -29,7 +29,7 @@ export function createHelloFrame(): HelloMessage {
 			title: "Perf Benchmark",
 			cwd: "/tmp",
 			model: "benchmark",
-			contextWindow: 200_000,
+			contextWindow,
 			format: "pi",
 		},
 	};
@@ -45,7 +45,7 @@ export function createSyncFrame(
 		reqId: options.reqId ?? 1,
 		full: options.full ?? true,
 		blocks,
-		contextWindow: 200_000,
+		contextWindow: scenario.setup.contextWindow ?? 200_000,
 		harness: mockHarness,
 	};
 }

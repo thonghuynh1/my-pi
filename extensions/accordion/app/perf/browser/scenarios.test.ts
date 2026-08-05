@@ -7,8 +7,8 @@ import { evaluateResult, formatSummary } from "./report";
 const scenario = SCENARIOS[0];
 
 describe("browser performance harness", () => {
-	it("defines six valid scenarios", () => {
-		expect(SCENARIOS).toHaveLength(6);
+	it("defines seven valid scenarios", () => {
+		expect(SCENARIOS).toHaveLength(7);
 		expect(SCENARIOS.map((candidate) => candidate.name)).toEqual([
 			"one-message-at-scale",
 			"full-reset-at-scale",
@@ -16,6 +16,7 @@ describe("browser performance harness", () => {
 			"ghost-idle",
 			"budget-drag",
 			"group-large-range",
+			"rollover-at-500k",
 		]);
 		for (const candidate of SCENARIOS) expect(candidate.name).toBeTruthy();
 	});

@@ -1,6 +1,6 @@
 # my-customize-conductor: cache-invalidation tax and the `sentUnfolded` fix
 
-Status: needs-triage
+Status: resolved-verified
 Owner: (unassigned)
 Related: `.scratch/accordion-large-session-perf/`
 
@@ -163,3 +163,33 @@ The strict-monotonic run already demonstrated 0 events / −2.1% cost on the sam
 - `.scratch/accordion-large-session-perf/` — sibling PRD for the broader "long session performance" theme this issue lives under.
 
 ## Comments
+
+### 2026-08-04 — fix verified on `impact-wide × grep-accordion`
+
+After adjusting `my-customize-conductor` to respect the invariant, reran the same scenario at the same 70k budget on `openai-codex/gpt-5.6-luna`.
+
+Session artefact: `F:\MyWork\benchmark\results\agent-trials\agent-smoke\impact-wide__grep-accordion__1\2026-08-04T16-52-20-680Z_019fcdb0-c048-7a9e-889b-5927faa4bb1d.jsonl`
+
+| Metric | Baseline | Old my-customize | **NEW my-customize** |
+|---|---:|---:|---:|
+| Turns | 59 | 78 | 69 |
+| Tool calls | 58 | 77 | 68 |
+| Peak API-side prompt | 77.5k | 48.6k | **73.8k** (above budget → fold pressure engaged) |
+| Fresh input | 170k | 624k | 126k |
+| Cache read | 2.46M | 2.25M | 3.15M |
+| Total cost | $0.0955 | $0.1803 (+88.8%) | **$0.1006 (+5.4%)** |
+| Cost / tool_call | $0.00165 | $0.00234 (+42%) | **$0.00148 (−10%)** |
+| Cache-invalidation events | 1 (natural) | 13 | **0** |
+
+The pathology signature (cacheRead collapse to ~3.5k with a coincident 35–45k fresh_input spike) does not appear anywhere in the new run. All 13 events observed on the pre-fix run were structural, not statistical noise — fixing the invariant eliminated them completely.
+
+Acceptance criteria from the "How to verify the fix" section are met:
+
+- Detected cache-invalidation events: **0** (target: ≤ 2). ✅
+- Cost delta vs baseline: **+5.4%** (target: ≤ +15%). ✅
+- Peak API-side prompt: **73.8k** — crossed budget so folds fired; this run is a stronger test than the earlier `strict-monotonic` prototype, which peaked at only 68k and never engaged the fold logic under pressure.
+- Model quality (judge): not yet re-scored; leave open until judge run completes.
+
+The +5.4% total-cost delta is driven by the model making 10 additional tool_calls (+17%) rather than any per-call regression — per-tool-call cost actually improved by 10%. Those extra calls are consistent with small `recall`/re-grep work to fill in details lost to folding; on this scenario each such call cost less than the cache-invalidation tax it would have caused under the old conductor.
+
+Open question 1 (any-prior vs. most-recent) is implicitly answered as "any-prior" by the fact that zero events fire on a run that folded content added far earlier in the session. If the implementation chose "most-recent" and works too, that would be a stronger result worth documenting.

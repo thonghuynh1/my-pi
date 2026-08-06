@@ -650,6 +650,87 @@ describe("conductor seam — in-process async rerun hook", () => {
 		expect(s.liveTokens * s.calibration).toBeLessThanOrEqual(s.budget);
 	});
 
+	it("does not settle a group that the next baseline reset would discard", async () => {
+		const s = makeStore(Array.from({ length: 4 }, (_, i) => blk(i, "text", 4_000)));
+		s.setProtect(0);
+		s.setBudget(5_000);
+		let conductCalls = 0;
+		const conductor: Conductor = {
+			id: "mutable-group",
+			label: "Mutable group",
+			conduct() {
+				conductCalls++;
+				return conductCalls === 1
+					? [{ kind: "group", ids: ["m0:p0", "m1:p0"] }]
+					: [];
+			},
+		};
+
+		s.attach(conductor);
+		await flushMicrotasks();
+
+		expect(conductCalls).toBe(1);
+		expect(s.groups).toHaveLength(1);
+		expect(s.liveTokens * s.calibration).toBeGreaterThan(s.budget);
+	});
+
+	it("allows at most one structural settling pass per external refold", async () => {
+		const s = makeStore(Array.from({ length: 6 }, (_, i) => blk(i, "text", 4_000)));
+		s.setProtect(0);
+		s.setBudget(5_000);
+		let conductCalls = 0;
+		const conductor: Conductor = {
+			id: "multi-stage-group",
+			label: "Multi-stage group",
+			conduct() {
+				conductCalls++;
+				if (conductCalls === 1) {
+					return [{ kind: "group", ids: ["m0:p0", "m1:p0"], digest: "⟨chunked-compaction · first⟩" }];
+				}
+				if (conductCalls === 2) {
+					return [{ kind: "group", ids: ["m2:p0", "m3:p0"], digest: "⟨chunked-compaction · second⟩" }];
+				}
+				return [];
+			},
+		};
+
+		s.attach(conductor);
+		await flushMicrotasks();
+
+		expect(conductCalls).toBe(2);
+		expect(s.groups).toHaveLength(2);
+		expect(s.liveTokens * s.calibration).toBeGreaterThan(s.budget);
+	});
+
+	it("does not lose an external rerun while a structural follow-up is queued", async () => {
+		const s = makeStore(Array.from({ length: 6 }, (_, i) => blk(i, "text", 4_000)));
+		s.setProtect(0);
+		s.setBudget(5_000);
+		let host: ConductorHost | null = null;
+		let conductCalls = 0;
+		const conductor: Conductor = {
+			id: "external-rerun-upgrade",
+			label: "External rerun upgrade",
+			attach(value) { host = value; },
+			conduct() {
+				conductCalls++;
+				if (conductCalls === 1) {
+					return [{ kind: "group", ids: ["m0:p0", "m1:p0"], digest: "⟨chunked-compaction · first⟩" }];
+				}
+				if (conductCalls === 2) {
+					return [{ kind: "group", ids: ["m2:p0", "m3:p0"], digest: "⟨chunked-compaction · second⟩" }];
+				}
+				return [];
+			},
+		};
+
+		s.attach(conductor);
+		host!.requestRerun();
+		await flushMicrotasks();
+
+		expect(conductCalls).toBe(3);
+	});
+
 	it("lets an in-process conductor request a fresh pass after returning null", async () => {
 		const s = makeStore(Array.from({ length: 3 }, (_, i) => blk(i)));
 		s.setProtect(0);

@@ -217,6 +217,15 @@ export class AccordionStore {
 	private tailAppendCounts = new Map<string, number>();
 
 	/**
+	 * Pair-integrity boundary cache. `pairLowerBound[i]` is the lowest index the protected
+	 * boundary must snap to if the token walk-back lands at index `i`, ensuring no
+	 * tool_call/tool_result pair is split. Maintained incrementally on append (O(pair-span)
+	 * per new block, typically O(1) for adjacent pairs). Queried O(1) in `protectedFromIndex`.
+	 */
+	private pairLowerBound: number[] = [];
+	private callIdFirstIndex = new Map<string, number>();
+
+	/**
 	 * The active context-management strategy (ADR 0007). Defaults to the built-in folder
 	 * so a freshly loaded session behaves EXACTLY as before the seam existed. `attach(c)`
 	 * swaps it; `detach()` (or `attach(null)`) makes the context raw — the store never
@@ -583,6 +592,10 @@ export class AccordionStore {
 	private reindex(): void {
 		this.index.clear();
 		for (let i = 0; i < this.blocks.length; i++) this.index.set(this.blocks[i].id, i);
+		// Rebuild the pair-integrity cache from scratch.
+		this.callIdFirstIndex.clear();
+		this.pairLowerBound = [];
+		if (this.blocks.length) this._extendPairBounds(this.blocks, 0);
 	}
 
 	private clearConductorStatus(): void {
@@ -867,43 +880,22 @@ export class AccordionStore {
 		// owns the whole context). blocks.length ⇒ isProtected is false everywhere.
 		if (target === 0) return this.blocks.length;
 		const cap = target * PROTECT_OVERFLOW_CAP;
-		// Pair-snap: extend the tokens-based boundary backward while a tool_call/tool_result
-		// pair would straddle it. The file header commits that a pair is "never structurally
-		// broken"; that promise applies at boundary construction, not only at fold time. The
-		// PROTECT_OVERFLOW_CAP is an advisory for adding older content by tokens — pair
-		// integrity outranks it, matching the same precedence at fold time.
-		const snapPair = (i: number): number => {
+		// Snap helper: O(1) lookup into the precomputed pair-integrity cache.
+		const snap = (i: number): number => {
 			if (i <= 0) return i;
-			const tailCallIds = new Set<string>();
-			for (let j = i; j < this.blocks.length; j++) {
-				const cid = this.blocks[j].callId;
-				if (cid) tailCallIds.add(cid);
-			}
-			// Walk backward from i-1. Any block whose callId is already in the tail is a
-			// partner of something inside — include it (and everything newer than it) in the
-			// tail, updating tailCallIds so subsequent partners further back are also caught.
-			for (let j = i - 1; j >= 0; j--) {
-				const cid = this.blocks[j].callId;
-				if (!cid || !tailCallIds.has(cid)) continue;
-				for (let k = j; k < i; k++) {
-					const c2 = this.blocks[k].callId;
-					if (c2) tailCallIds.add(c2);
-				}
-				i = j;
-			}
-			return i;
+			return this.pairLowerBound[i] ?? i;
 		};
 		// Always absorb the newest block unconditionally — it is indivisible and the
 		// protected tail must never be empty while target > 0.
 		let sum = this.blocks[this.blocks.length - 1].tokens;
-		if (sum >= target) return snapPair(this.blocks.length - 1);
+		if (sum >= target) return snap(this.blocks.length - 1);
 		for (let i = this.blocks.length - 2; i >= 0; i--) {
 			const next = sum + this.blocks[i].tokens;
 			// Stop before adding an older block that would push the protected tail beyond
 			// the overflow cap.
-			if (next > cap) return snapPair(i + 1);
+			if (next > cap) return snap(i + 1);
 			sum = next;
-			if (sum >= target) return snapPair(i);
+			if (sum >= target) return snap(i);
 		}
 		return 0;
 	});
@@ -1401,8 +1393,39 @@ export class AccordionStore {
 			fresh.push(b);
 		}
 		if (!fresh.length) return 0;
+		// Check if any fresh block completes a tool pair (its callId was seen in a prior append).
+		// This changes rollover eligibility (pairSafe) so the conductor must re-evaluate.
+		const completesPair = fresh.some((b) => b.callId && this.callIdFirstIndex.has(b.callId));
 		this.blocks.push(...fresh);
+		this._extendPairBounds(fresh, this.blocks.length - fresh.length);
+		if (completesPair) this.conductor?.markDirty?.();
 		return fresh.length;
+	}
+
+	/**
+	 * Extend the pair-integrity boundary cache for newly appended blocks.
+	 * For each block with a callId whose partner was already seen, mark the span
+	 * (first+1..last] as unsafe boundaries (snap to first). Propagates transitivity.
+	 */
+	private _extendPairBounds(fresh: Block[], startIdx: number): void {
+		for (let n = 0; n < fresh.length; n++) {
+			const idx = startIdx + n;
+			this.pairLowerBound[idx] = idx; // default: safe boundary
+			const cid = fresh[n].callId;
+			if (!cid) continue;
+			const first = this.callIdFirstIndex.get(cid);
+			if (first === undefined) {
+				this.callIdFirstIndex.set(cid, idx);
+				continue;
+			}
+			// Pair spans [first, idx]. Any boundary in (first, idx] must snap to first.
+			// Propagate: if pairLowerBound[first] points even lower (transitive chain),
+			// use that as the target.
+			const target = this.pairLowerBound[first] ?? first;
+			for (let k = first + 1; k <= idx; k++) {
+				if (this.pairLowerBound[k] > target) this.pairLowerBound[k] = target;
+			}
+		}
 	}
 
 	appendBlocks(blocks: Block[]): void {

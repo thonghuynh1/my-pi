@@ -19,6 +19,7 @@ Eliminate the browser UI freeze that occurs in Accordion browser broker mode dur
 
 ### Frontier (unblocked, actionable now)
 - [Real browser still freezes despite all conductor fixes](issues/09-real-browser-freeze-persists.md) — `research` — Root cause: `attachActiveConductor(slot.store)` called on **every sync message** in `sessionSlots.svelte.ts` causes conductor singleton thrashing between broker slots (detach→reattach→refold on every sync). Combined with O(n×6) `refold()` sweeps at 500 blocks, this locks the main thread. Perf harness only tested store-level (no Svelte, no multi-slot). Fix: remove the `attachActiveConductor` call from the sync handler.
+- [Rendering cascade during streaming causes real browser freeze](issues/10-rendering-cascade-during-streaming.md) — `research` — THREE compounding causes: (1) `snapPair()` adds O(n²) to `protectedFromIndex` $derived on every sync, (2) conductor pre-guard fails on every streaming sync (blockCount check), forcing full O(n) recomputation, (3) `preGroupMemberIds` shifts ±1 on every sync → cascading re-derivation of all tile lists in ContextMap. Main avoids this because its HOLD_BAND epoch gating returns cached plan/memberIds during streaming.
 - [Profiling: Identify the dominant freeze contributor](issues/01-profiling-dominant-freeze-contributor.md) — `research` — Which O(n) operations dominate the main-thread blocking?
 - ~~[Should the conductor's pre-fast-path O(n) work be restructured?](issues/02-conductor-pre-guard-restructure-decision.md)~~ — `grilling` — **closed** → Option D (O(1) pre-guard + move work below guard)
 - ~~[Should `buildView()` and `snapshotFoldState()` be cached or made incremental?](issues/04-store-buildview-caching-decision.md)~~ — `grilling` — **closed** → Option C (reuse `availableCap` from first view)
@@ -46,7 +47,7 @@ Eliminate the browser UI freeze that occurs in Accordion browser broker mode dur
 ## Not yet specified
 - Whether the existing browser perf harness (issue #05 from prior effort) should be extended with a rollover-specific scenario or if a new harness is needed
 - Whether the `before_provider_request` hook's synchronous `JSON.stringify` of all messages for cache-tracker contributes measurably to the freeze (this runs extension-side, so likely not the browser freeze, but worth ruling out)
-- **What is blocking the real browser main thread** — conductor fixes validated at store level but the actual browser tab is completely unresponsive (Orca runtime times out on snapshot/eval). Likely a rendering cascade, tight re-render loop, or synchronous work outside `conduct()` triggered by broker sync messages at volume.
+- **What is blocking the real browser main thread** — IDENTIFIED: three compounding factors (see issue #10): (1) O(n²) `snapPair` in `protectedFromIndex` $derived, (2) conductor pre-guard always fails during streaming (blockCount changes), (3) cascading Svelte re-renders from unstable `preGroupMemberIds`. Combined cost: ~15-30ms per sync, saturating the main thread at streaming rates.
 
 ## Out of scope
 

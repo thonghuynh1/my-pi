@@ -104,7 +104,7 @@ export class MyCustomizeConductor implements Conductor {
 	// DEC-002/003: stable-plan dirty tracking
 	private dirty = true;
 	private lastCap = 0;
-	private lastBlockCount = 0;
+	private lastHeadBlockCount = 0;
 	private lastViewKey: string | null = null;
 
 	constructor(opts: chunkedCompaction.MyCustomizeConductorOpts = {}) {
@@ -174,7 +174,7 @@ export class MyCustomizeConductor implements Conductor {
 			};
 			const text = rollover
 				? `chunked · rollover · ${this.rolloverCount} rollover(s) · ${humanTokens(this.tokensSavedByRollover)} saved · pregroup ${preGroupTokens} → 0`
-				: `chunked · ${fill}% pregroup · ${this.rolloverCount} rollovers · ${humanTokens(this.tokensSavedByRollover)} saved`;
+				: `chunked · ${fill}% pregroup · ${this.rolloverCount} rollovers · ${humanTokens(this.tokensSavedByRollover)} saved · [${diagnostics.rolloverBlockedReason}]`;
 			this.host.setStatus(text, metrics, null);
 		}
 
@@ -440,19 +440,22 @@ export class MyCustomizeConductor implements Conductor {
 	conduct(view: ConductorView): ConductorPlan {
 		const cap = availableCap(view);
 		const hardCap = contextWindowCap(view);
-		const blockCount = view.blocks.length;
+		const headBlockCount = view.protectedFromIndex;
 
-		// O(1) pre-guard: five scalar checks — if nothing material changed, return
-		// the cached result directly without any O(n) work. Safe because block IDs
-		// are content-anchored and append-only; blockCount unchanged + !dirty
-		// guarantees viewKey is unchanged. (DEC-002 Option D)
-		if (!this.dirty && this.lastResult && blockCount === this.lastBlockCount && cap <= this.lastCap && view.liveTokens <= hardCap) {
+		// O(1) pre-guard: if the conductor's domain (blocks before the protected tail)
+		// is unchanged, return the cached result. New blocks appended to the protected
+		// tail don't affect planning (they're protected, can't be folded). Budget overage
+		// alone doesn't invalidate — the conductor already planned for the domain it has.
+		if (!this.dirty && this.lastResult && headBlockCount === this.lastHeadBlockCount && cap <= this.lastCap) {
 			return this.lastResult;
 		}
 
 		// --- All O(n) work lives below the pre-guard ---
 
-		const viewKey = view.blocks.map((block) => block.id).join("\u0000");
+		// Scope viewKey to the conductor's domain only (blocks before protectedFromIndex).
+		// Tail blocks are protected and never touched by the conductor; including them
+		// would defeat the secondary fast-path on every streaming sync.
+		const viewKey = view.blocks.slice(0, view.protectedFromIndex).map((block) => block.id).join("\u0000");
 		const previousViewKey = this.lastViewKey;
 		this.lastViewKey = viewKey;
 		// Unknown windows still expose diagnostics and membership, but cannot authorize a
@@ -491,7 +494,7 @@ export class MyCustomizeConductor implements Conductor {
 
 		// Secondary fast path: viewKey unchanged after O(n) computation. Keeps
 		// the original behavioral contract as a second line of defence.
-		if (!this.dirty && previousViewKey === viewKey && this.lastPlan && blockCount === this.lastBlockCount && cap <= this.lastCap && view.liveTokens <= hardCap) {
+		if (!this.dirty && previousViewKey === viewKey && this.lastPlan && cap <= this.lastCap && view.liveTokens <= hardCap) {
 			return this.finishConduct(prior, preGroupTokens, preGroupTarget, false, preGroupMembers(priorIds), {
 				newPreGroupTokens,
 				rolloverBlockedReason: "stable-plan",
@@ -513,7 +516,7 @@ export class MyCustomizeConductor implements Conductor {
 			const plan: Command[] = [{ kind: "restore", ids: restores.map((block) => block.id) }];
 			this.dirty = false;
 			this.lastCap = cap;
-			this.lastBlockCount = blockCount;
+			this.lastHeadBlockCount = headBlockCount;
 			return this.finishConduct(plan, preGroupTokens, preGroupTarget, false, preGroupMembers(), {
 				newPreGroupTokens,
 				rolloverBlockedReason: blockedReason,
@@ -529,7 +532,7 @@ export class MyCustomizeConductor implements Conductor {
 				this.lastPlan = plan;
 				this.dirty = false;
 				this.lastCap = cap;
-				this.lastBlockCount = blockCount;
+				this.lastHeadBlockCount = headBlockCount;
 				return this.finishConduct(plan, preGroupTokens, preGroupTarget, false, preGroupMembers(commandIds(plan)), {
 					newPreGroupTokens,
 					rolloverBlockedReason: "hard-cap-emergency",
@@ -539,7 +542,7 @@ export class MyCustomizeConductor implements Conductor {
 
 		// DEC-002: nothing material changed — return stable plan with updated pre-group membership.
 		// (Hard-cap cases are handled above; this catches cap-change or dirty-only scenarios.)
-		if (!this.dirty && previousViewKey === viewKey && this.lastPlan && blockCount === this.lastBlockCount && cap <= this.lastCap) {
+		if (!this.dirty && previousViewKey === viewKey && this.lastPlan && cap <= this.lastCap) {
 			return this.finishConduct(prior, preGroupTokens, preGroupTarget, false, preGroupMembers(priorIds), {
 				newPreGroupTokens,
 				rolloverBlockedReason: "stable-plan",
@@ -572,7 +575,7 @@ export class MyCustomizeConductor implements Conductor {
 				this.lastPlan = plan;
 				this.dirty = false;
 				this.lastCap = cap;
-				this.lastBlockCount = blockCount;
+				this.lastHeadBlockCount = headBlockCount;
 				return this.finishConduct(plan, preGroupTokens, preGroupTarget, true, preGroupMembers(commandIds(plan)), {
 					newPreGroupTokens,
 					rolloverBlockedReason: "none",
@@ -608,7 +611,7 @@ export class MyCustomizeConductor implements Conductor {
 				this.lastPlan = plan;
 				this.dirty = false;
 				this.lastCap = cap;
-				this.lastBlockCount = blockCount;
+				this.lastHeadBlockCount = headBlockCount;
 				return this.finishConduct(plan, preGroupTokens, preGroupTarget, true, preGroupMembers(commandIds(plan)), {
 					newPreGroupTokens,
 					rolloverBlockedReason: "none",
@@ -625,7 +628,7 @@ export class MyCustomizeConductor implements Conductor {
 				this.lastPlan = plan;
 				this.dirty = false;
 				this.lastCap = cap;
-				this.lastBlockCount = blockCount;
+				this.lastHeadBlockCount = headBlockCount;
 				return this.finishConduct(plan, preGroupTokens, preGroupTarget, false, preGroupMembers(commandIds(plan)), {
 					newPreGroupTokens,
 					rolloverBlockedReason: blockedReason,
@@ -634,8 +637,9 @@ export class MyCustomizeConductor implements Conductor {
 		}
 
 		if (view.liveTokens <= cap) {
+			this.dirty = false;
 			this.lastCap = cap;
-			this.lastBlockCount = blockCount;
+			this.lastHeadBlockCount = headBlockCount;
 			return this.finishConduct(prior, preGroupTokens, preGroupTarget, false, preGroupMembers(priorIds), {
 				newPreGroupTokens,
 				rolloverBlockedReason: blockedReason,
@@ -656,7 +660,7 @@ export class MyCustomizeConductor implements Conductor {
 			this.lastPlan = plan;
 			this.dirty = false;
 			this.lastCap = cap;
-			this.lastBlockCount = blockCount;
+			this.lastHeadBlockCount = headBlockCount;
 			return this.finishConduct(plan, preGroupTokens, preGroupTarget, false, preGroupMembers(commandIds(plan)), {
 				newPreGroupTokens,
 				rolloverBlockedReason: blockedReason,
@@ -665,7 +669,7 @@ export class MyCustomizeConductor implements Conductor {
 
 		this.dirty = false;
 		this.lastCap = cap;
-		this.lastBlockCount = blockCount;
+		this.lastHeadBlockCount = headBlockCount;
 
 		// Recovery after a conductor reset may still deterministically replace an MCP result,
 		// but never touch the active Pre-Group itself.

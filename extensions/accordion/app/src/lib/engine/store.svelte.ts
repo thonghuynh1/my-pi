@@ -993,8 +993,15 @@ export class AccordionStore {
 		return { commands: result.commands, preGroup: { memberIds } };
 	}
 
+	private _runConductorCount = 0;
+	private _runConductorLastWarn = 0;
 	private runConductor(): void {
 		if (this.conducting) return;
+		this._runConductorCount++;
+		if (this._runConductorCount > 50 && Date.now() - this._runConductorLastWarn > 1000) {
+			console.warn('[accordion] runConductor called', this._runConductorCount, 'times');
+			this._runConductorLastWarn = Date.now();
+		}
 		this.conducting = true;
 		try {
 			const before = this.snapshotFoldState();

@@ -461,7 +461,10 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 	};
 
 	ws.onerror = () => {
-		if (slot.socket === ws) slot.status = "error";
+		if (slot.socket === ws) {
+			slot.socket = null;
+			slot.status = "error";
+		}
 	};
 
 	ws.onclose = () => {

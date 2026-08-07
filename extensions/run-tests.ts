@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { readFileSync, existsSync, appendFileSync, mkdirSync, readdirSync } from "fs";
+import type { Dirent } from "fs";
 import { join, basename } from "path";
 import { homedir } from "os";
 import {
@@ -163,6 +164,26 @@ function formatFailureOutput(command: string, fullOutput: string, tailLines: num
 	return outputLines.slice(-tailLines).join("\n");
 }
 
+type TestProjectCandidate = {
+	cwd: string;
+	command: string;
+};
+
+const NESTED_PROJECT_MAX_DEPTH = 3;
+const MAX_NESTED_PROJECTS = 10;
+const SKIPPED_PROJECT_DIRECTORIES = new Set([
+	".git",
+	".next",
+	".cache",
+	"__pycache__",
+	"bin",
+	"build",
+	"coverage",
+	"dist",
+	"node_modules",
+	"obj",
+]);
+
 function detectTestCommand(cwd: string): string | null {
 	const pkgPath = join(cwd, "package.json");
 	if (existsSync(pkgPath)) {
@@ -191,6 +212,77 @@ function detectTestCommand(cwd: string): string | null {
 	return null;
 }
 
+function packageManagerTestCommand(cwd: string, detectedCommand: string): string {
+	if (detectedCommand !== "npm test") return detectedCommand;
+	if (existsSync(join(cwd, "yarn.lock"))) return "yarn test";
+	if (existsSync(join(cwd, "pnpm-lock.yaml"))) return "pnpm test";
+	if (existsSync(join(cwd, "bun.lock")) || existsSync(join(cwd, "bun.lockb"))) return "bun test";
+	return detectedCommand;
+}
+
+function findNestedTestProjects(root: string): TestProjectCandidate[] {
+	const candidates: TestProjectCandidate[] = [];
+	const queue: Array<{ cwd: string; depth: number }> = [{ cwd: root, depth: 0 }];
+
+	while (queue.length > 0 && candidates.length < MAX_NESTED_PROJECTS) {
+		const current = queue.shift();
+		if (!current) continue;
+		let entries: Dirent[];
+		try {
+			entries = readdirSync(current.cwd, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+
+		for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+			if (
+				!entry.isDirectory() ||
+				entry.isSymbolicLink() ||
+				SKIPPED_PROJECT_DIRECTORIES.has(entry.name)
+			) {
+				continue;
+			}
+
+			const childCwd = join(current.cwd, entry.name);
+			const detectedCommand = detectTestCommand(childCwd);
+			if (detectedCommand) {
+				candidates.push({
+					cwd: childCwd,
+					command: packageManagerTestCommand(childCwd, detectedCommand),
+				});
+				if (candidates.length >= MAX_NESTED_PROJECTS) break;
+				continue;
+			}
+
+			if (current.depth + 1 < NESTED_PROJECT_MAX_DEPTH) {
+				queue.push({ cwd: childCwd, depth: current.depth + 1 });
+			}
+		}
+	}
+
+	return candidates;
+}
+
+function formatNestedProjectGuidance(root: string, candidates: TestProjectCandidate[]): string {
+	if (candidates.length === 0) {
+		return `No nested test projects found within ${NESTED_PROJECT_MAX_DEPTH} directory levels.\nPass a command explicitly with the searched cwd: run_tests({ command: "your test command", cwd: ${JSON.stringify(root)} })`;
+	}
+
+	const lines = [`Found ${candidates.length} nested test project${candidates.length === 1 ? "" : "s"}:`];
+	for (const candidate of candidates) {
+		lines.push(
+			`  - ${candidate.cwd}: ${candidate.command}`,
+			`    run_tests({ command: ${JSON.stringify(candidate.command)}, cwd: ${JSON.stringify(candidate.cwd)} })`,
+		);
+	}
+	return lines.join("\n");
+}
+
+function isMissingPackageJsonError(output: string, command: string): boolean {
+	if (!/^(?:yarn|npm|pnpm|bun)(?:\s|$)/i.test(command.trim())) return false;
+	return /couldn't find (?:a )?package\.json|no package\.json|package\.json.*(?:not found|missing)|enoent.*package\.json/i.test(output);
+}
+
 export default function runTestsExtension(pi: ExtensionAPI) {
 	let piSettings: CapabilityVisibilitySettings = {};
 	const visibilityResult = loadCapabilityVisibilitySettings();
@@ -212,6 +304,7 @@ export default function runTestsExtension(pi: ExtensionAPI) {
 			"Do NOT use bash to run test commands (npm test, vitest, jest, dotnet test, go test, pytest). Use run_tests instead.",
 			"If run_tests returns a fallback message suggesting bash, THEN use bash with the exact command it provides.",
 			"When the test project root (containing jest.config.js, package.json, or vitest.config.ts) is a subdirectory, pass cwd. Example: run_tests({ command: 'npx jest', cwd: 'C:/GitRepos/MyProject/Web' })",
+			"If no framework is found, use the nested project candidates and exact cwd retry commands in the result instead of guessing a repository root.",
 		],
 		parameters: RunTestsParams,
 		async execute(
@@ -226,12 +319,13 @@ export default function runTestsExtension(pi: ExtensionAPI) {
 			const command = params.command ?? detectTestCommand(cwd);
 			const project = basename(cwd);
 			if (!command) {
+				const nestedProjects = findNestedTestProjects(cwd);
 				writeLog({ ts: new Date().toISOString(), project, command: "(none)", result: "no-framework" });
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: "⚠️ Cannot detect test framework. No package.json scripts.test, .sln, go.mod, or pytest config found.\nPass a command explicitly: run_tests({ command: \"your test command\" })",
+							text: `⚠️ No test framework found at: ${cwd}\n${formatNestedProjectGuidance(cwd, nestedProjects)}`,
 						},
 					],
 					details: undefined,
@@ -298,12 +392,18 @@ export default function runTestsExtension(pi: ExtensionAPI) {
 				}
 
 				const failureOutput = formatFailureOutput(command, fullOutput, tailLines);
+				const nestedProjects = isMissingPackageJsonError(fullOutput, command)
+					? findNestedTestProjects(cwd)
+					: [];
+				const nestedGuidance = nestedProjects.length > 0
+					? `\n\n${formatNestedProjectGuidance(cwd, nestedProjects)}`
+					: "";
 				writeLog({ ts: new Date().toISOString(), project, command, result: "fail", durationMs: Date.now() - startTime, exitCode: result.code, summary: outputLines.slice(-3).join(" | ") });
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: `❌ Tests failed (exit ${result.code}, ${elapsed}s):\n\n${failureOutput}`,
+							text: `❌ Tests failed (exit ${result.code}, ${elapsed}s):\n\n${failureOutput}${nestedGuidance}`,
 						},
 					],
 					details: undefined,

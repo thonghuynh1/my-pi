@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -89,6 +90,64 @@ test("run_tests applies a 15 minute execution timeout", async () => {
 	await tool.execute("call-timeout", { command: "npm test" }, undefined, () => {});
 
 	assert.equal(pi.execCalls[0]?.timeout, 15 * 60 * 1000);
+});
+
+test("run_tests lists nested test projects when the current directory has no test framework", async () => {
+	const root = mkdtempSync(path.join(os.tmpdir(), "run-tests-nested-"));
+	const web = path.join(root, "Web");
+	const admin = path.join(root, "Web.Admin");
+	const dependency = path.join(root, "node_modules", "ignored");
+	mkdirSync(web);
+	mkdirSync(admin);
+	mkdirSync(dependency, { recursive: true });
+	writeFileSync(path.join(web, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }));
+	writeFileSync(path.join(web, "yarn.lock"), "");
+	writeFileSync(path.join(admin, "package.json"), JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1' } }));
+	writeFileSync(path.join(dependency, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }));
+
+	try {
+		const pi = createFakePi({ code: 0, stdout: "", stderr: "" });
+		runTestsExtension(pi as any);
+		const tool = getRunTestsTool(pi);
+		const result = await tool.execute("call-nested", { cwd: root }, undefined, () => {});
+		const text = result.content[0]?.text ?? "";
+
+		assert.match(text, /No test framework found at:/);
+		assert.match(text, /Web/);
+		assert.match(text, /yarn test/);
+		assert.equal(text.includes(`cwd: ${JSON.stringify(web)}`), true);
+		assert.equal(text.includes("Web.Admin"), false);
+		assert.equal(text.includes("ignored"), false);
+		assert.equal(pi.execCalls.length, 0);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("run_tests adds nested project guidance when yarn runs from the wrong directory", async () => {
+	const root = mkdtempSync(path.join(os.tmpdir(), "run-tests-yarn-"));
+	const web = path.join(root, "Web");
+	mkdirSync(web);
+	writeFileSync(path.join(web, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }));
+	writeFileSync(path.join(web, "yarn.lock"), "");
+
+	try {
+		const pi = createFakePi({
+			code: 1,
+			stdout: `error Couldn't find a package.json file in "${root}"`,
+			stderr: "",
+		});
+		runTestsExtension(pi as any);
+		const tool = getRunTestsTool(pi);
+		const result = await tool.execute("call-wrong-cwd", { command: "yarn test", cwd: root }, undefined, () => {});
+		const text = result.content[0]?.text ?? "";
+
+		assert.match(text, /Tests failed/);
+		assert.match(text, /Web/);
+		assert.match(text, /run_tests\(\{ command: "yarn test", cwd:/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("run_tests condenses repeated dotnet failures into unique failure summaries", async () => {

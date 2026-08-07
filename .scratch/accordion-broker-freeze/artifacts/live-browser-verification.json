@@ -1,0 +1,18 @@
+{
+  "ok": true,
+  "url": "http://127.0.0.1:62534/",
+  "elapsedMs": 6410,
+  "before": {
+    "title": "Accordion",
+    "readyState": "complete",
+    "bodyLength": 633,
+    "scrollY": 0
+  },
+  "after": {
+    "title": "Accordion",
+    "readyState": "complete",
+    "bodyLength": 633,
+    "scrollY": 0,
+    "hasSession": true
+  }
+}

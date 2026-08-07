@@ -20,6 +20,8 @@ import { BuiltinConductor } from "$conductors";
 import { CHUNKED_COMPACTION_PREFIX } from "$conductors/my-customize-conductor/constants";
 
 /** Classification of a folded group's members for accounting + the wire (ADR 0006 §4/§5). */
+type ConductorPassKind = "external" | "structural-follow-up";
+
 interface GroupShape {
 	members: Block[];
 	/** Members that collapse into the one summary entry (whole, pair-balanced messages). */
@@ -251,7 +253,7 @@ export class AccordionStore {
 	 */
 	private conductorEpoch = 0;
 	/** Debounce token for in-process async conductor re-entry. */
-	private conductorRerunQueuedFor: { conductor: Conductor; epoch: number } | null = null;
+	private conductorRerunQueuedFor: { conductor: Conductor; epoch: number; passKind: ConductorPassKind } | null = null;
 	/**
 	 * ClampReports from the most recent conductor pass — what the host had to clamp to the
 	 * validity floor. A remote runner reads this after triggering a pass to feed
@@ -681,21 +683,33 @@ export class AccordionStore {
 	}
 
 	/**
-	 * Async bridge for in-process conductors. A conductor may finish work after `conduct()`
-	 * returned `null`; this schedules exactly one later pass for a burst of completions. The
-	 * captured conductor + epoch make late completions from a detached conductor harmless.
+	 * Debounced bridge for async conductor completions and one structural settling pass. The
+	 * captured conductor + epoch make late completions from a detached conductor harmless;
+	 * `passKind` prevents a structural follow-up from recursively scheduling another one.
 	 */
-	private requestConductorRerun(c: Conductor, epoch: number): void {
+	private requestConductorRerun(
+		c: Conductor,
+		epoch: number,
+		passKind: ConductorPassKind = "external",
+	): void {
 		if (this.conductor !== c || this.conductorEpoch !== epoch) return;
-		if (this.conductorRerunQueuedFor) return;
-		const token = { conductor: c, epoch };
+		const queued = this.conductorRerunQueuedFor;
+		if (queued) {
+			// Explicit async completion is newer information than an automatic settling pass.
+			// Upgrade the queued pass rather than dropping the conductor's request.
+			if (queued.conductor === c && queued.epoch === epoch && passKind === "external") {
+				queued.passKind = "external";
+			}
+			return;
+		}
+		const token = { conductor: c, epoch, passKind };
 		this.conductorRerunQueuedFor = token;
 		const enqueue = typeof queueMicrotask === "function" ? queueMicrotask : (fn: () => void) => Promise.resolve().then(fn);
 		enqueue(() => {
 			if (this.conductorRerunQueuedFor !== token) return;
 			this.conductorRerunQueuedFor = null;
 			if (this.conductor !== c || this.conductorEpoch !== epoch) return;
-			this.refold();
+			this.runConductor(token.passKind);
 		});
 	}
 
@@ -995,7 +1009,7 @@ export class AccordionStore {
 
 	private _runConductorCount = 0;
 	private _runConductorLastWarn = 0;
-	private runConductor(): void {
+	private runConductor(passKind: ConductorPassKind = "external"): void {
 		if (this.conducting) return;
 		this._runConductorCount++;
 		if (this._runConductorCount > 50 && Date.now() - this._runConductorLastWarn > 1000) {
@@ -1065,12 +1079,14 @@ export class AccordionStore {
 			}
 			this.recordConductorTransitions(before, beforeGroups);
 			// createGroup() requests a nested refold, but the conducting guard intentionally
-			// suppresses re-entry. If that newly-created group was only the structural first
-			// step and the result remains over budget, settle once more after this pass so the
-			// conductor can plan folds against the committed group.
-			const createdGroup = this.groups.some((group) => !groupIdsBeforeApply.has(group.id));
-			if (createdGroup && this.liveTokens > cap && this.conductor) {
-				this.requestConductorRerun(this.conductor, this.conductorEpoch);
+			// suppresses re-entry. A group that survives the next baseline reset may need one
+			// settling pass so the conductor can plan against it. Mutable groups disappear before
+			// that view is built, and a structural follow-up never recursively settles again.
+			const createdPersistentGroup = this.groups.some(
+				(group) => !groupIdsBeforeApply.has(group.id) && this.preservesConductorGroup(group),
+			);
+			if (passKind === "external" && createdPersistentGroup && this.liveTokens > cap && this.conductor) {
+				this.requestConductorRerun(this.conductor, this.conductorEpoch, "structural-follow-up");
 			}
 		} finally {
 			this.conducting = false;
@@ -1095,6 +1111,16 @@ export class AccordionStore {
 	 * Cached-prefix folds and groups remain unchanged so the next provider payload keeps its
 	 * cacheable prefix. Other conductor groups rebuild from the current command batch.
 	 */
+	private preservesConductorGroup(group: Group): boolean {
+		return (
+			(group.by !== "auto" && group.by !== "conductor") ||
+			group.digest?.startsWith(CHUNKED_COMPACTION_PREFIX) === true ||
+			group.memberIds.some(
+				(id) => (this.get(id)?.order ?? this.frozenFromIndex) < this.frozenFromIndex,
+			)
+		);
+	}
+
 	private clearConductorState(protectedFrom: number): void {
 		for (let i = 0; i < this.blocks.length; i++) {
 			const b = this.blocks[i];
@@ -1109,12 +1135,7 @@ export class AccordionStore {
 		// Keep human groups, immutable chunked-compaction groups, and conductor groups that touch
 		// the cached prefix. Other conductor groups rebuild on every pass, so a conductor that
 		// returns [] still restores the mutable suffix to raw.
-		const preservedGroups = this.groups.filter(
-			(g) =>
-				(g.by !== "auto" && g.by !== "conductor") ||
-				g.digest?.startsWith(CHUNKED_COMPACTION_PREFIX) === true ||
-				g.memberIds.some((id) => (this.get(id)?.order ?? this.frozenFromIndex) < this.frozenFromIndex),
-		);
+		const preservedGroups = this.groups.filter((group) => this.preservesConductorGroup(group));
 		if (preservedGroups.length !== this.groups.length) this.groups = preservedGroups;
 	}
 

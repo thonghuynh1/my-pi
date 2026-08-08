@@ -1469,13 +1469,6 @@ async function runSubagent(
 		};
 
 		bindSession(created.session);
-		if (runtimeState) {
-			created.session.agent.shouldStopAfterTurn = () => {
-				if (!runtimeState) return false;
-				if (termination !== "completed") return true;
-				return runtimeState.turns >= runtimeState.limits.maxTurns;
-			};
-		}
 		if (runtimeState && reportToolsOnly(runtimeState)) activateReportOnly();
 
 		const prompt = packet ? `${buildEvidencePacketPrompt(packet, effectiveLimits)}\n\nParent task: ${params.task}` : `Task: ${params.task}\n\nReturn only the useful findings for the parent agent.`;
@@ -2041,11 +2034,7 @@ export default function (pi: ExtensionAPI) {
 				if (configError) ctx.ui.notify(`Ignoring invalid subagent models config. ${configError}.`, "warning");
 			}
 
-			const refreshResult = await ctx.modelRegistry.refresh();
-			if (refreshResult.errors.size > 0) {
-				const msgs = [...refreshResult.errors.values()].map(e => e.message).join("; ");
-				ctx.ui.notify(msgs, "warning");
-			}
+			await ctx.modelRegistry.refresh();
 			const registryError = ctx.modelRegistry.getError();
 			if (registryError) ctx.ui.notify(registryError, "warning");
 			const availableModels = await ctx.modelRegistry.getAvailable();

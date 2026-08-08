@@ -28,7 +28,8 @@
     "@earendil-works/pi-coding-agent": "^0.82.1",
     "@types/node": "^20.0.0",
     "@types/ws": "^8.18.1",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^4.1.10"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

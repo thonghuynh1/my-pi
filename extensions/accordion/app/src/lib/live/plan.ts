@@ -27,6 +27,7 @@ import type { Block } from "../engine/types";
 import type { FoldOp, GroupOp, UnfoldRestored, RecallContent } from "./protocol";
 import { isDurableId } from "./mapping";
 import { foldCode, wireFoldable } from "../engine/digest";
+import { searchBlocks } from "../engine/bm25";
 import { CHUNKED_COMPACTION_PREFIX } from "$conductors/my-customize-conductor/constants";
 
 /**
@@ -172,8 +173,9 @@ export function resolveUnfold(store: AccordionStore, codes: string[]): { restore
 /**
  * Resolve an agent `recall` request against the live store (protocol v4, ADR 0011).
  * `recall` is the agent's counterpart to the human's "peek": an UNBLOCKABLE read that
- * returns a folded block's ORIGINAL full content so the agent can use it THIS turn —
- * WITHOUT changing what is standing in its context. The block stays folded.
+ * returns a folded block's ORIGINAL full content, or BM25-ranked matching fragments when
+ * `query` is present, so the agent can use it THIS turn. WITHOUT changing what is standing
+ * in its context. The block stays folded.
  *
  * Critical differences from `resolveUnfold`:
  *   • READ-ONLY — this NEVER calls `store.unfold`/`unfoldGroup`/any mutator. No override
@@ -186,23 +188,27 @@ export function resolveUnfold(store: AccordionStore, codes: string[]): { restore
  *
  * Same match set as `resolveUnfold` / `computeFoldOps`: folded + a `FOLDABLE_KIND` + a
  * durable id + `foldCode(b.id) === code` for per-block matches; also folded groups via
- * `foldCode(g.id) === code` (a group returns its members' full original text joined). A
- * code matching nothing → `missing`. Pure of the wire — the caller sends the result.
+ * `foldCode(g.id) === code` (a group returns its members' full original text joined, or
+ * BM25-ranked matching fragments when `query` is present). A code matching nothing →
+ * `missing`. Pure of the wire — the caller sends the result.
  */
-export function resolveRecall(store: AccordionStore, codes: string[]): { restored: RecallContent[]; missing: string[] } {
+export function resolveRecall(store: AccordionStore, codes: string[], query?: string): { restored: RecallContent[]; missing: string[] } {
 	const restored: RecallContent[] = [];
 	const missing: string[] = [];
 	for (const code of codes) {
 		let hit = false;
 		// A GROUP code (= foldCode(group.id)) recalls the WHOLE range: return the full original
-		// text of every member, joined in conversation order. Checked first; a code can in
-		// principle match both a group and a block (rare collision) → return both.
+		// text of every member, joined in conversation order, or ranked matching fragments when
+		// queried. Checked first; a code can in principle match both a group and a block (rare
+		// collision) → return both.
 		for (const g of store.groups) {
 			if (g.folded && foldCode(g.id) === code) {
-				const text = g.memberIds
-					.map((id) => store.get(id)?.text ?? "")
-					.filter((t) => t.length > 0)
-					.join("\n\n");
+				const documents = g.memberIds
+					.map((id) => ({ id, text: store.get(id)?.text ?? "" }))
+					.filter((document) => document.text.length > 0);
+				const text = query === undefined
+					? documents.map((document) => document.text).join("\n\n")
+					: searchBlocks(documents, query, 5).map((hit) => hit.snippet).join("\n---\n");
 				restored.push({ code, label: `group · ${g.memberIds.length} blocks`, text, ids: g.memberIds });
 				hit = true;
 			}
@@ -215,7 +221,11 @@ export function resolveRecall(store: AccordionStore, codes: string[]): { restore
 			// Chunked-compaction member: return only this member's original text, read-only.
 			// Do NOT call appendToTail, unfold, or unfoldGroup — the group stays folded.
 			if (isChunkedCompactionGroupMember(store, b)) {
-				restored.push({ code, label: blockLabel(b), text: store.get(b.id)?.text ?? b.text ?? "", ids: [b.id] });
+				const originalText = store.get(b.id)?.text ?? b.text ?? "";
+				const text = query === undefined
+					? originalText
+					: searchBlocks([{ id: b.id, text: originalText }], query, 5).map((hit) => hit.snippet).join("\n---\n");
+				restored.push({ code, label: blockLabel(b), text, ids: [b.id] });
 				hit = true;
 				continue;
 			}
@@ -223,8 +233,13 @@ export function resolveRecall(store: AccordionStore, codes: string[]): { restore
 			// holds the group code); skip per-block recall here so we don't double-report — the
 			// group branch above already returns the full range.
 			if (store.groupOf(b)?.folded) continue;
-			// READ-ONLY: return the block's ORIGINAL full text, never the digest, and never mutate.
-			restored.push({ code, label: blockLabel(b), text: store.get(b.id)?.text ?? b.text, ids: [b.id] });
+			// READ-ONLY: return the block's ORIGINAL full text or its query-ranked fragments, never
+			// the digest, and never mutate.
+			const originalText = store.get(b.id)?.text ?? b.text;
+			const text = query === undefined
+				? originalText
+				: searchBlocks([{ id: b.id, text: originalText }], query, 5).map((hit) => hit.snippet).join("\n---\n");
+			restored.push({ code, label: blockLabel(b), text, ids: [b.id] });
 			hit = true;
 		}
 		if (!hit) missing.push(code);

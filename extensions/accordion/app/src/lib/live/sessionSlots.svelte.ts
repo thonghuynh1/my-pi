@@ -417,7 +417,7 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 			trySend(ws, reply);
 		} else if (msg.type === "recallRequest") {
 			const codes = Array.isArray(msg.codes) ? msg.codes : [];
-			const { restored, missing } = resolveRecall(slot.store, codes);
+			const { restored, missing } = resolveRecall(slot.store, codes, msg.query);
 			const reply: RecallResultMessage = {
 				type: "recallResult",
 				reqId: msg.reqId,

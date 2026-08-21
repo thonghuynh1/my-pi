@@ -441,7 +441,7 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 			// we resolve against the current store either way (resolveRecall never mutates, so
 			// disarmed there is simply nothing folded to recall, all codes report missing).
 			const codes = Array.isArray(msg.codes) ? msg.codes : [];
-			const { restored, missing } = session.store ? resolveRecall(session.store, codes) : { restored: [], missing: codes };
+			const { restored, missing } = session.store ? resolveRecall(session.store, codes, msg.query) : { restored: [], missing: codes };
 			const reply: RecallResultMessage = { type: "recallResult", reqId: msg.reqId, restored, missing };
 			try {
 				ws.send(JSON.stringify(reply));

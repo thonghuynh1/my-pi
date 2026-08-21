@@ -501,6 +501,87 @@ describe("resolveUnfold", () => {
 });
 
 describe("resolveRecall", () => {
+	it("returns matching fragments with context for a single block", () => {
+		const id = "a:query:p0";
+		const text = ["before one", "before two", "before three", "validate this line", "after one", "after two", "after three", "after four", "unrelated tail"].join("\n");
+		const store = makeStore([
+			blk({ id, tokens: 8000, text }),
+			blk({ id: "u:query-tail", kind: "user", tokens: 50, text: "hi" }),
+		]);
+		store.setProtect(40);
+		store.setBudget(1000);
+
+		const { restored, missing } = resolveRecall(store, [foldCode(id)], "validate");
+
+		expect(missing).toEqual([]);
+		expect(restored[0].text).toContain("validate this line");
+		expect(restored[0].text).toContain("before three");
+		expect(restored[0].text).not.toContain("unrelated tail");
+	});
+
+	it("returns empty text for a query with no matches", () => {
+		const id = "a:query-empty:p0";
+		const store = makeStore([
+			blk({ id, tokens: 8000, text: "alpha content" }),
+			blk({ id: "u:query-empty-tail", kind: "user", tokens: 50, text: "hi" }),
+		]);
+		store.setProtect(40);
+		store.setBudget(1000);
+
+		const { restored, missing } = resolveRecall(store, [foldCode(id)], "missing");
+
+		expect(missing).toEqual([]);
+		expect(restored).toHaveLength(1);
+		expect(restored[0].text).toBe("");
+	});
+
+	it("ranks matching fragments across a folded group", () => {
+		const ids = ["a:query-group-1:p0", "a:query-group-2:p0", "a:query-group-3:p0"];
+		const store = makeStore([
+			blk({ id: ids[0], tokens: 8000, text: "low relevance validate" }),
+			blk({ id: ids[1], tokens: 8000, text: "high validate validate validate" }),
+			blk({ id: ids[2], tokens: 8000, text: "no match here" }),
+			blk({ id: "u:query-group-tail", kind: "user", tokens: 50, text: "hi" }),
+		]);
+		store.setProtect(40);
+		const group = store.createGroup(ids[0], ids[2]);
+		expect(group).not.toBeNull();
+
+		const { restored } = resolveRecall(store, [foldCode(group!.id)], "validate");
+
+		expect(restored[0].text).toContain("low relevance validate");
+		expect(restored[0].text).toContain("high validate validate validate");
+		expect(restored[0].text.indexOf("high validate")).toBeLessThan(restored[0].text.indexOf("low relevance"));
+	});
+
+	it("caps grouped query results at five fragments", () => {
+		const ids = Array.from({ length: 7 }, (_, index) => `a:query-cap-${index}:p0`);
+		const store = makeStore([
+			...ids.map((id, index) => blk({ id, tokens: 8000, text: `match-${index} validate` })),
+			blk({ id: "u:query-cap-tail", kind: "user", tokens: 50, text: "hi" }),
+		]);
+		store.setProtect(40);
+		const group = store.createGroup(ids[0], ids[ids.length - 1]);
+		expect(group).not.toBeNull();
+
+		const { restored } = resolveRecall(store, [foldCode(group!.id)], "validate");
+
+		expect(restored[0].text.split("\n---\n")).toHaveLength(5);
+	});
+
+	it("returns full text when no query is provided", () => {
+		const id = "a:query-regression:p0";
+		const text = "full original content";
+		const store = makeStore([
+			blk({ id, tokens: 8000, text }),
+			blk({ id: "u:query-regression-tail", kind: "user", tokens: 50, text: "hi" }),
+		]);
+		store.setProtect(40);
+		store.setBudget(1000);
+
+		expect(resolveRecall(store, [foldCode(id)]).restored[0].text).toBe(text);
+	});
+
 	it("works for conductor custom digests that carry the recovery tag", () => {
 		order = 0;
 		const ORIGINAL = "CUSTOM DIGEST ORIGINAL " + "padding ".repeat(200);

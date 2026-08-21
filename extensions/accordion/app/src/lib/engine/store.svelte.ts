@@ -1088,18 +1088,13 @@ export class AccordionStore {
 		}
 	}
 
-	/** Engine invariant: force-unfold any manual fold that now sits in the protected tail. */
-	/** Heal protected-tail folds + clear conductor state in a single pass over blocks. */
 	private healAndClearConductorState(protectedFrom: number): void {
 		for (let i = 0; i < this.blocks.length; i++) {
 			const b = this.blocks[i];
-			// Protection is absolute: a manual fold the tail has grown over springs back to live.
 			if (i >= protectedFrom && b.override === "folded") {
 				this.emit(b.by ?? "auto", "unfolded (protected)", label(b));
 				b.override = null;
 				b.by = null;
-				// Fall through: the block now has override === null and must be processed
-				// by the clear-conductor-state logic below.
 			}
 			if (b.override === null) {
 				// Moving boundaries must not make an existing automatic fold snap open.

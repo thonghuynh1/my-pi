@@ -112,8 +112,6 @@ describe("ContextMap authoritative Pre-Group region", () => {
 		const groups = store.groups.flatMap((group) => group.memberIds);
 		expect(groups.length).toBeGreaterThan(0);
 		expect(groups).not.toContain("tail2");
-		// After rollover, pg26 is a legitimate residue (the rollover consumed turns up to
-		// the target but not the last appended block, which seeds the next cycle).
 		expect(store.preGroupIds.every((id) => !groups.includes(id))).toBe(true);
 
 		store.appendBlocks([block("residue", 28, 6_000), block("tail3", 29, 100)]);

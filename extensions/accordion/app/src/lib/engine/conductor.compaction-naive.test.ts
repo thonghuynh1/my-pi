@@ -1714,8 +1714,6 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		conductor.conduct(view);
 		conductor.conduct(view);
 
-		// Second identical conduct() hits the O(1) primary fast path and skips finishConduct,
-		// so setStatus fires only once.
 		expect(setStatus).toHaveBeenCalledTimes(1);
 		for (const [text, metrics] of setStatus.mock.calls) {
 			expect(text).toMatch(/^chunked · 0% pregroup · 0 rollovers · 0 saved/);
@@ -1820,8 +1818,6 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const blocks = [...Array.from({ length: 25 }, (_, i) => chunkedBlock(`resume-${i}`, i, 4_000)), chunkedBlock("resume-tail", 25, 100, { kind: "user", protected: true })];
 		const conductor = new MyCustomizeConductor();
 		const first = conductor.conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 });
-		// After the rebase, all content blocks are grouped. Simulate the post-rebase state
-		// where only the protected tail remains ungrouped.
 		conductor.markDirty();
 		const second = conductor.conduct({ ...rolloverView(blocks.map((block) => ({ ...block, grouped: block.id !== "resume-tail" }))), budget: 70_000, liveTokens: 55_000 });
 		expect(first.commands.filter((command) => command.kind === "group" && (command.digest ?? "").startsWith("⟨chunked-compaction ·"))).toHaveLength(1);

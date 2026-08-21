@@ -20,7 +20,7 @@ const STOP_WORDS = new Set([
 ]);
 
 function tokenize(text: string): string[] {
-	return text.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu)?.filter((term) => !STOP_WORDS.has(term)) ?? [];
+	return text.toLowerCase().match(/[\p{L}\p{N}]+/gu)?.filter((term) => !STOP_WORDS.has(term)) ?? [];
 }
 
 interface IndexedDocument {

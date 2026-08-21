@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import * as cacheTracker from "./cache-tracker";
+import { searchBlocks } from "../app/src/lib/engine/bm25";
 
 export const MIN_TOKEN_THRESHOLD = 300;
 const MAX_OUTPUT_TOKENS = 200;
@@ -34,10 +35,14 @@ export function getOriginal(code: string): string | undefined {
 	return originals.get(code);
 }
 
-export function resolveOriginals(codes: readonly string[]): ProactiveRecall[] {
+export function resolveOriginals(codes: readonly string[], query?: string): ProactiveRecall[] {
 	return codes.flatMap((code) => {
-		const text = getOriginal(code);
-		return text === undefined ? [] : [{ code, label: "tool result", text }];
+		const original = getOriginal(code);
+		if (original === undefined) return [];
+		const text = query === undefined
+			? original
+			: searchBlocks([{ id: code, text: original }], query)[0]?.snippet ?? "";
+		return [{ code, label: "tool result", text }];
 	});
 }
 

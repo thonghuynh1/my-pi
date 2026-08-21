@@ -49,6 +49,20 @@ describe("proactive compression", () => {
 		expect(code).toBeDefined();
 		expect(getOriginal(code ?? "")).toBe(longContent);
 		expect(resolveOriginals([code ?? ""])).toEqual([{ code, label: "tool result", text: longContent }]);
+		expect(resolveOriginals([code ?? ""], "100")).toEqual([{
+			code,
+			label: "tool result",
+			text: [
+				"line-97 xxxxxxxxxxxx",
+				"line-98 xxxxxxxxxxxx",
+				"line-99 xxxxxxxxxxxx",
+				"line-100 xxxxxxxxxxxx",
+				"line-101 xxxxxxxxxxxx",
+				"line-102 xxxxxxxxxxxx",
+				"line-103 xxxxxxxxxxxx",
+			].join("\n"),
+		}]);
+		expect(resolveOriginals([code ?? ""], "absent")[0]?.text).toBe("");
 	});
 
 	it.each(["mcp", "recall"])("does not compress %s tool results", (toolName) => {

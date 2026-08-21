@@ -27,7 +27,7 @@ import type { Block } from "../engine/types";
 import type { FoldOp, GroupOp, UnfoldRestored, RecallContent } from "./protocol";
 import { isDurableId } from "./mapping";
 import { foldCode, wireFoldable } from "../engine/digest";
-import { searchBlocks } from "../engine/bm25";
+import { searchBlocks, type SearchDocument } from "../engine/bm25";
 import { CHUNKED_COMPACTION_PREFIX } from "$conductors/my-customize-conductor/constants";
 
 /**
@@ -192,6 +192,11 @@ export function resolveUnfold(store: AccordionStore, codes: string[]): { restore
  * BM25-ranked matching fragments when `query` is present). A code matching nothing →
  * `missing`. Pure of the wire — the caller sends the result.
  */
+function recallText(documents: SearchDocument[], query?: string): string {
+	if (query === undefined) return documents.map(({ text }) => text).join("\n\n");
+	return searchBlocks(documents, query).map(({ snippet }) => snippet).join("\n---\n");
+}
+
 export function resolveRecall(store: AccordionStore, codes: string[], query?: string): { restored: RecallContent[]; missing: string[] } {
 	const restored: RecallContent[] = [];
 	const missing: string[] = [];
@@ -206,9 +211,7 @@ export function resolveRecall(store: AccordionStore, codes: string[], query?: st
 				const documents = g.memberIds
 					.map((id) => ({ id, text: store.get(id)?.text ?? "" }))
 					.filter((document) => document.text.length > 0);
-				const text = query === undefined
-					? documents.map((document) => document.text).join("\n\n")
-					: searchBlocks(documents, query, 5).map((hit) => hit.snippet).join("\n---\n");
+				const text = recallText(documents, query);
 				restored.push({ code, label: `group · ${g.memberIds.length} blocks`, text, ids: g.memberIds });
 				hit = true;
 			}
@@ -222,9 +225,7 @@ export function resolveRecall(store: AccordionStore, codes: string[], query?: st
 			// Do NOT call appendToTail, unfold, or unfoldGroup — the group stays folded.
 			if (isChunkedCompactionGroupMember(store, b)) {
 				const originalText = store.get(b.id)?.text ?? b.text ?? "";
-				const text = query === undefined
-					? originalText
-					: searchBlocks([{ id: b.id, text: originalText }], query, 5).map((hit) => hit.snippet).join("\n---\n");
+				const text = recallText([{ id: b.id, text: originalText }], query);
 				restored.push({ code, label: blockLabel(b), text, ids: [b.id] });
 				hit = true;
 				continue;
@@ -236,9 +237,7 @@ export function resolveRecall(store: AccordionStore, codes: string[], query?: st
 			// READ-ONLY: return the block's ORIGINAL full text or its query-ranked fragments, never
 			// the digest, and never mutate.
 			const originalText = store.get(b.id)?.text ?? b.text;
-			const text = query === undefined
-				? originalText
-				: searchBlocks([{ id: b.id, text: originalText }], query, 5).map((hit) => hit.snippet).join("\n---\n");
+			const text = recallText([{ id: b.id, text: originalText }], query);
 			restored.push({ code, label: blockLabel(b), text, ids: [b.id] });
 			hit = true;
 		}

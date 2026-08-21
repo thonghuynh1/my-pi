@@ -1,5 +1,6 @@
 ---
-repo: C:\my-pi\extensions\accordion
+repo: F:/MyWork/my-pi
+status: closed
 ---
 
 ## Parent

@@ -229,12 +229,12 @@ describe("canFold — truth table", () => {
 		expect(newest.id).toBe("u:2");
 		expect(s.protectedFromIndex).toBe(s.blocks.length - 1);
 		expect(s.isProtected(newest)).toBe(true);
-		// A foldable-kind block dragged into the protected tail must report canFold === false.
 		// Pull the tail back to cover the tool_result at index 4 too (2 blocks = 2000 tok;
-		// target=2000 ⇒ cap=2500, so adding the second 1000-tok block is allowed).
+		// target=2000 ⇒ cap=2500). Pair-snapping pulls the boundary from 4 → 3 to keep
+		// the tool_call/tool_result pair (indices 3–4) together in the protected tail.
 		s.setProtect(2000);
 		const tr = s.get("r:c1")!; // tool_result at index 4
-		expect(s.protectedFromIndex).toBe(4);
+		expect(s.protectedFromIndex).toBe(3);
 		expect(s.isProtected(tr)).toBe(true);
 		expect(s.canFold(tr)).toBe(false);
 		// And below the tail it is foldable again.

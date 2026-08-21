@@ -695,7 +695,7 @@
 		const g = store.groupOf(b);
 		return g?.folded && !peeked.has(g.id) ? g : undefined;
 	};
-	const navOrder = $derived.by<number[]>(() => {
+	function getNavOrder(): number[] {
 		const blocks = store.blocks;
 		const out: number[] = [];
 		for (let i = 0; i < blocks.length; i++) {
@@ -704,7 +704,7 @@
 			out.push(i);
 		}
 		return out;
-	});
+	}
 	function scrollIdIntoView(id: string) {
 		if (!stage) return;
 		// Search all TileCanvas instances for a tile with this id.
@@ -833,7 +833,7 @@
 			// "moved"/"edge" are terminal; "nocenter" falls through to linear nav below.
 			if (r === "moved" || r === "edge") return;
 		}
-		const order = navOrder;
+		const order = getNavOrder();
 		if (!order.length) return;
 		// Map the current selection to a position in `order`. A selection sitting on a hidden
 		// group member maps to its group's stop (the first member). A group id maps to its

@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Recall Query Wire Shape — Option A vs Option B</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #0f1117; color: #e0e0e0; line-height: 1.5; padding: 2rem; max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin-bottom: 0.3rem; color: #fff; }
+  .subtitle { color: #888; font-size: 0.9rem; margin-bottom: 1.5rem; }
+  h2 { font-size: 1.1rem; margin-bottom: 0.8rem; color: #ccc; }
+  h3 { font-size: 0.95rem; margin-bottom: 0.5rem; color: #aaa; }
+
+  .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem; }
+  .panel { background: #1a1d27; border: 1px solid #2a2d3a; border-radius: 8px; padding: 1.2rem; }
+  .panel h2 { border-bottom: 1px solid #2a2d3a; padding-bottom: 0.5rem; }
+  .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #666; margin-bottom: 0.3rem; }
+  .accent { color: #6ea8fe; }
+  .warn { color: #ffc107; }
+  .dim { color: #666; }
+
+  pre { background: #12141c; border: 1px solid #2a2d3a; border-radius: 6px; padding: 0.8rem; font-size: 0.82rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; margin: 0.5rem 0; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+  pre .key { color: #6ea8fe; }
+  pre .str { color: #a5d6a7; }
+  pre .num { color: #ce93d8; }
+  pre .comment { color: #555; font-style: italic; }
+
+  .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1rem 0; }
+  button { background: #2a2d3a; color: #e0e0e0; border: 1px solid #3a3d4a; border-radius: 6px; padding: 0.5rem 1rem; cursor: pointer; font-size: 0.85rem; transition: all 0.15s; }
+  button:hover { background: #3a3d4a; border-color: #6ea8fe; }
+  button.active { background: #1a3a5c; border-color: #6ea8fe; color: #6ea8fe; }
+  button:disabled { opacity: 0.4; cursor: default; }
+
+  .tabs { display: flex; gap: 0; margin-bottom: 0; }
+  .tab { background: #12141c; border: 1px solid #2a2d3a; border-bottom: none; border-radius: 6px 6px 0 0; padding: 0.4rem 1rem; cursor: pointer; font-size: 0.82rem; color: #888; }
+  .tab.active { background: #1a1d27; color: #6ea8fe; border-color: #3a3d4a; }
+  .scenario-box { background: #1a1d27; border: 1px solid #3a3d4a; border-radius: 0 8px 8px 8px; padding: 1.2rem; margin-bottom: 1.5rem; }
+  .scenario-desc { color: #aaa; font-size: 0.85rem; margin-bottom: 1rem; }
+  .step { display: flex; align-items: center; gap: 0.8rem; padding: 0.4rem 0; }
+  .step-num { background: #2a2d3a; color: #6ea8fe; border-radius: 50%; width: 1.5rem; height: 1.5rem; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; flex-shrink: 0; }
+  .step-num.done { background: #1a3a2a; color: #4caf50; }
+  .step-label { font-size: 0.85rem; }
+  .changed { animation: flash 0.4s ease-out; }
+  @keyframes flash { 0% { background: #2a3a5c; } 100% { background: transparent; } }
+  .diff { margin-top: 0.5rem; padding: 0.4rem 0.6rem; border-radius: 4px; font-size: 0.8rem; }
+  .diff.good { background: #1a2a1a; border-left: 3px solid #4caf50; color: #a5d6a7; }
+  .diff.bad { background: #2a1a1a; border-left: 3px solid #f44336; color: #ef9a9a; }
+  .diff.neutral { background: #1a1a2a; border-left: 3px solid #6ea8fe; color: #90caf9; }
+  .verdict-box { margin-top: 1rem; padding: 1rem; border-radius: 8px; border: 1px solid #3a3d4a; background: #12141c; }
+</style>
+</head>
+<body>
+
+<h1>Recall Query Wire Shape — Option A vs Option B</h1>
+<p class="subtitle">Question: when <code>recall</code> gets an optional <code>query</code>, should the result reuse <code>RecallContent.text</code> for fragments (A) or add a separate <code>hits</code> array (B)?</p>
+
+<div class="columns" id="app">
+  <div class="panel" id="option-a-panel">
+    <h2>Option A — Reuse <code>text</code></h2>
+    <div class="label">RecallResultMessage</div>
+    <pre id="result-a"></pre>
+  </div>
+  <div class="panel" id="option-b-panel">
+    <h2>Option B — Separate <code>hits</code></h2>
+    <div class="label">RecallResultMessage</div>
+    <pre id="result-b"></pre>
+  </div>
+</div>
+
+<h2>Free Play</h2>
+<div class="actions">
+  <button onclick="dispatch('recall-no-query')">recall({ codes: ["3f9a2c"] })</button>
+  <button onclick="dispatch('recall-query-match')">recall({ codes: ["3f9a2c"], query: "validate" })</button>
+  <button onclick="dispatch('recall-query-no-match')">recall({ codes: ["3f9a2c"], query: "xyzzy" })</button>
+  <button onclick="dispatch('recall-multi-query')">recall({ codes: ["3f9a2c","b7e1d0"], query: "error" })</button>
+  <button onclick="dispatch('recall-missing')">recall({ codes: ["000000"], query: "test" })</button>
+</div>
+
+<div class="label" style="margin-top:0.5rem">Last action</div>
+<div id="last-action" style="color:#888;font-size:0.85rem">—</div>
+<div id="observation"></div>
+
+<h2 style="margin-top:1.5rem">Guided Walkthroughs</h2>
+<div class="tabs">
+  <div class="tab active" onclick="selectScenario(0)">Happy Path</div>
+  <div class="tab" onclick="selectScenario(1)">No Match</div>
+  <div class="tab" onclick="selectScenario(2)">Multi-block Query</div>
+  <div class="tab" onclick="selectScenario(3)">Consumer Branching</div>
+</div>
+<div class="scenario-box" id="scenario-box"></div>
+
+<script>
+// ─── Pure Logic Module (liftable) ───────────────────────────────────────
+
+const BLOCKS = {
+  "3f9a2c": {
+    label: "tool_result read · turn 12",
+    text: "export function validateEmail(email: string): boolean {\n  const re = /^[^@]+@[^@]+\\.[^@]+$/;\n  return re.test(email);\n}\n\nexport function validatePhone(phone: string): boolean {\n  return /^\\+?[0-9]{7,15}$/.test(phone);\n}\n\nexport function formatUser(user: User): string {\n  return `${user.firstName} ${user.lastName}`;\n}",
+    ids: ["r:abc"]
+  },
+  "b7e1d0": {
+    label: "tool_result grep · turn 8",
+    text: "src/api/handler.ts:42: if (error instanceof ValidationError) throw;\nsrc/api/handler.ts:88: log.error('unhandled', { error });\nsrc/api/handler.ts:120: return { status: 500, body: 'Internal error' };",
+    ids: ["r:def"]
+  }
+};
+
+function searchBlock(text, query) {
+  const lines = text.split("\n");
+  const q = query.toLowerCase();
+  return lines.filter(l => l.toLowerCase().includes(q));
+}
+
+function buildOptionA(action) {
+  const { codes, query } = action;
+  const restored = [];
+  const missing = [];
+
+  for (const code of codes) {
+    const block = BLOCKS[code];
+    if (!block) { missing.push(code); continue; }
+
+    if (query) {
+      const hits = searchBlock(block.text, query);
+      // text carries fragments when query present, full content when not
+      restored.push({
+        code,
+        label: block.label,
+        text: hits.length > 0 ? hits.join("\n") : "",
+        ids: block.ids
+      });
+    } else {
+      restored.push({ code, label: block.label, text: block.text, ids: block.ids });
+    }
+  }
+  return { type: "recallResult", reqId: 1, restored, missing };
+}
+
+function buildOptionB(action) {
+  const { codes, query } = action;
+  const restored = [];
+  const hits = [];
+  const missing = [];
+
+  for (const code of codes) {
+    const block = BLOCKS[code];
+    if (!block) { missing.push(code); continue; }
+
+    if (query) {
+      const matched = searchBlock(block.text, query);
+      for (const snippet of matched) {
+        hits.push({ code, label: block.label, snippet, score: 0.7 + Math.random() * 0.3 });
+      }
+    } else {
+      restored.push({ code, label: block.label, text: block.text, ids: block.ids });
+    }
+  }
+
+  const result = { type: "recallResult", reqId: 1, restored, missing };
+  if (query) result.hits = hits;
+  return result;
+}
+
+function getObservation(action, resultA, resultB) {
+  const { codes, query } = action;
+  if (!query) {
+    return { type: "neutral", text: "No query — both options behave identically. Same shape, same content." };
+  }
+  const aEmpty = resultA.restored.every(r => r.text === "");
+  const bNoHits = (resultB.hits || []).length === 0;
+
+  if (aEmpty && bNoHits) {
+    return { type: "neutral", text: "No matches. Option A: restored[].text is empty string. Option B: hits[] is empty array. Both signal 'nothing found' but differently." };
+  }
+
+  const aFragments = resultA.restored.filter(r => r.text !== "");
+  const bHits = resultB.hits || [];
+
+  if (aFragments.length > 0) {
+    const consumerNote = "Option A: consumer checks 'was query present?' to know if text is fragments or full content. Option B: consumer checks 'is hits present?' — the field itself disambiguates.";
+    return { type: "good", text: consumerNote };
+  }
+  return { type: "neutral", text: "Both return matching content." };
+}
+
+// ─── Actions ─────────────────────────────────────────────────────────────
+
+const ACTIONS = {
+  "recall-no-query":      { codes: ["3f9a2c"], query: null,       display: 'recall({ codes: ["3f9a2c"] })' },
+  "recall-query-match":   { codes: ["3f9a2c"], query: "validate", display: 'recall({ codes: ["3f9a2c"], query: "validate" })' },
+  "recall-query-no-match":{ codes: ["3f9a2c"], query: "xyzzy",    display: 'recall({ codes: ["3f9a2c"], query: "xyzzy" })' },
+  "recall-multi-query":   { codes: ["3f9a2c", "b7e1d0"], query: "error", display: 'recall({ codes: ["3f9a2c","b7e1d0"], query: "error" })' },
+  "recall-missing":       { codes: ["000000"], query: "test",     display: 'recall({ codes: ["000000"], query: "test" })' },
+};
+
+// ─── Scenarios ───────────────────────────────────────────────────────────
+
+const SCENARIOS = [
+  {
+    name: "Happy Path",
+    desc: "Agent recalls a block with a query that matches. Watch how each option shapes the result.",
+    steps: [
+      { action: "recall-no-query", label: "First, a normal recall (no query) — baseline" },
+      { action: "recall-query-match", label: "Now add query: \"validate\" — compare how fragments appear" },
+    ]
+  },
+  {
+    name: "No Match",
+    desc: "The query matches nothing in the block. How does each option signal 'no results'?",
+    steps: [
+      { action: "recall-query-no-match", label: "Query \"xyzzy\" against the code block — no lines match" },
+    ]
+  },
+  {
+    name: "Multi-block Query",
+    desc: "Query across two blocks. One has matches, one doesn't. See how results aggregate.",
+    steps: [
+      { action: "recall-multi-query", label: "Query \"error\" across blocks 3f9a2c and b7e1d0" },
+    ]
+  },
+  {
+    name: "Consumer Branching",
+    desc: "The key question: when the tool result comes back, how does the consumer (recall tool handler) know whether text is full content or fragments?",
+    steps: [
+      { action: "recall-no-query", label: "No query — both return restored[].text = full content" },
+      { action: "recall-query-match", label: "With query — Option A: same field, different meaning. Option B: different field." },
+    ]
+  }
+];
+
+// ─── Page Shell (throwaway) ──────────────────────────────────────────────
+
+let currentScenario = 0;
+let scenarioStep = 0;
+
+function syntaxHighlight(obj) {
+  const json = JSON.stringify(obj, null, 2);
+  return json
+    .replace(/"([^"]+)":/g, '<span class="key">"$1"</span>:')
+    .replace(/: "([^"]*)"/g, ': <span class="str">"$1"</span>')
+    .replace(/: (\d+\.?\d*)/g, ': <span class="num">$1</span>')
+    .replace(/"([^"]*)"/g, '<span class="str">"$1"</span>');
+}
+
+function render(resultA, resultB) {
+  document.getElementById("result-a").innerHTML = syntaxHighlight(resultA);
+  document.getElementById("result-b").innerHTML = syntaxHighlight(resultB);
+  document.getElementById("result-a").classList.add("changed");
+  document.getElementById("result-b").classList.add("changed");
+  setTimeout(() => {
+    document.getElementById("result-a").classList.remove("changed");
+    document.getElementById("result-b").classList.remove("changed");
+  }, 400);
+}
+
+function renderObservation(obs) {
+  const el = document.getElementById("observation");
+  if (!obs) { el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="diff ${obs.type}">${obs.text}</div>`;
+}
+
+function dispatch(actionKey) {
+  const action = ACTIONS[actionKey];
+  const resultA = buildOptionA(action);
+  const resultB = buildOptionB(action);
+  render(resultA, resultB);
+  document.getElementById("last-action").textContent = action.display;
+  renderObservation(getObservation(action, resultA, resultB));
+}
+
+function selectScenario(idx) {
+  currentScenario = idx;
+  scenarioStep = 0;
+  document.querySelectorAll(".tab").forEach((t, i) => t.classList.toggle("active", i === idx));
+  renderScenario();
+}
+
+function renderScenario() {
+  const s = SCENARIOS[currentScenario];
+  let html = `<div class="scenario-desc">${s.desc}</div>`;
+  for (let i = 0; i < s.steps.length; i++) {
+    const step = s.steps[i];
+    const done = i < scenarioStep;
+    const current = i === scenarioStep;
+    html += `<div class="step">
+      <div class="step-num ${done ? 'done' : ''}">${i + 1}</div>
+      <button ${current ? '' : 'disabled'} onclick="runStep(${i})">${step.label}</button>
+    </div>`;
+  }
+  if (scenarioStep >= s.steps.length) {
+    html += `<div style="margin-top:0.8rem"><button onclick="resetScenario()">↺ Reset</button></div>`;
+  }
+  document.getElementById("scenario-box").innerHTML = html;
+}
+
+function runStep(idx) {
+  const s = SCENARIOS[currentScenario];
+  dispatch(s.steps[idx].action);
+  scenarioStep = idx + 1;
+  renderScenario();
+}
+
+function resetScenario() {
+  scenarioStep = 0;
+  renderScenario();
+  render({type:"recallResult",reqId:1,restored:[],missing:[]}, {type:"recallResult",reqId:1,restored:[],missing:[]});
+  document.getElementById("last-action").textContent = "—";
+  renderObservation(null);
+}
+
+// Initial render
+render(
+  { type: "recallResult", reqId: 1, restored: [], missing: [], _note: "click an action to see results" },
+  { type: "recallResult", reqId: 1, restored: [], missing: [], _note: "click an action to see results" }
+);
+renderScenario();
+</script>
+
+</body>
+</html>

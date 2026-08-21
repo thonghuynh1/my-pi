@@ -742,18 +742,19 @@ export class AccordionStore {
 	// These aggregates are read many times per render (the header alone reads several
 	// repeatedly). As `$derived` they walk the blocks once per real change and dedupe
 	// across every reader, instead of re-summing ~1k blocks on each property access.
-	liveTokens = $derived.by(() => {
-		let n = 0;
-		for (const b of this.blocks) n += this.effTokens(b);
-		return n;
+	private _blockStats = $derived.by(() => {
+		let live = 0, full = 0, folded = 0;
+		for (const b of this.blocks) {
+			full += b.tokens;
+			live += this.effTokens(b);
+			if (this.isFolded(b)) folded++;
+		}
+		return { live, full, folded };
 	});
+	liveTokens = $derived(this._blockStats.live);
 	/** What the context would cost with nothing folded. (Only changes when blocks change.) */
-	fullTokens = $derived.by(() => {
-		let n = 0;
-		for (const b of this.blocks) n += b.tokens;
-		return n;
-	});
-	savedTokens = $derived.by(() => this.fullTokens - this.liveTokens);
+	fullTokens = $derived(this._blockStats.full);
+	savedTokens = $derived(this._blockStats.full - this._blockStats.live);
 	/**
 	 * Non-conversation overhead already consuming the window (system prompt + tool schemas incl.
 	 * MCP + framing), derived from the live harness breakdown. Preferred = the self-consistent
@@ -773,11 +774,7 @@ export class AccordionStore {
 		else if (h.systemPromptTokens != null) sum += h.systemPromptTokens;
 		return sum;
 	});
-	foldedCount = $derived.by(() => {
-		let n = 0;
-		for (const b of this.blocks) if (this.isFolded(b)) n++;
-		return n;
-	});
+	foldedCount = $derived(this._blockStats.folded);
 	// Budget is REAL provider tokens; liveTokens is our estimate → compare on the real scale.
 	overBudget = $derived.by(() => this.liveTokens * this.calibration > this.budget);
 
@@ -1018,8 +1015,9 @@ export class AccordionStore {
 		}
 		this.conducting = true;
 		try {
-			const before = this.snapshotFoldState();
-			const beforeGroups = this.snapshotFoldedConductorGroups();
+			const isFirstPass = this.version === 0;
+			const before = isFirstPass ? null : this.snapshotFoldState();
+			const beforeGroups = isFirstPass ? null : this.snapshotFoldedConductorGroups();
 			// A group can never overlap the protected tail; drop any that now does (e.g. the
 			// tail was widened over it) before anything reads group state this pass.
 			this.pruneProtectedGroups();
@@ -1030,10 +1028,7 @@ export class AccordionStore {
 			// Engine invariant — protection is ABSOLUTE: a block in the working tail is never
 			// folded, by a conductor OR the user. Heal a manual fold the tail has grown over
 			// (e.g. the tail widened via setProtect) so it springs back to live.
-			this.healProtected(protectedFrom);
-			// Reset conductor-owned state to the raw baseline (human overrides + groups still
-			// apply); the snapshot's liveTokens is then exactly what the conductor folds down from.
-			this.clearConductorState(protectedFrom);
+			this.healAndClearConductorState(protectedFrom);
 			this.version++;
 
 			// Ask the active conductor for its complete desired state. `null` ⇒ hold the last
@@ -1077,7 +1072,7 @@ export class AccordionStore {
 				this.emit(by, `clamped · ${r.reason}`, r.detail);
 				this.recordDecision(by, "clamp", r.ids, r.detail, r.reason);
 			}
-			this.recordConductorTransitions(before, beforeGroups);
+			if (before && beforeGroups) this.recordConductorTransitions(before, beforeGroups);
 			// createGroup() requests a nested refold, but the conducting guard intentionally
 			// suppresses re-entry. A group that survives the next baseline reset may need one
 			// settling pass so the conductor can plan against it. Mutable groups disappear before
@@ -1094,36 +1089,18 @@ export class AccordionStore {
 	}
 
 	/** Engine invariant: force-unfold any manual fold that now sits in the protected tail. */
-	private healProtected(protectedFrom: number): void {
-		this.blocks.forEach((b, i) => {
+	/** Heal protected-tail folds + clear conductor state in a single pass over blocks. */
+	private healAndClearConductorState(protectedFrom: number): void {
+		for (let i = 0; i < this.blocks.length; i++) {
+			const b = this.blocks[i];
+			// Protection is absolute: a manual fold the tail has grown over springs back to live.
 			if (i >= protectedFrom && b.override === "folded") {
-				// Protection is absolute, but do not silently erase the user intent — log the
-				// forced unfold so the activity feed shows what happened.
 				this.emit(b.by ?? "auto", "unfolded (protected)", label(b));
 				b.override = null;
 				b.by = null;
+				// Fall through: the block now has override === null and must be processed
+				// by the clear-conductor-state logic below.
 			}
-		});
-	}
-
-	/**
-	 * Clear conductor-owned state from the mutable suffix. Human overrides remain untouched.
-	 * Cached-prefix folds and groups remain unchanged so the next provider payload keeps its
-	 * cacheable prefix. Other conductor groups rebuild from the current command batch.
-	 */
-	private preservesConductorGroup(group: Group): boolean {
-		return (
-			(group.by !== "auto" && group.by !== "conductor") ||
-			group.digest?.startsWith(CHUNKED_COMPACTION_PREFIX) === true ||
-			group.memberIds.some(
-				(id) => (this.get(id)?.order ?? this.frozenFromIndex) < this.frozenFromIndex,
-			)
-		);
-	}
-
-	private clearConductorState(protectedFrom: number): void {
-		for (let i = 0; i < this.blocks.length; i++) {
-			const b = this.blocks[i];
 			if (b.override === null) {
 				// Moving boundaries must not make an existing automatic fold snap open.
 				if ((i >= protectedFrom || b.order < this.frozenFromIndex) && (b.autoFolded || b.subst !== undefined)) continue;
@@ -1132,11 +1109,18 @@ export class AccordionStore {
 				if (b.by === "auto" || b.by === "conductor") b.by = null;
 			}
 		}
-		// Keep human groups, immutable chunked-compaction groups, and conductor groups that touch
-		// the cached prefix. Other conductor groups rebuild on every pass, so a conductor that
-		// returns [] still restores the mutable suffix to raw.
 		const preservedGroups = this.groups.filter((group) => this.preservesConductorGroup(group));
 		if (preservedGroups.length !== this.groups.length) this.groups = preservedGroups;
+	}
+
+	private preservesConductorGroup(group: Group): boolean {
+		return (
+			(group.by !== "auto" && group.by !== "conductor") ||
+			group.digest?.startsWith(CHUNKED_COMPACTION_PREFIX) === true ||
+			group.memberIds.some(
+				(id) => (this.get(id)?.order ?? this.frozenFromIndex) < this.frozenFromIndex,
+			)
+		);
 	}
 
 	/**

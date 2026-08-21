@@ -161,9 +161,14 @@ function runSession(rolloverCount: 0 | 1 | 2): SessionRun {
 		[userMessage(1)],
 		[assistantMessage(1, BELOW_THRESHOLD_TOKENS)],
 	];
-	if (rolloverCount >= 1) additions.push([assistantMessage(2, CROSSING_TOKENS)]);
+	if (rolloverCount >= 1) {
+		additions.push([userMessage(2)]);
+		additions.push([assistantMessage(2, CROSSING_TOKENS)]);
+	}
 	if (rolloverCount >= 2) {
-		additions.push([userMessage(2), assistantMessage(3, BELOW_THRESHOLD_TOKENS)]);
+		additions.push([userMessage(3)]);
+		additions.push([assistantMessage(3, BELOW_THRESHOLD_TOKENS)]);
+		additions.push([userMessage(4)]);
 		additions.push([assistantMessage(4, CROSSING_TOKENS)]);
 	}
 
@@ -231,7 +236,7 @@ describe("chunked-compaction diagnostic/cache invariant", () => {
 
 	it("single rollover satisfies count(rollover) == cacheBreaks - coldStarts", () => {
 		const run = runSession(1);
-		expect(run.groupCountByTurn).toEqual([0, 0, 1]);
+		expect(run.groupCountByTurn).toEqual([0, 0, 0, 1]);
 		expect(verifyInvariant(run.records)).toEqual({
 			rollovers: 1,
 			coldStarts: 1,
@@ -243,8 +248,8 @@ describe("chunked-compaction diagnostic/cache invariant", () => {
 
 	it("two rollovers satisfy the invariant without repeating old-group diagnostics", () => {
 		const run = runSession(2);
-		expect(run.groupCountByTurn).toEqual([0, 0, 1, 1, 2]);
-		expect.soft(run.records.map(hasRollover)).toEqual([false, false, true, false, true]);
+		expect(run.groupCountByTurn).toEqual([0, 0, 0, 1, 1, 1, 1, 2]);
+		expect.soft(run.records.map(hasRollover)).toEqual([false, false, false, true, false, false, false, true]);
 		const hashes = run.records.flatMap((record) => {
 			const hash = rolloverHash(record);
 			return hash === undefined ? [] : [hash];

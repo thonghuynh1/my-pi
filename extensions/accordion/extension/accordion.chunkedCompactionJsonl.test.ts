@@ -14,6 +14,7 @@ vi.mock("ws", async () => {
 vi.mock("typebox", () => ({
 	Type: {
 		String: (): Record<string, never> => ({}),
+		Optional: (): Record<string, never> => ({}),
 		Array: (): Record<string, never> => ({}),
 		Object: (): Record<string, never> => ({}),
 	},

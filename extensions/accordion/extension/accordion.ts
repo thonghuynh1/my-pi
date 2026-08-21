@@ -1028,7 +1028,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 	 * (a pure READ — fold state is never changed). The tool echoes that content to the agent
 	 * THIS turn. Resolves null if unsent (no GUI) or on timeout.
 	 */
-	function requestRecall(codes: string[]): Promise<{ restored: RecallContent[]; missing: string[] } | null> {
+	function requestRecall(codes: string[], query?: string): Promise<{ restored: RecallContent[]; missing: string[] } | null> {
 		return new Promise((resolve) => {
 			const ws = client;
 			if (!ws || ws.readyState !== 1) return resolve(null);
@@ -1037,7 +1037,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 				if (pendingRecall.has(reqId)) { pendingRecall.delete(reqId); resolve(null); }
 			}, RECALL_TIMEOUT_MS);
 			pendingRecall.set(reqId, (res) => { clearTimeout(timer); resolve(res); });
-			send(ws, { type: "recallRequest", reqId, codes } as RecallRequestMessage);
+			send(ws, { type: "recallRequest", reqId, codes, query } as RecallRequestMessage);
 		});
 	}
 
@@ -1549,15 +1549,18 @@ export default function accordionLive(pi: ExtensionAPI): void {
 		name: "recall",
 		label: "Recall Folded Content",
 		description:
-			"Read folded context WITHOUT changing what's standing in your context. Accordion (the live context manager attached to this session) may replace older parts of YOUR OWN context with a short summary tagged like `{#3f9a2c FOLDED}`. The original content is preserved, not lost. Call this tool with the short code(s) from those tags to get the FULL original content back AS THIS tool's result, immediately — like reading a file. Unlike `unfold`, recall does NOT force the block open: your standing context is unchanged (the block stays folded), so recall costs nothing beyond this one tool result. Use it when you need folded detail RIGHT NOW for the current step.",
-		promptSnippet: "recall(codes) — read folded content right now (returned as the tool result; does not change your standing context).",
+			"Read folded context WITHOUT changing what's standing in your context. Accordion (the live context manager attached to this session) may replace older parts of YOUR OWN context with a short summary tagged like `{#3f9a2c FOLDED}`. The original content is preserved, not lost. Call this tool with the short code(s) from those tags to get the FULL original content back AS THIS tool's result, immediately — like reading a file. Unlike `unfold`, recall does NOT force the block open: your standing context is unchanged (the block stays folded), so recall costs nothing beyond this one tool result. Use the optional query to search within the specified folded content and return matching fragments instead of the full content.",
+		promptSnippet: "recall(codes, query?) — read folded content or search within it right now without changing your standing context.",
 		promptGuidelines: [
-			"When you see a `{#<code> FOLDED}` marker and need the full content for the current step, call `recall` with the code(s) — the full original content comes back as this tool's result immediately, and your standing context is left unchanged (the block stays folded). Prefer `recall` over `unfold` when you only need the detail once; use `unfold` when you want the block to stay open across future turns.",
+			"When you see a `{#<code> FOLDED}` marker and need the full content for the current step, call `recall` with the code(s). Use recall's optional query when you need only matching fragments from the specified block(s); omit query when you need the full original content. Prefer `recall` over `unfold` when you only need the detail once; use `unfold` when you want the block to stay open across future turns.",
 		],
 		parameters: Type.Object({
 			codes: Type.Array(Type.String({ description: 'A fold code copied verbatim from a {#<code> FOLDED} tag, e.g. "3f9a2c". Always a string (codes may have leading zeros).' }), {
 				description: "One or more fold codes whose full original content to read.",
 			}),
+			query: Type.Optional(Type.String({
+				description: "Search query. When provided, returns only matching fragments from the specified block(s) instead of full content.",
+			})),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
 			const codes = Array.isArray(params.codes)
@@ -1572,7 +1575,7 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			if (proactive.length === 0 && !attached()) {
 				return { content: [{ type: "text", text: "Accordion isn't attached, so nothing in your context is folded right now — it is already full." }] };
 			}
-			let res = remainingCodes.length > 0 ? await requestRecall(remainingCodes) : { restored: [], missing: [] };
+			let res = remainingCodes.length > 0 ? await requestRecall(remainingCodes, params.query) : { restored: [], missing: [] };
 			if (res === null && proactive.length === 0) {
 				return { content: [{ type: "text", text: "Accordion did not respond. If it has detached, your context is already full; otherwise try again." }], isError: true };
 			}

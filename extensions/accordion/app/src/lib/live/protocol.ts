@@ -215,6 +215,7 @@ export interface RecallRequestMessage {
 	type: "recallRequest";
 	reqId: number;
 	codes: string[];
+	query?: string;
 }
 
 /**

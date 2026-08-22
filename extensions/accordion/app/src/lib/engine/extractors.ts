@@ -18,7 +18,6 @@ export interface McpIndexEntry {
 const FILE_TOOLS = new Set(["read", "write", "edit", "find", "grep", "ls"]);
 const HIGH_TIER_TOOLS = new Set(["edit", "write", "multiedit", "run_tests"]);
 const MEDIUM_TIER_TOOLS = new Set(["subagent", "mcp"]);
-const LOW_TIER_TOOLS = new Set(["read", "find", "grep", "ls"]);
 const TEST_RUNNER_PATTERN = /\b(?:npm\s+test|npx\s+(?:vitest|jest)|pytest|dotnet\s+test|go\s+test|cargo\s+test|mix\s+test)\b/i;
 const SERVER_PREFIX_PATTERN = /^(?:mcp__)?[\w.-]+(?:\/|__)[\w.-]+/i;
 const PATH_ARGUMENT = /["']?path["']?\s*:\s*(?:"([^"]*)"|'([^']*)'|([^\s,}\]]+))/i;
@@ -33,7 +32,6 @@ export function blockTier(block: ExtractableBlock): BlockTier {
 	if (toolName === "bash") return "medium";
 	if (block.kind === "text") return "medium";
 	if (toolName && (MEDIUM_TIER_TOOLS.has(toolName) || SERVER_PREFIX_PATTERN.test(toolName))) return "medium";
-	if (toolName && LOW_TIER_TOOLS.has(toolName)) return "low";
 	return "low";
 }
 

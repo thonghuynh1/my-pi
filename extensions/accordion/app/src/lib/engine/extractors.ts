@@ -115,3 +115,35 @@ export function extractErrors(blocks: ExtractableBlock[]): string[] {
 		3,
 	);
 }
+
+export interface DigestMeta {
+	foldCode: string;
+	blockCount: number;
+	turnRange: string;
+	tokens: number;
+}
+
+export function formatMcpIndex(entries: McpIndexEntry[]): string {
+	if (entries.length === 0) return "";
+	return [
+		"[MCP Index]",
+		...entries.map(({ identity, codes }) => `  ${identity} → ${codes.join(", ")}`),
+	].join("\n");
+}
+
+export function buildSemanticDigest(blocks: ExtractableBlock[], meta: DigestMeta): string {
+	const lines = [
+		`{#${meta.foldCode} FOLDED} group · ${meta.blockCount} blocks · ${meta.turnRange} · ~${meta.tokens} tok`,
+	];
+	const asks = extractAsks(blocks);
+	const files = extractFiles(blocks);
+	const errors = extractErrors(blocks);
+	const mcpIndex = formatMcpIndex(buildMcpIndex(blocks));
+
+	if (asks.length > 0) lines.push(`[Asks] ${asks.join(" · ")}`);
+	if (files.length > 0) lines.push(`[Files] ${files.join(", ")}`);
+	if (errors.length > 0) lines.push(`[Errors] ${errors.join(" · ")}`);
+	if (mcpIndex) lines.push(mcpIndex);
+
+	return lines.join("\n");
+}

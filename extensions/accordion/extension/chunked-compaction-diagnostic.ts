@@ -4,12 +4,16 @@ import { estTokens } from "../app/src/lib/engine/tokens";
 import type { GroupOp, WireBlock } from "../app/src/lib/live/protocol";
 import type { CacheTrackerReason } from "./cache-tracker";
 
+function isChunkedCompactionDigest(digest: string): boolean {
+	return digest.startsWith(CHUNKED_COMPACTION_PREFIX) || /^\{#[a-z0-9]+ FOLDED\} group ·/.test(digest);
+}
+
 function findUnreportedChunkedCompactionGroup(
 	groups: readonly GroupOp[],
 	reportedGroupIds: ReadonlySet<string>,
 ): GroupOp | undefined {
 	return groups.find(
-		(group) => !reportedGroupIds.has(group.id) && (group.summaryText ?? "").startsWith(CHUNKED_COMPACTION_PREFIX),
+		(group) => !reportedGroupIds.has(group.id) && isChunkedCompactionDigest(group.summaryText ?? ""),
 	);
 }
 
@@ -39,10 +43,12 @@ export function buildChunkedCompactionDiagnostic(
 	after: CacheTrackerState,
 ): ChunkedCompactionDiagnostic | undefined {
 	const digest = group.summaryText ?? "";
-	if (!digest.startsWith(CHUNKED_COMPACTION_PREFIX)) return undefined;
+	if (!isChunkedCompactionDigest(digest)) return undefined;
 	const members = blocks.filter((block) => group.memberIds.includes(block.id));
 	const turns = members.map((block) => block.turn);
-	const digestContentHash = /^⟨chunked-compaction ·[^⟩]*content-hash\s+([^\s⟩]+)⟩/.exec(digest)?.[1] ?? "sha256:";
+	const digestContentHash = /^⟨chunked-compaction ·[^⟩]*content-hash\s+([^\s⟩]+)⟩/.exec(digest)?.[1]
+		?? /^\{#([a-z0-9]+) FOLDED\} group ·/.exec(digest)?.[1]
+		?? "sha256:";
 	const digestTokens = estTokens(digest);
 	const preGroupTokensBefore = members.reduce((sum, block) => sum + block.tokens, 0);
 	const estimatedGroupSaving = preGroupTokensBefore - estimateDefaultGroupDigestCost(members);

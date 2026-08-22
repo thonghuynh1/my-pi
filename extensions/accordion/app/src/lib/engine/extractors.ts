@@ -1,4 +1,5 @@
 export interface ExtractableBlock {
+	id?: string;
 	kind: string;
 	toolName?: string;
 	isError?: boolean;

@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { buildMcpIndex, extractAsks, extractErrors, extractFiles, type ExtractableBlock } from "./extractors";
+import {
+	buildMcpIndex,
+	buildSemanticDigest,
+	extractAsks,
+	extractErrors,
+	extractFiles,
+	formatMcpIndex,
+	type ExtractableBlock,
+} from "./extractors";
 
 const block = (shape: ExtractableBlock): ExtractableBlock => shape;
 
@@ -94,6 +102,19 @@ describe("buildMcpIndex", () => {
 	});
 });
 
+describe("formatMcpIndex", () => {
+	it("formats entries as an indented retrieval index", () => {
+		expect(formatMcpIndex([
+			{ identity: "engineering-skills/skill-trek", codes: ["r13", "r21"] },
+			{ identity: "subagent/check pi-vcc extractors", codes: ["r32"] },
+		])).toBe("[MCP Index]\n  engineering-skills/skill-trek → r13, r21\n  subagent/check pi-vcc extractors → r32");
+	});
+
+	it("returns an empty string for an empty index", () => {
+		expect(formatMcpIndex([])).toBe("");
+	});
+});
+
 describe("extractErrors", () => {
 	it("extracts deduplicated error first lines, capped and truncated", () => {
 		expect(extractErrors([
@@ -113,5 +134,53 @@ describe("extractErrors", () => {
 
 	it("accepts a ViewBlock-shaped object", () => {
 		expect(extractAsks([{ kind: "user", text: "view ask", id: "v1" }])).toEqual(["view ask"]);
+	});
+});
+
+describe("buildSemanticDigest", () => {
+	const meta = {
+		foldCode: "a3f2b1",
+		blockCount: 4,
+		turnRange: "turns 3–8",
+		tokens: 2400,
+	};
+
+	it("composes the header and every non-empty semantic section", () => {
+		expect(buildSemanticDigest([
+			block({ kind: "user", text: "implement auth flow" }),
+			block({ kind: "tool_call", toolName: "read", text: '{"path":"src/auth/token.ts"}' }),
+			block({ kind: "tool_result", isError: true, text: "403 Forbidden on /api/token" }),
+			block({ id: "r13", kind: "tool_call", toolName: "mcp", text: 'mcp {"server":"engineering-skills","tool":"skill-trek"}' }),
+		], meta)).toBe([
+			"{#a3f2b1 FOLDED} group · 4 blocks · turns 3–8 · ~2400 tok",
+			"[Asks] implement auth flow",
+			"[Files] src/auth/token.ts",
+			"[Errors] 403 Forbidden on /api/token",
+			"[MCP Index]",
+			"  engineering-skills/skill-trek → r13",
+		].join("\n"));
+	});
+
+	it("omits empty sections", () => {
+		expect(buildSemanticDigest([
+			block({ kind: "tool_call", toolName: "read", text: '{"path":"src/auth/token.ts"}' }),
+		], meta)).toBe([
+			"{#a3f2b1 FOLDED} group · 4 blocks · turns 3–8 · ~2400 tok",
+			"[Files] src/auth/token.ts",
+		].join("\n"));
+
+		expect(buildSemanticDigest([
+			block({ id: "r32", kind: "tool_call", toolName: "mcp", text: 'mcp {"server":"engineering-skills","tool":"skill-trek"}' }),
+		], meta)).toBe([
+			"{#a3f2b1 FOLDED} group · 4 blocks · turns 3–8 · ~2400 tok",
+			"[MCP Index]",
+			"  engineering-skills/skill-trek → r32",
+		].join("\n"));
+	});
+
+	it("returns only the header when every section is empty", () => {
+		expect(buildSemanticDigest([block({ kind: "text", text: "reply" })], meta)).toBe(
+			"{#a3f2b1 FOLDED} group · 4 blocks · turns 3–8 · ~2400 tok",
+		);
 	});
 });

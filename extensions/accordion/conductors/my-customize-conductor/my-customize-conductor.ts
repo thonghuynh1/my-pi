@@ -17,6 +17,7 @@ import {
 	isMcpResult,
 	mcpSummary,
 	pstackIdentityFromDigest,
+	canonicalMcpIdentity,
 } from "./mcp-summary";
 import * as chunkedCompaction from "./chunked-compaction";
 import { DEFAULT_PRE_GROUP_TOKENS, MAX_DYNAMIC_PRE_GROUP_TOKENS, humanTokens } from "./constants";
@@ -128,11 +129,14 @@ export class MyCustomizeConductor implements Conductor {
 
 		for (const command of this.lastPlan) {
 			if (command.kind === "group") {
+				const canRewriteFrozen = command.lifecycle === "rollover" || (
+					command.lifecycle === undefined && typeof command.digest === "string" && command.digest.length > 0
+				);
 				const valid = command.ids.length > 0 && command.ids.every((id) => {
 					if (excluded.has(id)) return false;
 					const block = blockById.get(id);
 					return block !== undefined && !block.held && !block.protected && !block.grouped &&
-						(block.order >= view.frozenFromIndex || typeof command.digest === "string" && command.digest.length > 0);
+						(block.order >= view.frozenFromIndex || canRewriteFrozen);
 				});
 				if (valid) replayable.push(command);
 			} else if (command.kind === "replace") {
@@ -189,27 +193,36 @@ export class MyCustomizeConductor implements Conductor {
 		return this.lastResult;
 	}
 
-	private buildGroupDigest(blocks: readonly ViewBlock[], ids: readonly string[]): string {
-		const selectedIds = new Set(ids);
-		const selected = blocks.filter((block) => selectedIds.has(block.id));
-		const turns = selected.map((block) => block.turn);
+	private buildGroupDigest(blocks: readonly ViewBlock[]): string {
+		const turns = blocks.map((block) => block.turn);
 		const lowestTurn = Math.min(...turns);
 		const highestTurn = Math.max(...turns);
-		const resultByCallId = new Map<string, ViewBlock>();
-		for (const block of selected) {
-			if (block.kind === "tool_result" && block.callId) resultByCallId.set(block.callId, block);
+		const resultCodeByCallId = new Map<string, string>();
+		for (const block of blocks) {
+			if (block.kind === "tool_result" && block.callId) {
+				resultCodeByCallId.set(block.callId, foldCode(block.id));
+			}
 		}
-		const digestBlocks = selected.map((block) => ({
-			...block,
-			id: block.kind === "tool_call" && block.toolName === "mcp" && block.callId
-				? foldCode(resultByCallId.get(block.callId)?.id ?? block.id)
-				: foldCode(block.id),
-		}));
+		const digestBlocks = blocks.map((block) => {
+			const mcpIdentity = block.kind === "tool_call" && block.toolName?.trim().toLowerCase() === "mcp"
+				? canonicalMcpIdentity(block.text)
+				: undefined;
+			const mcpServer = mcpIdentity?.server.replace(/\s+/g, " ").trim().slice(0, 40);
+			const mcpTool = mcpIdentity?.tool.replace(/\s+/g, " ").trim().slice(0, 40);
+			return {
+				...block,
+				recallCode: block.kind === "tool_call" && block.callId
+					? resultCodeByCallId.get(block.callId)
+					: undefined,
+				retrievalIdentity: mcpIdentity && mcpServer && mcpTool
+					? `${mcpServer}/${mcpTool} · ${mcpIdentity.fingerprint}`
+					: undefined,
+			};
+		});
 		return buildSemanticDigest(digestBlocks, {
-			foldCode: "",
-			blockCount: selected.length,
+			blockCount: blocks.length,
 			turnRange: lowestTurn === highestTurn ? `turn ${lowestTurn}` : `turns ${lowestTurn}–${highestTurn}`,
-			tokens: selected.reduce((sum, block) => sum + block.tokens, 0),
+			tokens: blocks.reduce((sum, block) => sum + block.tokens, 0),
 		});
 	}
 
@@ -221,12 +234,12 @@ export class MyCustomizeConductor implements Conductor {
 		const ids = chunkedCompaction.trimOpenToolPairs(candidates.map((block) => block.id), view.blocks);
 		if (ids.length < 2) return null;
 
-		// Filter from candidates (not view.blocks) — candidates is already a small subset.
-		const blocks = candidates.filter((block) => ids.includes(block.id));
-		const digest = this.buildGroupDigest(blocks, ids);
+		const selectedIds = new Set(ids);
+		const blocks = candidates.filter((block) => selectedIds.has(block.id));
+		const digest = this.buildGroupDigest(blocks);
 		const saving = blocks.reduce((sum, block) => sum + block.tokens, 0) - estSummaryTokens(digest);
 		if (saving < minimumSaving) return null;
-		return { command: { kind: "group", ids, digest }, saving };
+		return { command: { kind: "group", ids, digest, lifecycle: "rollover" }, saving };
 	}
 
 	private planRollover(
@@ -248,7 +261,7 @@ export class MyCustomizeConductor implements Conductor {
 			const minimumGroupSaving = Math.max(2_000, 0.05 * cap);
 			let segment: ViewBlock[] = [];
 			const flush = (): void => {
-				this.sliceSegmentIntoGroups(segment, view, callById, minimumGroupSaving, commands, (amount) => {
+				this.sliceSegmentIntoGroups(segment, view, minimumGroupSaving, commands, (amount) => {
 					saving += amount;
 					groupSaving += amount;
 				});
@@ -308,7 +321,10 @@ export class MyCustomizeConductor implements Conductor {
 
 	private createDefaultGroup(candidates: readonly ViewBlock[], view: ConductorView): GroupCommand | null {
 		const ids = chunkedCompaction.trimOpenToolPairs(candidates.map((block) => block.id), view.blocks);
-		return ids.length >= 2 ? { kind: "group", ids, digest: this.buildGroupDigest(candidates, ids) } : null;
+		if (ids.length < 2) return null;
+		const selectedIds = new Set(ids);
+		const blocks = candidates.filter((block) => selectedIds.has(block.id));
+		return { kind: "group", ids, digest: this.buildGroupDigest(blocks), lifecycle: "transient" };
 	}
 
 	/** Compact old pressure candidates without consuming the active Pre-Group. */
@@ -358,7 +374,6 @@ export class MyCustomizeConductor implements Conductor {
 	private sliceSegmentIntoGroups(
 		segment: readonly ViewBlock[],
 		view: ConductorView,
-		callById: ReadonlyMap<string, ViewBlock>,
 		minimumSaving: number,
 		out: Command[],
 		onSaving: (saving: number) => void,
@@ -663,8 +678,8 @@ export class MyCustomizeConductor implements Conductor {
 		}
 
 		// Ordinary pressure compaction may act only before the active Pre-Group. It is
-		// deliberately separate from chunked rollover and therefore emits default groups
-		// (digest omitted) or individual fold commands.
+		// deliberately separate from chunked rollover and emits transient semantic groups
+		// or individual fold commands.
 		const pressureFromIndex = view.harnessOverhead !== undefined && view.contextWindow === null
 			? view.protectedFromIndex
 			: preGroupTarget > 0 ? preGroupFromIndex : view.protectedFromIndex;

@@ -222,6 +222,18 @@ function withoutFirstRollover(records: readonly Record<string, unknown>[]): Reco
 }
 
 describe("chunked-compaction diagnostic/cache invariant", () => {
+	it("does not report a transient semantic group as a rollover", () => {
+		const diagnostic = buildUnreportedChunkedCompactionDiagnostic(
+			[{ id: "g:pressure", memberIds: [], summaryText: "{#abc123 FOLDED} group · pressure", rollover: false }],
+			new Set(),
+			[],
+			{ frozenFromIndex: 0, reason: "prefix-match" },
+			{ frozenFromIndex: 0, reason: "prefix-match" },
+		);
+
+		expect(diagnostic).toBeUndefined();
+	});
+
 	it("zero rollovers satisfy the invariant", () => {
 		const run = runSession(0);
 		expect(run.groupCountByTurn).toEqual([0, 0]);

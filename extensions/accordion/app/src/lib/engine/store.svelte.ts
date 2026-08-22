@@ -14,7 +14,7 @@
 import type { Block, Actor, SessionMeta, ParsedSession, Group } from "./types";
 import { digest, digestTokens, foldCode, foldTag, groupDigest, groupDigestTokens, substTokens, wireFoldable } from "./digest";
 import { estTokens, BLOCK_OVERHEAD } from "./tokens";
-import type { Conductor, ConductorPlan, ConductorResult, ConductorView, Command, ClampReport, ClampReason, LockName, ConductorHost, CompletionRequest, CompletionResult, JSONValue } from "$conductors/contract";
+import type { Conductor, ConductorPlan, ConductorResult, ConductorView, Command, ClampReport, ClampReason, LockName, ConductorHost, CompletionRequest, CompletionResult, JSONValue, GroupLifecycle } from "$conductors/contract";
 import { availableCap, contextWindowCap, hasLock } from "$conductors/contract";
 import { BuiltinConductor } from "$conductors";
 import { CHUNKED_COMPACTION_PREFIX } from "$conductors/my-customize-conductor/constants";
@@ -136,6 +136,7 @@ interface FoldSnapshot {
 interface GroupSnapshot {
 	memberIds: string[];
 	digest: string | null | undefined;
+	lifecycle: GroupLifecycle | undefined;
 }
 
 export class AccordionStore {
@@ -1109,10 +1110,9 @@ export class AccordionStore {
 	}
 
 	private preservesConductorGroup(group: Group): boolean {
-		const digest = group.digest ?? "";
 		return (
 			(group.by !== "auto" && group.by !== "conductor") ||
-			digest.startsWith(CHUNKED_COMPACTION_PREFIX) || /^\{#[a-z0-9]+ FOLDED\} group ·/.test(digest) ||
+			this.isRolloverGroup(group) ||
 			group.memberIds.some(
 				(id) => (this.get(id)?.order ?? this.frozenFromIndex) < this.frozenFromIndex,
 			)
@@ -1195,7 +1195,7 @@ export class AccordionStore {
 					for (const id of c.ids) this.liveOne(id, by, c.kind, reports);
 					break;
 				case "group":
-					this.groupCmd(c.ids, by, reports, c.digest);
+					this.groupCmd(c.ids, by, reports, c.digest, c.lifecycle);
 					break;
 			}
 		}
@@ -1284,7 +1284,7 @@ export class AccordionStore {
 	 * refuse the whole group and report it — never silently override the human's choice.
 	 * (Human-initiated groups go straight through `createGroup` and keep their old freedom.)
 	 */
-	private groupCmd(ids: string[], by: Actor, reports: ClampReport[], digest?: string | null): void {
+	private groupCmd(ids: string[], by: Actor, reports: ClampReport[], digest?: string | null, lifecycle?: GroupLifecycle): void {
 		if (ids.length < 1) return void reports.push(clamp("group", ids, "invalid-group", "a group needs ≥1 block"));
 		const range = this.snappedRange(ids[0], ids[ids.length - 1]);
 		if (range) {
@@ -1295,12 +1295,13 @@ export class AccordionStore {
 				return void reports.push(clamp("group", ids, "human-override", `would collapse ${held.length} human-held block(s)`));
 			const frozen = range.some((id) => (this.get(id)?.order ?? this.frozenFromIndex) < this.frozenFromIndex);
 			if (frozen) {
-				const hasNonEmptyDigest = digest !== null && digest !== undefined && digest !== "";
-				if (!hasNonEmptyDigest && !this.hasHardContextPressure())
+				const hasLegacyRewriteDigest = lifecycle === undefined && digest !== null && digest !== undefined && digest !== "";
+				const canRewriteFrozen = lifecycle === "rollover" || hasLegacyRewriteDigest;
+				if (!canRewriteFrozen && !this.hasHardContextPressure())
 					return void reports.push(clamp("group", ids, "frozen", "would rewrite the provider's cached prefix"));
 			}
 		}
-		const g = this.createGroup(ids[0], ids[ids.length - 1], by, digest);
+		const g = this.createGroup(ids[0], ids[ids.length - 1], by, digest, lifecycle);
 		if (!g) reports.push(clamp("group", ids, "invalid-group", "not a valid contiguous, ungrouped run older than the protected tail"));
 	}
 
@@ -1553,13 +1554,13 @@ export class AccordionStore {
 		const m = new Map<string, GroupSnapshot>();
 		for (const g of this.groups) {
 			if (!g.folded || (g.by !== "auto" && g.by !== "conductor")) continue;
-			m.set(g.id, { memberIds: [...g.memberIds], digest: g.digest });
+			m.set(g.id, { memberIds: [...g.memberIds], digest: g.digest, lifecycle: g.lifecycle });
 		}
 		return m;
 	}
 
 	private sameGroupSnapshot(a: GroupSnapshot | undefined, b: Group): boolean {
-		return !!a && a.digest === b.digest && a.memberIds.length === b.memberIds.length && a.memberIds.every((id, i) => id === b.memberIds[i]);
+		return !!a && a.digest === b.digest && a.lifecycle === b.lifecycle && a.memberIds.length === b.memberIds.length && a.memberIds.every((id, i) => id === b.memberIds[i]);
 	}
 
 	private recordConductorTransitions(before: Map<string, FoldSnapshot>, beforeGroups: Map<string, GroupSnapshot>): void {
@@ -1790,6 +1791,10 @@ export class AccordionStore {
 		return g.digest === null || g.digest === "";
 	}
 
+	isRolloverGroup(g: Group): boolean {
+		return g.lifecycle === "rollover" || g.lifecycle === undefined && g.digest?.startsWith(CHUNKED_COMPACTION_PREFIX) === true;
+	}
+
 	/** The one summary string the group's folded tile renders / the agent receives. */
 	groupSummary(g: Group): string {
 		if (this.isDropGroup(g)) return ""; // drop group: caller must branch on isDropGroup first
@@ -1822,7 +1827,7 @@ export class AccordionStore {
 			if (this.isDropGroup(g)) {
 				carrierTokens = 0;
 			} else if (typeof g.digest === "string" && g.digest) {
-				carrierTokens = estTokens(g.digest) + BLOCK_OVERHEAD;
+				carrierTokens = estTokens(this.groupSummary(g)) + BLOCK_OVERHEAD;
 			} else {
 				carrierTokens = groupDigestTokens(g, c.collapsedMembers);
 			}
@@ -1870,7 +1875,7 @@ export class AccordionStore {
 	 * `undefined` → default recap; `null`/`""` → drop (no wire message); non-empty string → body
 	 * with the group's authoritative fold tag.
 	 */
-	createGroup(startId: string, endId: string, by: Actor = "you", digest?: string | null): Group | null {
+	createGroup(startId: string, endId: string, by: Actor = "you", digest?: string | null, lifecycle?: GroupLifecycle): Group | null {
 		// ADR 0011 `human-steering`: a human hand-group is refused under the lock. The
 		// conductor's own group command routes here with by="auto"/"conductor" and is NOT
 		// gated (it is the conductor steering, not the human).
@@ -1884,7 +1889,7 @@ export class AccordionStore {
 			if (this.groupAt.get(id)) return null; // overlap with an existing group
 		}
 		if (memberIds.length < 1) return null;
-		const g: Group = { id: `g:${memberIds[0]}`, memberIds, folded: true, by, digest };
+		const g: Group = { id: `g:${memberIds[0]}`, memberIds, folded: true, by, digest, lifecycle };
 		// A group must actually collapse something. If EVERY member is a split tool-pair half
 		// (its partner sits outside the range), nothing folds into the summary — the tile would
 		// hide live blocks for zero benefit. That isn't a fold; refuse it (ADR 0006 §4: a folded

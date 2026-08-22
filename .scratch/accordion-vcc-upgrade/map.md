@@ -26,8 +26,10 @@ The conductor is `my-customize-conductor` (the default). Changes touch the condu
 
 - [01 — What data does the conductor actually see per block?](wayfinder/01-conductor-view-data.md): **Conductor sees everything** — `ViewBlock.text` (full content), `toolName`, `isError`, `callId`, `tokens`, `order`. Ranking/scoring lives in the conductor; richer digests delivered via `ReplaceCommand`.
 - [03 — What pi-vcc ranking signals can we port?](wayfinder/03-portable-ranking-signals.md): **All 10 signals are feasible.** `toolName`, `isError`, `tokens`, `order` are first-class fields; tool args and bash commands parseable from `text`.
-- [05 — Can we port pi-vcc's BM25 search?](wayfinder/05-bm25-portability.md): **Yes, ~200 lines, self-contained.** But no LICENSE in pi-vcc repo — write clean-room implementation instead.
-- [02 — How should search-within-fold work architecturally?](wayfinder/02-search-within-fold-architecture.md): **Extend `recall` with optional `query` param.** BM25 search within the targeted block/group, top-5 fragments in `RecallContent.text`, ±3-line context windows. Wire: add `query?: string` to `RecallRequestMessage` (backward-compatible). No new tool, no new message types, no pagination.
+- [05 — Can we port pi-vcc's BM25 search?](wayfinder/05-bm25-portability.md): **Yes, ~110 lines clean-room, self-contained.** ✅ *Confirmed by slice 1 build* — `bm25.ts` landed, all tests pass.
+- [02 — How should search-within-fold work architecturally?](wayfinder/02-search-within-fold-architecture.md): **Extend `recall` with optional `query` param.** ✅ *Confirmed by slice 1 build* — BM25 search within the targeted block/group, top-5 fragments in `RecallContent.text`, ±3-line context windows. Wire: `query?: string` on `RecallRequestMessage` (backward-compatible). No new tool, no new message types, no pagination. `recallText` helper abstracts the branch.
+
+- [04 — How should group digests accumulate semantic sections?](wayfinder/04-group-semantic-sections.md): **Three sections (Asks, Files, Errors) + MCP Retrieval Index.** Shared library, conductor-invoked. Self-contained per group (flat invariant). Always extracted, empty sections omitted. Multi-line structured format for agent selection.
 
 ## Not yet specified
 

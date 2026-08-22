@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { AccordionStore } from "../engine/store.svelte";
 import { foldCode } from "../engine/digest";
+import { BLOCK_OVERHEAD, estTokens } from "../engine/tokens";
 import { computeGroupOps, resolveUnfold, resolveRecall } from "./plan";
 import type { Block, ParsedSession } from "../engine/types";
 
@@ -42,6 +43,7 @@ describe("computeGroupOps", () => {
 		const ops = computeGroupOps(s);
 
 		expect(ops[0].summaryText).toBe(`{#${foldCode(g.id)} FOLDED} conductor group summary`);
+		expect(s.groupLiveTokens(g)).toBe(estTokens(ops[0].summaryText!) + BLOCK_OVERHEAD);
 	});
 
 	it("preserves conductor custom group summaries with recovery tags", () => {

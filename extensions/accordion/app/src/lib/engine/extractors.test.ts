@@ -37,7 +37,7 @@ describe("extractAsks", () => {
 describe("extractFiles", () => {
 	it("extracts allowlisted tool paths in insertion order", () => {
 		expect(extractFiles([
-			block({ kind: "tool_call", toolName: "read", text: '{"path": "src/a.ts"}' }),
+			block({ kind: "tool_call", toolName: " READ ", text: '{"path": "src/a.ts"}' }),
 			block({ kind: "tool_call", toolName: "write", text: "path: 'src/b.ts'" }),
 			block({ kind: "tool_call", toolName: "edit", text: '{"path":"src/c.ts"}' }),
 			block({ kind: "tool_call", toolName: "find", text: "find { path: src/d.ts }" }),
@@ -62,22 +62,29 @@ describe("extractFiles", () => {
 });
 
 describe("buildMcpIndex", () => {
-	it("groups MCP calls by server/tool identity and collects recall codes", () => {
+	it("groups canonical MCP identities and collects result recall codes", () => {
 		expect(buildMcpIndex([
-			block({ id: "mcp-1", kind: "tool_call", toolName: "mcp", text: 'mcp {"server":"engineering-skills","tool":"skill-trek"}' }),
-			block({ id: "mcp-2", kind: "tool_call", toolName: "mcp", text: 'mcp {"server":"engineering-skills","tool":"skill-trek"}' }),
-			block({ id: "mcp-3", kind: "tool_call", toolName: "mcp", text: 'mcp {"tool":"recall"}' }),
+			block({ kind: "tool_call", toolName: "mcp", retrievalIdentity: "engineering-skills/skill-trek · fp:a", recallCode: "result-1" }),
+			block({ kind: "tool_call", toolName: "mcp", retrievalIdentity: "engineering-skills/skill-trek · fp:a", recallCode: "result-2" }),
+			block({ kind: "tool_call", toolName: "mcp", retrievalIdentity: "mcp/recall · fp:b", recallCode: "result-3" }),
 		])).toEqual([
-			{ identity: "engineering-skills/skill-trek", codes: ["mcp-1", "mcp-2"] },
-			{ identity: "recall", codes: ["mcp-3"] },
+			{ identity: "engineering-skills/skill-trek · fp:a", codes: ["result-1", "result-2"] },
+			{ identity: "mcp/recall · fp:b", codes: ["result-3"] },
 		]);
 	});
 
 	it("uses the first forty task characters for subagent identities", () => {
 		const task = "check pi-vcc extractors and verify the focused retrieval flow";
 		expect(buildMcpIndex([
-			block({ id: "subagent-1", kind: "tool_call", toolName: "subagent", text: `subagent ${JSON.stringify({ task })}` }),
-		])).toEqual([{ identity: `subagent/${task.slice(0, 40)}`, codes: ["subagent-1"] }]);
+			block({ kind: "tool_call", toolName: "subagent", text: `subagent ${JSON.stringify({ task })}`, recallCode: "subagent-result" }),
+		])).toEqual([{ identity: `subagent/${task.slice(0, 40)}`, codes: ["subagent-result"] }]);
+	});
+
+	it("omits tool calls without a retrievable result code", () => {
+		expect(buildMcpIndex([
+			block({ kind: "tool_call", toolName: "subagent", text: 'subagent {"task":"unfinished"}' }),
+			block({ kind: "tool_call", toolName: "mcp", retrievalIdentity: "server/tool · fp:a" }),
+		])).toEqual([]);
 	});
 
 	it("excludes file tools and returns empty for file-only groups", () => {
@@ -89,9 +96,9 @@ describe("buildMcpIndex", () => {
 
 	it("caps the index at six distinct identities", () => {
 		const calls = Array.from({ length: 7 }, (_, index) => block({
-			id: `bash-${index}`,
 			kind: "tool_call",
 			toolName: `tool-${index}`,
+			recallCode: `result-${index}`,
 			text: "",
 		}));
 
@@ -150,14 +157,14 @@ describe("buildSemanticDigest", () => {
 			block({ kind: "user", text: "implement auth flow" }),
 			block({ kind: "tool_call", toolName: "read", text: '{"path":"src/auth/token.ts"}' }),
 			block({ kind: "tool_result", isError: true, text: "403 Forbidden on /api/token" }),
-			block({ id: "r13", kind: "tool_call", toolName: "mcp", text: 'mcp {"server":"engineering-skills","tool":"skill-trek"}' }),
+			block({ kind: "tool_call", toolName: "mcp", retrievalIdentity: "engineering-skills/skill-trek · fp:a", recallCode: "r13" }),
 		], meta)).toBe([
 			"{#a3f2b1 FOLDED} group · 4 blocks · turns 3–8 · ~2400 tok",
 			"[Asks] implement auth flow",
 			"[Files] src/auth/token.ts",
 			"[Errors] 403 Forbidden on /api/token",
 			"[MCP Index]",
-			"  engineering-skills/skill-trek → r13",
+			"  engineering-skills/skill-trek · fp:a → r13",
 		].join("\n"));
 	});
 
@@ -170,11 +177,11 @@ describe("buildSemanticDigest", () => {
 		].join("\n"));
 
 		expect(buildSemanticDigest([
-			block({ id: "r32", kind: "tool_call", toolName: "mcp", text: 'mcp {"server":"engineering-skills","tool":"skill-trek"}' }),
+			block({ kind: "tool_call", toolName: "mcp", retrievalIdentity: "engineering-skills/skill-trek · fp:a", recallCode: "r32" }),
 		], meta)).toBe([
 			"{#a3f2b1 FOLDED} group · 4 blocks · turns 3–8 · ~2400 tok",
 			"[MCP Index]",
-			"  engineering-skills/skill-trek → r32",
+			"  engineering-skills/skill-trek · fp:a → r32",
 		].join("\n"));
 	});
 

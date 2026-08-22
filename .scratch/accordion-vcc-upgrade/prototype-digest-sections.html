@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Prototype: Group Digest Sections — What does the agent see?</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; background: #0d1117; color: #c9d1d9; padding: 2rem; line-height: 1.6; }
+h1 { font-size: 1.3rem; color: #58a6ff; margin-bottom: 0.3rem; }
+.intro { color: #8b949e; font-size: 0.85rem; margin-bottom: 1.5rem; max-width: 70ch; }
+.tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.tab { padding: 0.4rem 0.8rem; border: 1px solid #30363d; border-radius: 6px; background: #161b22; color: #8b949e; cursor: pointer; font-size: 0.8rem; transition: all 0.15s; }
+.tab:hover { border-color: #58a6ff; color: #c9d1d9; }
+.tab.active { background: #1f2937; border-color: #58a6ff; color: #58a6ff; }
+.panel { display: none; }
+.panel.active { display: block; }
+.scenario-desc { color: #8b949e; font-size: 0.8rem; margin-bottom: 1rem; padding: 0.6rem; background: #161b22; border-radius: 6px; border-left: 3px solid #58a6ff; }
+.controls { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
+.btn { padding: 0.4rem 0.7rem; border: 1px solid #30363d; border-radius: 4px; background: #21262d; color: #c9d1d9; cursor: pointer; font-size: 0.75rem; transition: all 0.15s; }
+.btn:hover { border-color: #58a6ff; background: #1f2937; }
+.btn.active { background: #1f6feb33; border-color: #58a6ff; color: #58a6ff; }
+.output { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.2rem; margin-bottom: 1.5rem; }
+.output-label { font-size: 0.7rem; color: #484f58; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
+.digest-line { color: #c9d1d9; font-size: 0.82rem; white-space: pre-wrap; word-break: break-all; }
+.digest-line .fold-code { color: #7ee787; }
+.digest-line .meta { color: #8b949e; }
+.digest-line .section-header { color: #d2a8ff; font-weight: bold; }
+.digest-line .section-content { color: #c9d1d9; }
+.digest-line .mcp-identity { color: #79c0ff; }
+.digest-line .error-content { color: #f85149; }
+.digest-line .file-path { color: #7ee787; }
+.comparison { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-top: 1rem; }
+.comparison .output { min-height: 120px; }
+.option-label { font-size: 0.75rem; color: #58a6ff; font-weight: bold; margin-bottom: 0.3rem; }
+@media (max-width: 900px) { .comparison { grid-template-columns: 1fr; } }
+.state-panel { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem; }
+.state-label { font-size: 0.7rem; color: #484f58; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
+.block-list { font-size: 0.75rem; color: #8b949e; }
+.block-item { padding: 0.2rem 0; border-bottom: 1px solid #21262d; }
+.block-item:last-child { border-bottom: none; }
+.block-kind { display: inline-block; width: 80px; color: #d2a8ff; }
+.block-tool { color: #79c0ff; }
+</style>
+</head>
+<body>
+
+<h1>Group Digest Sections — What does the agent see?</h1>
+<p class="intro">
+  <strong>Question:</strong> Beyond [Files], [Asks], and [Errors], should there be a [Tools] section for MCP/subagent activity?
+  Compare Option A (flat [Tools] list), Option B (MCP Retrieval Index from glossary), and Option C (only when [Files] is empty).
+  Switch between scenarios to see how each option handles different group compositions.
+</p>
+
+<div class="tabs" id="tabs"></div>
+<div id="panels"></div>
+
+<script>
+// ─── Pure Logic Module (liftable) ─────────────────────────────────────────
+
+/**
+ * A ViewBlock as the extractor sees it.
+ * @typedef {{ kind: string, toolName?: string, text: string, isError?: boolean, turn: number }} Block
+ */
+
+/**
+ * Extracted sections from a group of blocks.
+ * @typedef {{ asks: string[], files: string[], errors: string[], tools: string[], mcpIndex: {identity: string, codes: string[]}[] }} SectionData
+ */
+
+const FILE_TOOLS = new Set(['read', 'write', 'edit', 'find', 'grep', 'ls']);
+
+function extractAsks(blocks) {
+  return blocks
+    .filter(b => b.kind === 'user')
+    .map(b => b.text.split('\n')[0].trim())
+    .filter(Boolean)
+    .slice(0, 4);
+}
+
+function extractFiles(blocks) {
+  const paths = new Set();
+  for (const b of blocks) {
+    if (b.kind === 'tool_call' && b.toolName && FILE_TOOLS.has(b.toolName)) {
+      const match = b.text.match(/["']?path["']?\s*[:=]\s*["']?([^\s"',}]+)/i);
+      if (match) paths.add(match[1]);
+    }
+  }
+  return [...paths].slice(0, 8);
+}
+
+function extractErrors(blocks) {
+  return blocks
+    .filter(b => b.isError)
+    .map(b => b.text.split('\n')[0].trim().slice(0, 80))
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function extractToolIdentities(blocks) {
+  const tools = [];
+  for (const b of blocks) {
+    if (b.kind === 'tool_call' && b.toolName && !FILE_TOOLS.has(b.toolName)) {
+      if (b.toolName === 'mcp') {
+        const toolMatch = b.text.match(/tool["']?\s*[:=]\s*["']?([^\s"',}]+)/);
+        const name = toolMatch ? `mcp:${toolMatch[1]}` : 'mcp:(unknown)';
+        if (!tools.includes(name)) tools.push(name);
+      } else if (b.toolName === 'subagent') {
+        const taskMatch = b.text.match(/task["']?\s*[:=]\s*["']?([^"'\n]+)/);
+        const summary = taskMatch ? taskMatch[1].slice(0, 50) : '(task)';
+        tools.push(`subagent: "${summary}"`);
+      } else {
+        if (!tools.includes(b.toolName)) tools.push(b.toolName);
+      }
+    }
+  }
+  return tools.slice(0, 6);
+}
+
+function extractMcpIndex(blocks) {
+  const index = new Map(); // identity → codes[]
+  for (const b of blocks) {
+    if (b.kind === 'tool_call' && b.toolName === 'mcp') {
+      const toolMatch = b.text.match(/tool["']?\s*[:=]\s*["']?([^\s"',}]+)/);
+      const serverMatch = b.text.match(/server["']?\s*[:=]\s*["']?([^\s"',}]+)/);
+      if (toolMatch) {
+        const identity = serverMatch
+          ? `${serverMatch[1]}/${toolMatch[1]}`
+          : toolMatch[1];
+        if (!index.has(identity)) index.set(identity, []);
+        index.get(identity).push(b.recallCode || `blk${b.turn}`);
+      }
+    }
+    if (b.kind === 'tool_call' && b.toolName === 'subagent') {
+      const taskMatch = b.text.match(/task["']?\s*[:=]\s*["']?([^"'\n]{1,40})/);
+      const identity = `subagent/${taskMatch ? taskMatch[1].trim() : 'explore'}`;
+      if (!index.has(identity)) index.set(identity, []);
+      index.get(identity).push(b.recallCode || `blk${b.turn}`);
+    }
+  }
+  return [...index.entries()].map(([identity, codes]) => ({ identity, codes }));
+}
+
+function buildDigest(blocks, option, meta) {
+  const asks = extractAsks(blocks);
+  const files = extractFiles(blocks);
+  const errors = extractErrors(blocks);
+  const tools = extractToolIdentities(blocks);
+  const mcpIndex = extractMcpIndex(blocks);
+
+  const header = `<span class="fold-code">{#${meta.code} FOLDED}</span> <span class="meta">group · ${blocks.length} blocks · turns ${meta.turnRange} · ~${meta.tokens} tok</span>`;
+
+  const lines = [header];
+
+  // Asks (all options)
+  if (asks.length > 0) {
+    lines.push(`<span class="section-header">[Asks]</span> <span class="section-content">${asks.join(' · ')}</span>`);
+  }
+
+  // Files (all options)
+  if (files.length > 0) {
+    lines.push(`<span class="section-header">[Files]</span> <span class="file-path">${files.join(', ')}</span>`);
+  }
+
+  // Errors (all options)
+  if (errors.length > 0) {
+    lines.push(`<span class="section-header">[Errors]</span> <span class="error-content">${errors.join(' · ')}</span>`);
+  }
+
+  // Tools / MCP Index — differs by option
+  if (option === 'A') {
+    // Option A: flat [Tools] section always when non-empty
+    if (tools.length > 0) {
+      lines.push(`<span class="section-header">[Tools]</span> <span class="mcp-identity">${tools.join(', ')}</span>`);
+    }
+  } else if (option === 'B') {
+    // Option B: MCP Retrieval Index with recall codes
+    if (mcpIndex.length > 0) {
+      lines.push(`<span class="section-header">[MCP Index]</span>`);
+      for (const entry of mcpIndex.slice(0, 5)) {
+        lines.push(`  <span class="mcp-identity">${entry.identity}</span> <span class="meta">→ ${entry.codes.join(', ')}</span>`);
+      }
+    }
+  } else if (option === 'C') {
+    // Option C: Tools only when Files is empty
+    if (files.length === 0 && tools.length > 0) {
+      lines.push(`<span class="section-header">[Tools]</span> <span class="mcp-identity">${tools.join(', ')}</span>`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+// ─── Scenarios ─────────────────────────────────────────────────────────────
+
+const scenarios = [
+  {
+    id: 'file-heavy',
+    name: 'File-heavy group',
+    desc: 'Agent reads, edits, and tests files. Typical implementation work.',
+    meta: { code: 'a3f2b1', turnRange: '3–8', tokens: '2400' },
+    blocks: [
+      { kind: 'user', text: 'implement the auth token refresh', turn: 3 },
+      { kind: 'tool_call', toolName: 'read', text: 'path: "src/auth/token.ts"', turn: 4 },
+      { kind: 'tool_result', toolName: 'read', text: '// token refresh logic...', turn: 4 },
+      { kind: 'tool_call', toolName: 'edit', text: 'path: "src/auth/token.ts", edits: [...]', turn: 5 },
+      { kind: 'tool_result', toolName: 'edit', text: 'OK', turn: 5 },
+      { kind: 'tool_call', toolName: 'read', text: 'path: "src/middleware/verify.ts"', turn: 5 },
+      { kind: 'tool_result', toolName: 'read', text: '// verify middleware...', turn: 5 },
+      { kind: 'tool_call', toolName: 'edit', text: 'path: "src/middleware/verify.ts"', turn: 6 },
+      { kind: 'tool_result', toolName: 'edit', text: 'OK', turn: 6 },
+      { kind: 'tool_call', toolName: 'bash', text: 'command: "npx jest tests/auth.spec.ts"', turn: 7 },
+      { kind: 'tool_result', toolName: 'bash', text: 'PASS tests/auth.spec.ts', turn: 7, isError: false },
+      { kind: 'assistant', text: 'Done. Token refresh implemented.', turn: 8 },
+    ]
+  },
+  {
+    id: 'mcp-skill',
+    name: 'MCP/Skill-heavy group',
+    desc: 'Agent loading skills, running grill-with-docs, reading principles. No file edits.',
+    meta: { code: 'b7c8d9', turnRange: '12–16', tokens: '3100' },
+    blocks: [
+      { kind: 'user', text: 'use trek mcp skill for ticket 04', turn: 12 },
+      { kind: 'tool_call', toolName: 'mcp', text: 'tool: "engineering_skills_skill-trek", server: "engineering-skills"', turn: 13, recallCode: 'r13' },
+      { kind: 'tool_result', toolName: 'mcp', text: 'Trek walks an existing wayfinder map...', turn: 13 },
+      { kind: 'tool_call', toolName: 'mcp', text: 'tool: "engineering_skills_skill-grill-with-docs", server: "engineering-skills"', turn: 14, recallCode: 'r14' },
+      { kind: 'tool_result', toolName: 'mcp', text: 'Load and apply prompt-grill-me...', turn: 14 },
+      { kind: 'tool_call', toolName: 'mcp', text: 'tool: "engineering_skills_prompt-grill-me", server: "engineering-skills"', turn: 15, recallCode: 'r15' },
+      { kind: 'tool_result', toolName: 'mcp', text: 'Be a skeptical Principal Systems Architect...', turn: 15 },
+      { kind: 'tool_call', toolName: 'mcp', text: 'tool: "engineering_skills_skill-ground-code-decisions", server: "engineering-skills"', turn: 16, recallCode: 'r16' },
+      { kind: 'tool_result', toolName: 'mcp', text: 'Ground material implementation decisions...', turn: 16 },
+    ]
+  },
+  {
+    id: 'subagent',
+    name: 'Subagent investigation',
+    desc: 'Agent fans out subagents to investigate multiple areas. Mixed with some file reads.',
+    meta: { code: 'c1d2e3', turnRange: '20–24', tokens: '4500' },
+    blocks: [
+      { kind: 'user', text: 'investigate how groups and digests work', turn: 20 },
+      { kind: 'tool_call', toolName: 'subagent', text: 'task: "find groupDigest implementation in digest.ts", type: "explore"', turn: 21, recallCode: 'r21' },
+      { kind: 'tool_result', toolName: 'subagent', text: 'groupDigest() produces a one-liner...', turn: 21 },
+      { kind: 'tool_call', toolName: 'read', text: 'path: "app/src/lib/engine/digest.ts"', turn: 22 },
+      { kind: 'tool_result', toolName: 'read', text: 'export function groupDigest(group, members)...', turn: 22 },
+      { kind: 'tool_call', toolName: 'subagent', text: 'task: "check if groups can nest in store.svelte.ts", type: "explore"', turn: 23, recallCode: 'r23' },
+      { kind: 'tool_result', toolName: 'subagent', text: 'Nesting is architecturally prevented...', turn: 23 },
+      { kind: 'tool_call', toolName: 'grep', text: 'path: "app/src/lib/engine", pattern: "createGroup"', turn: 24 },
+      { kind: 'tool_result', toolName: 'grep', text: 'store.svelte.ts:1868: createGroup()...', turn: 24 },
+    ]
+  },
+  {
+    id: 'agent-only',
+    name: 'Long agent run (no user)',
+    desc: 'Continuation from a previous group — all tool calls, no user message. Mixed file + MCP.',
+    meta: { code: 'd4e5f6', turnRange: '9–11', tokens: '1800' },
+    blocks: [
+      { kind: 'tool_call', toolName: 'read', text: 'path: "src/conductors/my-customize-conductor/index.ts"', turn: 9 },
+      { kind: 'tool_result', toolName: 'read', text: 'export class MyCustomizeConductor...', turn: 9 },
+      { kind: 'tool_call', toolName: 'edit', text: 'path: "src/conductors/my-customize-conductor/index.ts"', turn: 9 },
+      { kind: 'tool_result', toolName: 'edit', text: 'OK', turn: 9 },
+      { kind: 'tool_call', toolName: 'mcp', text: 'tool: "engineering_skills_skill-tdd", server: "engineering-skills"', turn: 10, recallCode: 'r10' },
+      { kind: 'tool_result', toolName: 'mcp', text: 'TDD skill content...', turn: 10 },
+      { kind: 'tool_call', toolName: 'bash', text: 'command: "npx vitest run conductor.test.ts"', turn: 11 },
+      { kind: 'tool_result', toolName: 'bash', text: 'FAIL conductor.test.ts\nExpected 3, received 0', turn: 11, isError: true },
+    ]
+  },
+  {
+    id: 'mixed',
+    name: 'Mixed everything',
+    desc: 'User asks multiple things, agent uses files + MCP + subagent. Realistic messy group.',
+    meta: { code: 'e7f8a9', turnRange: '30–36', tokens: '5200' },
+    blocks: [
+      { kind: 'user', text: 'refactor the digest module to support sections', turn: 30 },
+      { kind: 'tool_call', toolName: 'read', text: 'path: "app/src/lib/engine/digest.ts"', turn: 31 },
+      { kind: 'tool_result', toolName: 'read', text: 'export function groupDigest...', turn: 31 },
+      { kind: 'tool_call', toolName: 'subagent', text: 'task: "check pi-vcc extractors in src/extract/"', turn: 32, recallCode: 'r32' },
+      { kind: 'tool_result', toolName: 'subagent', text: 'Four extractors: goals, files, commits, preferences...', turn: 32 },
+      { kind: 'user', text: 'also check if there are tests for groupDigest', turn: 33 },
+      { kind: 'tool_call', toolName: 'grep', text: 'path: "app/src/lib/engine", pattern: "groupDigest"', turn: 34 },
+      { kind: 'tool_result', toolName: 'grep', text: 'digest.test.ts:45: groupDigest(...)', turn: 34 },
+      { kind: 'tool_call', toolName: 'mcp', text: 'tool: "engineering_skills_skill-prototype", server: "engineering-skills"', turn: 35, recallCode: 'r35' },
+      { kind: 'tool_result', toolName: 'mcp', text: 'A prototype is throwaway code...', turn: 35 },
+      { kind: 'tool_call', toolName: 'edit', text: 'path: "app/src/lib/engine/digest.ts"', turn: 36 },
+      { kind: 'tool_result', toolName: 'edit', text: 'OK', turn: 36 },
+    ]
+  }
+];
+
+// ─── Render ────────────────────────────────────────────────────────────────
+
+const tabsEl = document.getElementById('tabs');
+const panelsEl = document.getElementById('panels');
+
+scenarios.forEach((s, i) => {
+  // Tab
+  const tab = document.createElement('div');
+  tab.className = `tab ${i === 0 ? 'active' : ''}`;
+  tab.textContent = s.name;
+  tab.onclick = () => switchTab(i);
+  tabsEl.appendChild(tab);
+
+  // Panel
+  const panel = document.createElement('div');
+  panel.className = `panel ${i === 0 ? 'active' : ''}`;
+  panel.id = `panel-${i}`;
+
+  panel.innerHTML = `
+    <div class="scenario-desc">${s.desc}</div>
+
+    <div class="state-panel">
+      <div class="state-label">Blocks in this group</div>
+      <div class="block-list">
+        ${s.blocks.map(b => `<div class="block-item"><span class="block-kind">${b.kind}</span> <span class="block-tool">${b.toolName || ''}</span> ${b.text.slice(0, 60)}${b.text.length > 60 ? '…' : ''}${b.isError ? ' <span style="color:#f85149">⚠ ERROR</span>' : ''}</div>`).join('')}
+      </div>
+    </div>
+
+    <div class="comparison">
+      <div>
+        <div class="option-label">Option A — flat [Tools]</div>
+        <div class="output">
+          <div class="digest-line">${buildDigest(s.blocks, 'A', s.meta)}</div>
+        </div>
+      </div>
+      <div>
+        <div class="option-label">Option B — MCP Retrieval Index</div>
+        <div class="output">
+          <div class="digest-line">${buildDigest(s.blocks, 'B', s.meta)}</div>
+        </div>
+      </div>
+      <div>
+        <div class="option-label">Option C — Tools only if no Files</div>
+        <div class="output">
+          <div class="digest-line">${buildDigest(s.blocks, 'C', s.meta)}</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  panelsEl.appendChild(panel);
+});
+
+function switchTab(idx) {
+  document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', i === idx));
+  document.querySelectorAll('.panel').forEach((p, i) => p.classList.toggle('active', i === idx));
+}
+</script>
+</body>
+</html>

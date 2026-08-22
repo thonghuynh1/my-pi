@@ -109,6 +109,8 @@ export interface GroupOp {
 	memberIds: string[];
 	/** `null` = drop (remove the run, insert no message); non-null string = the summary text. */
 	summaryText: string | null;
+	/** True for stable rollover groups. Optional so older peers remain wire-compatible. */
+	rollover?: boolean;
 }
 
 // ── Server → client (extension → GUI) ────────────────────────────────────────

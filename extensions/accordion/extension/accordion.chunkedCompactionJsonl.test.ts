@@ -5,12 +5,6 @@ import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-vi.mock("ws", async () => {
-	const { createRequire } = await import("node:module");
-	const path = await import("node:path");
-	const ws = createRequire(`${process.cwd()}/package.json`)(path.resolve(process.cwd(), "../../../node_modules/ws/index.js"));
-	return { default: ws, WebSocket: ws.WebSocket, WebSocketServer: ws.WebSocketServer };
-});
 vi.mock("typebox", () => ({
 	Type: {
 		String: (): Record<string, never> => ({}),

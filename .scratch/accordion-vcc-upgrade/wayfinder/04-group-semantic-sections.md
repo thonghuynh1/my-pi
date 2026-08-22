@@ -1,22 +1,19 @@
 # 04 — How should group digests accumulate semantic sections?
 
 Type: grilling
-Status: open
+Status: resolved
 Blocked by: 03
 
-## Question
+## Resolution
 
-pi-vcc accumulates 5 semantic sections across compactions via `mergePrevious()`:
-- `[Session Goal]` — first user intent + scope changes
-- `[Files And Changes]` — aggregated file ops, deduped, capped at 10/category
-- `[Commits]` — last 8 commits
-- `[Outstanding Context]` — errors/blockers from last 20 blocks
-- `[User Preferences]` — always/never/prefer patterns
+Semantic extractors live in a shared library module (like `bm25.ts`). The conductor imports and calls them, passing the composed digest via `GroupCommand.digest`. Engine's `groupDigest()` stays as fallback.
 
-Accordion's `groupDigest()` today produces: `"group · N blocks · turns X–Y · ~N tok · K replies, M results · "first ask""` — a one-liner.
+**Sections:** `[Asks]`, `[Files]`, `[Errors]`, plus MCP Retrieval Index. Commits and Preferences excluded. Each section omitted when empty. Always extracted (no threshold).
 
-**Should we adopt pi-vcc's section model for group digests?** Key questions:
-- Which sections are useful for accordion's use case (agent context management vs session journaling)?
-- How do sections accumulate when groups are re-grouped (group of groups)?
-- Should the conductor build these sections (it sees the blocks pre-grouping) or should the digest layer?
-- How to keep group digests compact enough to be useful (pi-vcc sections can grow large)?
+**Caps:** Asks: 6 × 60 chars. Files: 8 full literal paths (allowlist: read/write/edit/find/grep/ls). Errors: 3 × 80 chars (isError only). MCP Index: Canonical MCP Identity → recall codes.
+
+**No accumulation across groups** — groups are flat (hard architectural invariant, store rejects nesting). Each group extracted independently.
+
+**Format:** Multi-line structured, optimized for agent selection (greppable paths, literal errors, recall codes).
+
+Prototype: `.scratch/accordion-vcc-upgrade/prototype-digest-sections.html`

@@ -245,6 +245,8 @@ export interface ReplaceCommand {
 	breakFrozen?: boolean;
 }
 
+export type GroupLifecycle = "transient" | "rollover";
+
 /**
  * Collapse a CONTIGUOUS run of blocks into a single summary entry (summary-on-head,
  * the rest emptied — never removed). The group covers the contiguous run from the FIRST
@@ -263,11 +265,17 @@ export interface ReplaceCommand {
  *     it is whole-message, pair-balanced, and re-derived defensively on the wire.
  *   - A non-empty string → that string supplies the summary body. The host prefixes it with
  *     the assigned group's authoritative `{#code FOLDED}` tag.
+ *
+ * `lifecycle` separates summary content from host behavior. `transient` groups are rebuilt
+ * during ordinary pressure planning. `rollover` groups remain stable across conductor passes
+ * and may cross the cached-prefix boundary. An omitted value preserves legacy conductor
+ * behavior for existing callers.
  */
 export interface GroupCommand {
 	kind: "group";
 	ids: string[];
 	digest?: string | null;
+	lifecycle?: GroupLifecycle;
 }
 
 /** Return blocks to full, live content (undo a fold/replace). No-op on human-held blocks. */

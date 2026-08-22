@@ -4,6 +4,8 @@ export interface ExtractableBlock {
 	toolName?: string;
 	isError?: boolean;
 	text?: string;
+	recallCode?: string;
+	retrievalIdentity?: string;
 }
 
 export interface McpIndexEntry {
@@ -52,7 +54,7 @@ function collect(values: Iterable<string>, limit: number): string[] {
 	return result;
 }
 
-export function extractAsks(blocks: ExtractableBlock[]): string[] {
+export function extractAsks(blocks: readonly ExtractableBlock[]): string[] {
 	return collect(
 		blocks
 			.filter((block) => block.kind === "user")
@@ -62,37 +64,36 @@ export function extractAsks(blocks: ExtractableBlock[]): string[] {
 	);
 }
 
-export function extractFiles(blocks: ExtractableBlock[]): string[] {
+export function extractFiles(blocks: readonly ExtractableBlock[]): string[] {
 	const paths: string[] = [];
 	for (const block of blocks) {
-		if (block.kind !== "tool_call" || !block.toolName || !FILE_TOOLS.has(block.toolName)) continue;
-		const match = block.text?.match(PATH_ARGUMENT);
-		const path = match?.[1] ?? match?.[2] ?? match?.[3];
+		const toolName = block.toolName?.trim().toLowerCase();
+		if (block.kind !== "tool_call" || !toolName || !FILE_TOOLS.has(toolName)) continue;
+		const parsedPath = stringArgument(parseArguments(block.text), "path");
+		const match = parsedPath ? undefined : block.text?.match(PATH_ARGUMENT);
+		const path = parsedPath ?? match?.[1] ?? match?.[2] ?? match?.[3];
 		if (path) paths.push(path);
 	}
 	return collect(paths, 8);
 }
 
-export function buildMcpIndex(blocks: ExtractableBlock[]): McpIndexEntry[] {
+export function buildMcpIndex(blocks: readonly ExtractableBlock[]): McpIndexEntry[] {
 	const index = new Map<string, string[]>();
 
 	for (const block of blocks) {
-		if (block.kind !== "tool_call" || !block.toolName || FILE_TOOLS.has(block.toolName) || !block.id) continue;
+		const toolName = block.toolName?.trim().toLowerCase();
+		if (block.kind !== "tool_call" || !toolName || FILE_TOOLS.has(toolName) || !block.recallCode) continue;
 
 		let identity: string | undefined;
-		if (block.toolName === "mcp") {
-			const args = parseArguments(block.text);
-			const tool = stringArgument(args, "tool");
-			if (!tool) continue;
-			const server = stringArgument(args, "server");
-			identity = server ? `${server}/${tool}` : tool;
-		} else if (block.toolName === "subagent") {
-			const task = stringArgument(parseArguments(block.text), "task");
-			if (!task) continue;
-			identity = `subagent/${task.slice(0, 40)}`;
+		if (toolName === "mcp") {
+			identity = firstLine(block.retrievalIdentity).slice(0, 120);
+		} else if (toolName === "subagent") {
+			const task = firstLine(stringArgument(parseArguments(block.text), "task")).slice(0, 40);
+			if (task) identity = `subagent/${task}`;
 		} else {
-			identity = block.toolName;
+			identity = firstLine(toolName).slice(0, 80);
 		}
+		if (!identity) continue;
 
 		let codes = index.get(identity);
 		if (!codes) {
@@ -100,13 +101,13 @@ export function buildMcpIndex(blocks: ExtractableBlock[]): McpIndexEntry[] {
 			codes = [];
 			index.set(identity, codes);
 		}
-		if (!codes.includes(block.id)) codes.push(block.id);
+		if (!codes.includes(block.recallCode)) codes.push(block.recallCode);
 	}
 
 	return Array.from(index, ([identity, codes]) => ({ identity, codes }));
 }
 
-export function extractErrors(blocks: ExtractableBlock[]): string[] {
+export function extractErrors(blocks: readonly ExtractableBlock[]): string[] {
 	return collect(
 		blocks
 			.filter((block) => block.isError === true)
@@ -117,7 +118,7 @@ export function extractErrors(blocks: ExtractableBlock[]): string[] {
 }
 
 export interface DigestMeta {
-	foldCode: string;
+	foldCode?: string;
 	blockCount: number;
 	turnRange: string;
 	tokens: number;
@@ -131,7 +132,7 @@ export function formatMcpIndex(entries: McpIndexEntry[]): string {
 	].join("\n");
 }
 
-export function buildSemanticDigest(blocks: ExtractableBlock[], meta: DigestMeta): string {
+export function buildSemanticDigest(blocks: readonly ExtractableBlock[], meta: DigestMeta): string {
 	const header = meta.foldCode
 		? `{#${meta.foldCode} FOLDED} group · ${meta.blockCount} blocks · ${meta.turnRange} · ~${meta.tokens} tok`
 		: `group · ${meta.blockCount} blocks · ${meta.turnRange} · ~${meta.tokens} tok`;

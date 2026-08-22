@@ -204,7 +204,7 @@ function fnv1a(input: string): string {
 	return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
-export function corpusContentHash(blocks: readonly ViewBlock[]): string {
+export function corpusContentHash(blocks: readonly Pick<ViewBlock, "id" | "tokens" | "order">[]): string {
 	// Fast content fingerprint: block identity (id + tokens + order) is stable and
 	// uniquely identifies the corpus without serializing full text through SHA-256.
 	const key = blocks.map((block) => `${block.id}:${block.tokens}:${block.order}`).join("\n");

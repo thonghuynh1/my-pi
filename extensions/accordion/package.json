@@ -1,0 +1,10 @@
+{
+  "name": "accordion",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "npm --prefix app run check",
+    "build": "npm --prefix app run build && npm --prefix extension run build:client",
+    "test": "node app/node_modules/vitest/vitest.mjs run"
+  }
+}

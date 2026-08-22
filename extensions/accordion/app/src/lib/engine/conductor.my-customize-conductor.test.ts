@@ -398,6 +398,7 @@ describe("rollover-only conduct", () => {
 		const group = result.commands.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
 
 		expect(group).toBeDefined();
+		expect(group?.lifecycle).toBe("rollover");
 		expect(group?.digest).toContain("group · 4 blocks · turns 1–4 · ~16000 tok");
 		expect(group?.digest).not.toContain("FOLDED");
 		expect(group?.digest).toContain("[Asks] implement auth flow");
@@ -422,8 +423,36 @@ describe("rollover-only conduct", () => {
 		const group = result.commands.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
 
 		expect(group).toBeDefined();
+		expect(group?.lifecycle).toBe("transient");
 		expect(group?.digest).toContain("[Files] src/continuation.ts");
 		expect(group?.digest).not.toContain("[Asks]");
+	});
+
+	it("indexes non-file tools by their retrievable result code", () => {
+		const callId = "subagent-call";
+		const resultId = "subagent-result";
+		const blocks = [
+			vb("semantic:user", "user", 0, 4_000, 4_000, { text: "inspect the flow" }),
+			vb(callId, "tool_call", 1, 4_000, 4_000, {
+				toolName: "subagent",
+				callId,
+				text: 'subagent {"task":"inspect the retrieval flow"}',
+			}),
+			vb(resultId, "tool_result", 2, 4_000, 100, {
+				toolName: "subagent",
+				callId,
+				text: "findings",
+			}),
+			vb("semantic:text", "text", 3, 4_000, 100, { text: "done" }),
+		];
+		const tail = vb("semantic:tail", "user", blocks.length, 100, 100, { protected: true });
+		const result = new ProductionMyCustomizeConductor().conduct(
+			makeView([...blocks, tail], 70_000, 16_100, { contextWindow: 128_000 }),
+		);
+		const group = result.commands.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
+
+		expect(group?.digest).toContain(`subagent/inspect the retrieval flow → ${foldCode(resultId)}`);
+		expect(group?.digest).not.toContain(foldCode(callId));
 	});
 
 	it("late attach compacts the complete non-protected history in one plan", () => {

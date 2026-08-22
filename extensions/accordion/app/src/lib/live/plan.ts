@@ -28,7 +28,6 @@ import type { FoldOp, GroupOp, UnfoldRestored, RecallContent } from "./protocol"
 import { isDurableId } from "./mapping";
 import { foldCode, wireFoldable } from "../engine/digest";
 import { searchBlocks, type SearchDocument } from "../engine/bm25";
-import { CHUNKED_COMPACTION_PREFIX } from "$conductors/my-customize-conductor/constants";
 
 /**
  * Compute the fold plan for the current store state: one `FoldOp` per block that
@@ -73,7 +72,7 @@ export function computeGroupOps(store: AccordionStore): GroupOp[] {
 		// Drop group (summaryText === null) is VALID — do not skip it.
 		// Only skip a non-drop group whose summary is empty/whitespace (defensive; shouldn't happen).
 		if (summaryText !== null && !summaryText.trim()) continue;
-		out.push({ id: g.id, memberIds, summaryText });
+		out.push({ id: g.id, memberIds, summaryText, rollover: store.isRolloverGroup(g) });
 	}
 	return out;
 }
@@ -84,12 +83,9 @@ export function blockLabel(b: Block): string {
 	return b.toolName ? `${b.kind} ${b.toolName} · ${where}` : `${b.kind} · ${where}`;
 }
 
-function isChunkedCompactionGroupMember(store: AccordionStore, block: Block): boolean {
+function isRolloverGroupMember(store: AccordionStore, block: Block): boolean {
 	const group = store.groupOf(block);
-	const digest = group?.digest ?? "";
-	return group?.folded === true && (
-		digest.startsWith(CHUNKED_COMPACTION_PREFIX) || /^group ·/.test(digest)
-	);
+	return group?.folded === true && store.isRolloverGroup(group);
 }
 
 /**
@@ -141,7 +137,7 @@ export function resolveUnfold(store: AccordionStore, codes: string[]): { restore
 		for (const b of matches) {
 			// Chunked-compaction members are immutable prefix content. Recalling one appends a
 			// fresh pair to the protected tail instead of rewriting the cached group range.
-			if (isChunkedCompactionGroupMember(store, b)) {
+			if (isRolloverGroupMember(store, b)) {
 				store.appendToTail(b.id);
 				restored.push({ code, kind: b.kind, label: `recall(${code}) → tail`, ids: [b.id] });
 				hit = true;
@@ -226,7 +222,7 @@ export function resolveRecall(store: AccordionStore, codes: string[], query?: st
 		for (const b of matches) {
 			// Chunked-compaction member: return only this member's original text, read-only.
 			// Do NOT call appendToTail, unfold, or unfoldGroup — the group stays folded.
-			if (isChunkedCompactionGroupMember(store, b)) {
+			if (isRolloverGroupMember(store, b)) {
 				const originalText = store.get(b.id)?.text ?? b.text ?? "";
 				const text = recallText([{ id: b.id, text: originalText }], query);
 				restored.push({ code, label: blockLabel(b), text, ids: [b.id] });

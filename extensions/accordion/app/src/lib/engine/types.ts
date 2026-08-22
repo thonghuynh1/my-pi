@@ -8,6 +8,8 @@
  * agent decays at very different rates. See VISION.md.
  */
 
+import type { GroupLifecycle } from "$conductors/contract";
+
 export type BlockKind =
 	| "user" // the human's instruction/intent — highest durable value
 	| "text" // an assistant reply / conclusion
@@ -104,9 +106,11 @@ export interface Group {
 	 * Conductor-supplied summary override (mirrors `GroupCommand.digest`):
 	 *   - `undefined` → default recap via `groupDigest` (unchanged behavior).
 	 *   - `null` or `""` → DROP: the run is removed from the wire, no message inserted.
-	 *   - Non-empty string → that exact string is used as the summary verbatim.
+	 *   - Non-empty string → the summary body; the host adds the authoritative fold tag.
 	 */
 	digest?: string | null;
+	/** Host lifecycle requested by the conductor. Omitted for human and legacy groups. */
+	lifecycle?: GroupLifecycle;
 }
 
 export interface SessionMeta {

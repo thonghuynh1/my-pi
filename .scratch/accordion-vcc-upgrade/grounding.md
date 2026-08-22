@@ -40,6 +40,36 @@
 - Timing: `context` hook fires BEFORE `before_provider_request` — first sync has original, subsequent syncs have compressed
 - PCC blocks are rejected from fold commands (`store.svelte.ts:1233` reason: "proactively-compressed")
 
+## Group digest system
+
+- `app/src/lib/engine/digest.ts` — `groupDigest(group, members)` — pure deterministic function, produces one-liner: `{#code FOLDED} group · N blocks · turns A–B · ~T tok · X replies, Y calls · "ask…"`
+- `conductors/contract/conductor.ts:245–280` — `GroupCommand` carries a digest body plus `lifecycle?: "transient" | "rollover"`; the host owns the authoritative fold tag
+- `store.svelte.ts:1878` — `createGroup()` guard: rejects if any member already in a group (flat invariant)
+- `types.ts:~73` — Group type doc: "flat (members are blocks, never groups)"
+- `ViewBlock` exposes: `grouped: boolean` (no groupId), `text` is always original content (not digest)
+- Conductor excludes `grouped` blocks from all candidate sets — hard barrier in rollover planning
+
+## Semantic section extractors (pi-vcc reference)
+
+- `pi-vcc/src/extract/goals.ts` — `extractGoals(blocks)` — scans user blocks for task-intent verbs, scope-change pivots
+- `pi-vcc/src/extract/files.ts` — `extractFiles(blocks, fileOps?)` — scans tool_call blocks for file-path args to known tools
+- `pi-vcc/src/extract/commits.ts` — `extractCommits(blocks)` — scans bash tool calls for git commit patterns
+- `pi-vcc/src/extract/preferences.ts` — `extractPreferences(blocks)` — scans user blocks for prefer/always/never patterns
+- `pi-vcc/src/core/build-sections.ts` — assembles all extractors into `SectionData`
+
+## Canonical MCP Identity / MCP Retrieval Index
+
+- `CONTEXT.md` — MCP Retrieval Index: maps recognizable MCP identities to recall codes in group digest
+- `CONTEXT.md` — Canonical MCP Identity: server + tool + deterministic arg fingerprint
+
+## Conductor group paths (slice 2 seams)
+
+- `my-customize-conductor.ts:193–243` — rollover groups carry semantic digests with `lifecycle: "rollover"`
+- `my-customize-conductor.ts:321–328` — pressure/emergency groups carry semantic digests with `lifecycle: "transient"`
+- `store.svelte.ts:1798–1805` — `groupSummary(g)` strips any supplied tag and prefixes the group ID's authoritative fold tag
+- `store.svelte.ts:1197–1199` — `case "group"` passes both `digest` and `lifecycle` to `groupCmd()`
+- Group lifecycle, not digest text, controls frozen-prefix rewrites, preservation, member recall, and rollover diagnostics
+
 ## Two-process split
 
 - GUI process: holds `AccordionStore.blocks[]` — searchable for normal blocks only

@@ -7,6 +7,7 @@
  *          material changed, avoiding cache-thrashing ungroup-then-regroup cycles.
  * DEC-003: O(1) dirty detection via markDirty() from the store, not O(n) scanning.
  */
+import { buildSemanticDigest } from "../../app/src/lib/engine/extractors";
 import type { Command, Conductor, ConductorHost, ConductorPlan, ConductorView, ViewBlock } from "../contract";
 import { availableCap, contextWindowCap } from "../contract";
 import { FOLDABLE_KINDS } from "../cold-score/score";
@@ -74,7 +75,7 @@ function isAccumulationBoundary(block: ViewBlock): boolean {
 }
 
 function isRolloverGroupBoundary(block: ViewBlock): boolean {
-	if (block.kind === "user" || block.held || block.protected || block.grouped) return true;
+	if (block.held || block.protected || block.grouped) return true;
 	const tool = (block.toolName ?? "").trim().toLowerCase();
 	return tool === "mcp" || tool === "recall" || pstackIdentityFromDigest(block.text) !== undefined;
 }
@@ -191,7 +192,6 @@ export class MyCustomizeConductor implements Conductor {
 	private createGroup(
 		candidates: readonly ViewBlock[],
 		view: ConductorView,
-		callById: ReadonlyMap<string, ViewBlock>,
 		minimumSaving: number,
 	): PlannedGroup | null {
 		const ids = chunkedCompaction.trimOpenToolPairs(candidates.map((block) => block.id), view.blocks);
@@ -201,13 +201,24 @@ export class MyCustomizeConductor implements Conductor {
 		// Filter from candidates (not view.blocks) — candidates is already a small subset.
 		const blocks = candidates.filter((block) => selectedIds.has(block.id));
 		const turns = blocks.map((block) => block.turn);
-		const turnRange: [number, number] = [Math.min(...turns), Math.max(...turns)];
-		const retrievalIndex = chunkedCompaction.buildMcpRetrievalIndex(blocks, callById);
-		const digest = chunkedCompaction.composeDigest(
-			chunkedCompaction.digestHeader(chunkedCompaction.corpusContentHash(blocks), ids.length, turnRange),
-			chunkedCompaction.digestBody(blocks),
-			chunkedCompaction.digestMembersFooter(ids.map(foldCode)),
-		) + (retrievalIndex ? `\n\n${retrievalIndex}` : "");
+		const lowestTurn = Math.min(...turns);
+		const highestTurn = Math.max(...turns);
+		const resultByCallId = new Map<string, ViewBlock>();
+		for (const block of blocks) {
+			if (block.kind === "tool_result" && block.callId) resultByCallId.set(block.callId, block);
+		}
+		const digestBlocks = blocks.map((block) => ({
+			...block,
+			id: block.kind === "tool_call" && block.toolName === "mcp" && block.callId
+				? foldCode(resultByCallId.get(block.callId)?.id ?? block.id)
+				: foldCode(block.id),
+		}));
+		const digest = buildSemanticDigest(digestBlocks, {
+			foldCode: foldCode(`g:${ids[0]}`),
+			blockCount: blocks.length,
+			turnRange: lowestTurn === highestTurn ? `turn ${lowestTurn}` : `turns ${lowestTurn}–${highestTurn}`,
+			tokens: blocks.reduce((sum, block) => sum + block.tokens, 0),
+		});
 		const saving = blocks.reduce((sum, block) => sum + block.tokens, 0) - estSummaryTokens(digest);
 		if (saving < minimumSaving) return null;
 		return { command: { kind: "group", ids, digest }, saving };
@@ -285,7 +296,7 @@ export class MyCustomizeConductor implements Conductor {
 		const minimumGroupSaving = Math.max(2_000, 0.05 * cap);
 		const candidates = view.blocks.slice(range.fromIndex, end)
 			.filter((block) => !block.held && !block.protected && !block.grouped && !block.proactivelyCompressed);
-		const planned = this.createGroup(candidates, view, callById, minimumGroupSaving);
+		const planned = this.createGroup(candidates, view, minimumGroupSaving);
 		if (!planned) return { commands: [], saving: 0, groupSaving: 0 };
 		return { commands: [planned.command], saving: planned.saving, groupSaving: planned.saving };
 	}
@@ -360,7 +371,7 @@ export class MyCustomizeConductor implements Conductor {
 				sliceTokens += segment[i].tokens;
 			}
 			if (sliceTokens >= DEFAULT_PRE_GROUP_TOKENS) {
-				const planned = this.createGroup(slice, view, callById, minimumSaving);
+				const planned = this.createGroup(slice, view, minimumSaving);
 				if (planned) { out.push(planned.command); onSaving(planned.saving); }
 				slice = [];
 				sliceTokens = 0;
@@ -368,7 +379,7 @@ export class MyCustomizeConductor implements Conductor {
 			start = end;
 		}
 		if (slice.length > 0) {
-			const planned = this.createGroup(slice, view, callById, minimumSaving);
+			const planned = this.createGroup(slice, view, minimumSaving);
 			if (planned) { out.push(planned.command); onSaving(planned.saving); }
 		}
 	}

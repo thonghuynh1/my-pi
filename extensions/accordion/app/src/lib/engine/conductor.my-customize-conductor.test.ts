@@ -378,6 +378,32 @@ describe("rollover-only conduct", () => {
 		expect(groups[0].ids).toEqual(blocks.map((block) => block.id));
 	});
 
+	it("passes the semantic digest composer output as the group digest", () => {
+		const blocks = [
+			vb("semantic:user", "user", 0, 4_000, 4_000, { text: "implement auth flow" }),
+			vb("semantic:call", "tool_call", 1, 4_000, 4_000, {
+				toolName: "read",
+				text: '{"path":"src/auth/token.ts"}',
+			}),
+			vb("semantic:error", "tool_result", 2, 4_000, 100, {
+				isError: true,
+				text: "403 Forbidden on /api/token",
+			}),
+			vb("semantic:text", "text", 3, 4_000, 100, { text: "done" }),
+		];
+		const tail = vb("semantic:tail", "user", blocks.length, 100, 100, { protected: true });
+		const result = new ProductionMyCustomizeConductor().conduct(
+			makeView([...blocks, tail], 70_000, 16_100, { contextWindow: 128_000 }),
+		);
+		const group = result.commands.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
+
+		expect(group).toBeDefined();
+		expect(group?.digest).toContain(`{#${foldCode(`g:${blocks[0].id}`)} FOLDED} group · 4 blocks · turns 1–4 · ~16000 tok`);
+		expect(group?.digest).toContain("[Asks] implement auth flow");
+		expect(group?.digest).toContain("[Files] src/auth/token.ts");
+		expect(group?.digest).toContain("[Errors] 403 Forbidden on /api/token");
+	});
+
 	it("late attach compacts the complete non-protected history in one plan", () => {
 		const history = Array.from({ length: 40 }, (_, i) => vb(`history:${i}`, "text", i, 4_000, 100, { text: `history ${i}` }));
 		const tail = vb("history:tail", "user", history.length, 40_000, 40_000, { protected: true });

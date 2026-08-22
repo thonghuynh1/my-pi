@@ -1109,9 +1109,10 @@ export class AccordionStore {
 	}
 
 	private preservesConductorGroup(group: Group): boolean {
+		const digest = group.digest ?? "";
 		return (
 			(group.by !== "auto" && group.by !== "conductor") ||
-			group.digest?.startsWith(CHUNKED_COMPACTION_PREFIX) === true ||
+			digest.startsWith(CHUNKED_COMPACTION_PREFIX) || /^\{#[a-z0-9]+ FOLDED\} group ·/.test(digest) ||
 			group.memberIds.some(
 				(id) => (this.get(id)?.order ?? this.frozenFromIndex) < this.frozenFromIndex,
 			)

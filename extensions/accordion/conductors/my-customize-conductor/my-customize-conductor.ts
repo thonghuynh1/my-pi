@@ -189,6 +189,30 @@ export class MyCustomizeConductor implements Conductor {
 		return this.lastResult;
 	}
 
+	private buildGroupDigest(blocks: readonly ViewBlock[], ids: readonly string[]): string {
+		const selectedIds = new Set(ids);
+		const selected = blocks.filter((block) => selectedIds.has(block.id));
+		const turns = selected.map((block) => block.turn);
+		const lowestTurn = Math.min(...turns);
+		const highestTurn = Math.max(...turns);
+		const resultByCallId = new Map<string, ViewBlock>();
+		for (const block of selected) {
+			if (block.kind === "tool_result" && block.callId) resultByCallId.set(block.callId, block);
+		}
+		const digestBlocks = selected.map((block) => ({
+			...block,
+			id: block.kind === "tool_call" && block.toolName === "mcp" && block.callId
+				? foldCode(resultByCallId.get(block.callId)?.id ?? block.id)
+				: foldCode(block.id),
+		}));
+		return buildSemanticDigest(digestBlocks, {
+			foldCode: "",
+			blockCount: selected.length,
+			turnRange: lowestTurn === highestTurn ? `turn ${lowestTurn}` : `turns ${lowestTurn}–${highestTurn}`,
+			tokens: selected.reduce((sum, block) => sum + block.tokens, 0),
+		});
+	}
+
 	private createGroup(
 		candidates: readonly ViewBlock[],
 		view: ConductorView,
@@ -197,28 +221,9 @@ export class MyCustomizeConductor implements Conductor {
 		const ids = chunkedCompaction.trimOpenToolPairs(candidates.map((block) => block.id), view.blocks);
 		if (ids.length < 2) return null;
 
-		const selectedIds = new Set(ids);
 		// Filter from candidates (not view.blocks) — candidates is already a small subset.
-		const blocks = candidates.filter((block) => selectedIds.has(block.id));
-		const turns = blocks.map((block) => block.turn);
-		const lowestTurn = Math.min(...turns);
-		const highestTurn = Math.max(...turns);
-		const resultByCallId = new Map<string, ViewBlock>();
-		for (const block of blocks) {
-			if (block.kind === "tool_result" && block.callId) resultByCallId.set(block.callId, block);
-		}
-		const digestBlocks = blocks.map((block) => ({
-			...block,
-			id: block.kind === "tool_call" && block.toolName === "mcp" && block.callId
-				? foldCode(resultByCallId.get(block.callId)?.id ?? block.id)
-				: foldCode(block.id),
-		}));
-		const digest = buildSemanticDigest(digestBlocks, {
-			foldCode: foldCode(`g:${ids[0]}`),
-			blockCount: blocks.length,
-			turnRange: lowestTurn === highestTurn ? `turn ${lowestTurn}` : `turns ${lowestTurn}–${highestTurn}`,
-			tokens: blocks.reduce((sum, block) => sum + block.tokens, 0),
-		});
+		const blocks = candidates.filter((block) => ids.includes(block.id));
+		const digest = this.buildGroupDigest(blocks, ids);
 		const saving = blocks.reduce((sum, block) => sum + block.tokens, 0) - estSummaryTokens(digest);
 		if (saving < minimumSaving) return null;
 		return { command: { kind: "group", ids, digest }, saving };
@@ -303,7 +308,7 @@ export class MyCustomizeConductor implements Conductor {
 
 	private createDefaultGroup(candidates: readonly ViewBlock[], view: ConductorView): GroupCommand | null {
 		const ids = chunkedCompaction.trimOpenToolPairs(candidates.map((block) => block.id), view.blocks);
-		return ids.length >= 2 ? { kind: "group", ids } : null;
+		return ids.length >= 2 ? { kind: "group", ids, digest: this.buildGroupDigest(candidates, ids) } : null;
 	}
 
 	/** Compact old pressure candidates without consuming the active Pre-Group. */

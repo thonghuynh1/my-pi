@@ -132,9 +132,10 @@ export function formatMcpIndex(entries: McpIndexEntry[]): string {
 }
 
 export function buildSemanticDigest(blocks: ExtractableBlock[], meta: DigestMeta): string {
-	const lines = [
-		`{#${meta.foldCode} FOLDED} group · ${meta.blockCount} blocks · ${meta.turnRange} · ~${meta.tokens} tok`,
-	];
+	const header = meta.foldCode
+		? `{#${meta.foldCode} FOLDED} group · ${meta.blockCount} blocks · ${meta.turnRange} · ~${meta.tokens} tok`
+		: `group · ${meta.blockCount} blocks · ${meta.turnRange} · ~${meta.tokens} tok`;
+	const lines = [header];
 	const asks = extractAsks(blocks);
 	const files = extractFiles(blocks);
 	const errors = extractErrors(blocks);

@@ -398,10 +398,32 @@ describe("rollover-only conduct", () => {
 		const group = result.commands.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
 
 		expect(group).toBeDefined();
-		expect(group?.digest).toContain(`{#${foldCode(`g:${blocks[0].id}`)} FOLDED} group · 4 blocks · turns 1–4 · ~16000 tok`);
+		expect(group?.digest).toContain("group · 4 blocks · turns 1–4 · ~16000 tok");
+		expect(group?.digest).not.toContain("FOLDED");
 		expect(group?.digest).toContain("[Asks] implement auth flow");
 		expect(group?.digest).toContain("[Files] src/auth/token.ts");
 		expect(group?.digest).toContain("[Errors] 403 Forbidden on /api/token");
+	});
+
+	it("pressure groups carry semantic sections without inventing asks", () => {
+		const blocks = [
+			vb("pressure:call", "tool_call", 0, 8_000, 8_000, {
+				toolName: "read",
+				text: '{"path":"src/continuation.ts"}',
+			}),
+			vb("pressure:call-2", "tool_call", 1, 8_000, 8_000, {
+				toolName: "read",
+				text: '{"path":"src/continuation.ts"}',
+			}),
+		];
+		const result = new ProductionMyCustomizeConductor().conduct(
+			makeView(blocks, 10_000, 16_000, { contextWindow: 10_000 }),
+		);
+		const group = result.commands.find((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
+
+		expect(group).toBeDefined();
+		expect(group?.digest).toContain("[Files] src/continuation.ts");
+		expect(group?.digest).not.toContain("[Asks]");
 	});
 
 	it("late attach compacts the complete non-protected history in one plan", () => {

@@ -36,6 +36,14 @@ describe("computeGroupOps", () => {
 		expect(ops[0].summaryText!.startsWith(`{#${foldCode(g.id)} FOLDED} group ·`)).toBe(true);
 	});
 
+	it("adds the assigned fold tag to an untagged conductor summary", () => {
+		const s = makeStore();
+		const g = s.createGroup("a:r1:p0", "r:c1", "you", "conductor group summary")!;
+		const ops = computeGroupOps(s);
+
+		expect(ops[0].summaryText).toBe(`{#${foldCode(g.id)} FOLDED} conductor group summary`);
+	});
+
 	it("preserves conductor custom group summaries with recovery tags", () => {
 		const s = makeStore();
 		const g = s.createGroup("a:r1:p0", "r:c1", "you", `{#${foldCode("g:a:r1:p0")} FOLDED} conductor group summary`)!;

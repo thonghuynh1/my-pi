@@ -8,13 +8,34 @@ export interface ExtractableBlock {
 	retrievalIdentity?: string;
 }
 
+export type BlockTier = "high" | "medium" | "low";
+
 export interface McpIndexEntry {
 	identity: string;
 	codes: string[];
 }
 
 const FILE_TOOLS = new Set(["read", "write", "edit", "find", "grep", "ls"]);
+const HIGH_TIER_TOOLS = new Set(["edit", "write", "multiedit", "run_tests"]);
+const MEDIUM_TIER_TOOLS = new Set(["subagent", "mcp"]);
+const LOW_TIER_TOOLS = new Set(["read", "find", "grep", "ls"]);
+const TEST_RUNNER_PATTERN = /\b(?:npm\s+test|npx\s+(?:vitest|jest)|pytest|dotnet\s+test|go\s+test|cargo\s+test|mix\s+test)\b/i;
+const SERVER_PREFIX_PATTERN = /^(?:mcp__)?[\w.-]+(?:\/|__)[\w.-]+/i;
 const PATH_ARGUMENT = /["']?path["']?\s*:\s*(?:"([^"]*)"|'([^']*)'|([^\s,}\]]+))/i;
+
+export function blockTier(block: ExtractableBlock): BlockTier {
+	const toolName = block.toolName?.trim().toLowerCase();
+
+	if (block.isError === true) return "high";
+	if (toolName && HIGH_TIER_TOOLS.has(toolName)) return "high";
+	if (toolName === "bash" && block.text !== undefined && TEST_RUNNER_PATTERN.test(block.text)) return "high";
+	if (block.kind === "user") return "medium";
+	if (toolName === "bash") return "medium";
+	if (block.kind === "text") return "medium";
+	if (toolName && (MEDIUM_TIER_TOOLS.has(toolName) || SERVER_PREFIX_PATTERN.test(toolName))) return "medium";
+	if (toolName && LOW_TIER_TOOLS.has(toolName)) return "low";
+	return "low";
+}
 
 function firstLine(text: string | undefined): string {
 	return text?.split(/\r?\n/, 1)[0].trim() ?? "";

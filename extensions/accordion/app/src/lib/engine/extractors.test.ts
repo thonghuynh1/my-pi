@@ -5,6 +5,7 @@ import {
 	extractAsks,
 	extractErrors,
 	extractFiles,
+	blockTier,
 	formatMcpIndex,
 	type ExtractableBlock,
 } from "./extractors";
@@ -141,6 +142,65 @@ describe("extractErrors", () => {
 
 	it("accepts a ViewBlock-shaped object", () => {
 		expect(extractAsks([{ kind: "user", text: "view ask", id: "v1" }])).toEqual(["view ask"]);
+	});
+});
+
+describe("blockTier", () => {
+	it.each(["edit", "write", "multiedit"])("returns high for %s tools", (toolName) => {
+		expect(blockTier(block({ kind: "tool_call", toolName }))).toBe("high");
+	});
+
+	it("returns high for run_tests", () => {
+		expect(blockTier(block({ kind: "tool_result", toolName: "run_tests" }))).toBe("high");
+	});
+
+	it("returns high for errors before other classifications", () => {
+		expect(blockTier(block({ kind: "tool_result", toolName: "read", isError: true }))).toBe("high");
+	});
+
+	it.each([
+		"npm test",
+		"npx vitest run",
+		"npx jest --runInBand",
+		"pytest tests/test_app.py",
+		"dotnet test App.Tests",
+		"go test ./...",
+		"cargo test --all",
+		"mix test",
+	])("returns high for bash test runner command %s", (text) => {
+		expect(blockTier(block({ kind: "tool_result", toolName: "bash", text }))).toBe("high");
+	});
+
+	it("returns medium for user blocks", () => {
+		expect(blockTier(block({ kind: "user" }))).toBe("medium");
+	});
+
+	it("returns medium for non-test bash", () => {
+		expect(blockTier(block({ kind: "tool_result", toolName: "bash", text: "git status" }))).toBe("medium");
+	});
+
+	it("returns medium for assistant text", () => {
+		expect(blockTier(block({ kind: "text" }))).toBe("medium");
+	});
+
+	it("returns medium for MCP and server-prefixed tools", () => {
+		expect(blockTier(block({ kind: "tool_result", toolName: "mcp" }))).toBe("medium");
+		expect(blockTier(block({ kind: "tool_result", toolName: "engineering-skills/skill-pstack" }))).toBe("medium");
+	});
+
+	it("returns low for file tools", () => {
+		expect(blockTier(block({ kind: "tool_result", toolName: "read" }))).toBe("low");
+		expect(blockTier(block({ kind: "tool_result", toolName: "find" }))).toBe("low");
+		expect(blockTier(block({ kind: "tool_result", toolName: "grep" }))).toBe("low");
+		expect(blockTier(block({ kind: "tool_result", toolName: "ls" }))).toBe("low");
+	});
+
+	it("uses the medium fallback for bash without text", () => {
+		expect(blockTier(block({ kind: "tool_result", toolName: "bash", text: undefined }))).toBe("medium");
+	});
+
+	it("returns low by default", () => {
+		expect(blockTier(block({ kind: "thinking" }))).toBe("low");
 	});
 });
 

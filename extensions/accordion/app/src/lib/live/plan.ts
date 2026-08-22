@@ -88,7 +88,7 @@ function isChunkedCompactionGroupMember(store: AccordionStore, block: Block): bo
 	const group = store.groupOf(block);
 	const digest = group?.digest ?? "";
 	return group?.folded === true && (
-		digest.startsWith(CHUNKED_COMPACTION_PREFIX) || /^\{#[a-z0-9]+ FOLDED\} group ·/.test(digest)
+		digest.startsWith(CHUNKED_COMPACTION_PREFIX) || /^group ·/.test(digest)
 	);
 }
 

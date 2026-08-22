@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { AccordionStore } from "../engine/store.svelte";
 import { computeGroupOps } from "./plan";
 import { estTokens, BLOCK_OVERHEAD } from "../engine/tokens";
-import { groupDigestTokens } from "../engine/digest";
+import { foldCode, groupDigestTokens } from "../engine/digest";
 import type { Block, Group, ParsedSession } from "../engine/types";
 
 function b(id: string, kind: Block["kind"], turn: number, order: number, tokens: number, callId?: string): Block {
@@ -133,7 +133,7 @@ describe("computeGroupOps — drop group emits summaryText: null", () => {
 		s.groups = [{ id: "g:u:2", memberIds: ["u:2", "a:r2:p0"], folded: true, by: "auto", digest: "{#xyz FOLDED} my summary" }];
 		const ops = computeGroupOps(s);
 		expect(ops.length).toBe(1);
-		expect(ops[0].summaryText).toBe("{#xyz FOLDED} my summary");
+		expect(ops[0].summaryText).toBe(`{#${foldCode("g:u:2")} FOLDED} my summary`);
 	});
 
 	it("undefined digest emits the standard groupDigest recap (byte-identical to before)", () => {

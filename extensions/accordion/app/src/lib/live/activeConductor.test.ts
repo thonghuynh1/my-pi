@@ -67,6 +67,6 @@ describe("attachActiveConductor", () => {
 		expect(store.fullTokens).toBeGreaterThan(140_000);
 		expect(store.groups).toHaveLength(1);
 		expect(store.groups[0].memberIds.length).toBeGreaterThan(1);
-		expect(store.groups[0].digest).toMatch(/^\{#[a-z0-9]+ FOLDED\} group ·/);
+		expect(store.groupSummary(store.groups[0])).toMatch(/^\{#[a-z0-9]+ FOLDED\} group ·/);
 	});
 });

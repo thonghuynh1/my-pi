@@ -261,8 +261,8 @@ export interface ReplaceCommand {
  *     exception to the "content substitution, never structural removal" rule stated in this
  *     file's header (the first being the existing group→summary removal); like that exception
  *     it is whole-message, pair-balanced, and re-derived defensively on the wire.
- *   - A non-empty string → that exact string is used as the summary verbatim, like
- *     `FoldCommand.digest` (no tag added).
+ *   - A non-empty string → that string supplies the summary body. The host prefixes it with
+ *     the assigned group's authoritative `{#code FOLDED}` tag.
  */
 export interface GroupCommand {
 	kind: "group";

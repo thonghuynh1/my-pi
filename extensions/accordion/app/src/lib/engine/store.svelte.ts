@@ -70,10 +70,10 @@ function harnessEqual(a: HarnessBreakdown | null, b: HarnessBreakdown | null): b
 const PROTECT_OVERFLOW_CAP = 1.25;
 
 /** A leading `{#code FOLDED}` tag (with any surrounding whitespace) a conductor may have
- *  mistakenly baked into a recoverable `replace` body. Stripped in `substOne` so the engine
- *  stays the SOLE author of the tag — a conductor passing its own (possibly wrong-id or
- *  whitespace-shifted) tag can never reach the agent. `foldCode` is 6 base36 chars. */
-const LEADING_FOLD_TAG = /^\s*\{#[0-9a-z]{6} FOLDED\}\s*/;
+ *  mistakenly baked into a recoverable `replace` or `group` body. Stripped before the engine
+ *  adds its authoritative tag, so a conductor's wrong-id or placeholder tag can never reach
+ *  the agent. */
+const LEADING_FOLD_TAG = /^\s*\{#[^}\s]+ FOLDED\}\s*/;
 
 /**
  * The "message key" of a block id — the id with its assistant-part suffix removed,
@@ -1793,7 +1793,10 @@ export class AccordionStore {
 	/** The one summary string the group's folded tile renders / the agent receives. */
 	groupSummary(g: Group): string {
 		if (this.isDropGroup(g)) return ""; // drop group: caller must branch on isDropGroup first
-		if (typeof g.digest === "string" && g.digest) return g.digest; // non-empty literal → verbatim
+		if (typeof g.digest === "string" && g.digest) {
+			const body = g.digest.replace(LEADING_FOLD_TAG, "");
+			return `${foldTag(g.id)} ${body}`;
+		}
 		const c = this.classifyGroup(g);
 		return groupDigest(g, c.collapsedMembers.length ? c.collapsedMembers : c.members);
 	}
@@ -1863,8 +1866,9 @@ export class AccordionStore {
 	 * then validated: entirely older than the protected tail, no member already grouped
 	 * (no overlap), ≥1 member. Folds it on creation. Returns the group, or null if invalid.
 	 *
-	 * `digest` is the optional conductor-supplied summary override (mirrors `GroupCommand.digest`):
-	 * `undefined` → default recap; `null`/`""` → drop (no wire message); non-empty string → verbatim.
+	 * `digest` is the optional conductor-supplied summary body (mirrors `GroupCommand.digest`):
+	 * `undefined` → default recap; `null`/`""` → drop (no wire message); non-empty string → body
+	 * with the group's authoritative fold tag.
 	 */
 	createGroup(startId: string, endId: string, by: Actor = "you", digest?: string | null): Group | null {
 		// ADR 0011 `human-steering`: a human hand-group is refused under the lock. The

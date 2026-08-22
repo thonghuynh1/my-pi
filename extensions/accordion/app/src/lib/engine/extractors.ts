@@ -6,11 +6,38 @@ export interface ExtractableBlock {
 	text?: string;
 }
 
+export interface McpIndexEntry {
+	identity: string;
+	codes: string[];
+}
+
 const FILE_TOOLS = new Set(["read", "write", "edit", "find", "grep", "ls"]);
 const PATH_ARGUMENT = /["']?path["']?\s*:\s*(?:"([^"]*)"|'([^']*)'|([^\s,}\]]+))/i;
 
 function firstLine(text: string | undefined): string {
 	return text?.split(/\r?\n/, 1)[0].trim() ?? "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseArguments(text: string | undefined): Record<string, unknown> | undefined {
+	const value = text?.trim() ?? "";
+	const json = value.startsWith("{") ? value : value.replace(/^\S+\s*/, "");
+	if (!json) return undefined;
+
+	try {
+		const parsed: unknown = JSON.parse(json);
+		return isRecord(parsed) ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function stringArgument(args: Record<string, unknown> | undefined, name: string): string | undefined {
+	const value = args?.[name];
+	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function collect(values: Iterable<string>, limit: number): string[] {
@@ -44,6 +71,39 @@ export function extractFiles(blocks: ExtractableBlock[]): string[] {
 		if (path) paths.push(path);
 	}
 	return collect(paths, 8);
+}
+
+export function buildMcpIndex(blocks: ExtractableBlock[]): McpIndexEntry[] {
+	const index = new Map<string, string[]>();
+
+	for (const block of blocks) {
+		if (block.kind !== "tool_call" || !block.toolName || FILE_TOOLS.has(block.toolName) || !block.id) continue;
+
+		let identity: string | undefined;
+		if (block.toolName === "mcp") {
+			const args = parseArguments(block.text);
+			const tool = stringArgument(args, "tool");
+			if (!tool) continue;
+			const server = stringArgument(args, "server");
+			identity = server ? `${server}/${tool}` : tool;
+		} else if (block.toolName === "subagent") {
+			const task = stringArgument(parseArguments(block.text), "task");
+			if (!task) continue;
+			identity = `subagent/${task.slice(0, 40)}`;
+		} else {
+			identity = block.toolName;
+		}
+
+		let codes = index.get(identity);
+		if (!codes) {
+			if (index.size >= 6) continue;
+			codes = [];
+			index.set(identity, codes);
+		}
+		if (!codes.includes(block.id)) codes.push(block.id);
+	}
+
+	return Array.from(index, ([identity, codes]) => ({ identity, codes }));
 }
 
 export function extractErrors(blocks: ExtractableBlock[]): string[] {

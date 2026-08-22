@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractAsks, extractErrors, extractFiles, type ExtractableBlock } from "./extractors";
+import { buildMcpIndex, extractAsks, extractErrors, extractFiles, type ExtractableBlock } from "./extractors";
 
 const block = (shape: ExtractableBlock): ExtractableBlock => shape;
 
@@ -50,6 +50,47 @@ describe("extractFiles", () => {
 		];
 
 		expect(extractFiles(calls)).toEqual(Array.from({ length: 8 }, (_, index) => `file-${index}.ts`));
+	});
+});
+
+describe("buildMcpIndex", () => {
+	it("groups MCP calls by server/tool identity and collects recall codes", () => {
+		expect(buildMcpIndex([
+			block({ id: "mcp-1", kind: "tool_call", toolName: "mcp", text: 'mcp {"server":"engineering-skills","tool":"skill-trek"}' }),
+			block({ id: "mcp-2", kind: "tool_call", toolName: "mcp", text: 'mcp {"server":"engineering-skills","tool":"skill-trek"}' }),
+			block({ id: "mcp-3", kind: "tool_call", toolName: "mcp", text: 'mcp {"tool":"recall"}' }),
+		])).toEqual([
+			{ identity: "engineering-skills/skill-trek", codes: ["mcp-1", "mcp-2"] },
+			{ identity: "recall", codes: ["mcp-3"] },
+		]);
+	});
+
+	it("uses the first forty task characters for subagent identities", () => {
+		const task = "check pi-vcc extractors and verify the focused retrieval flow";
+		expect(buildMcpIndex([
+			block({ id: "subagent-1", kind: "tool_call", toolName: "subagent", text: `subagent ${JSON.stringify({ task })}` }),
+		])).toEqual([{ identity: `subagent/${task.slice(0, 40)}`, codes: ["subagent-1"] }]);
+	});
+
+	it("excludes file tools and returns empty for file-only groups", () => {
+		expect(buildMcpIndex([
+			block({ id: "read-1", kind: "tool_call", toolName: "read", text: '{"path":"src/a.ts"}' }),
+			block({ id: "write-1", kind: "tool_call", toolName: "write", text: '{"path":"src/b.ts"}' }),
+		])).toEqual([]);
+	});
+
+	it("caps the index at six distinct identities", () => {
+		const calls = Array.from({ length: 7 }, (_, index) => block({
+			id: `bash-${index}`,
+			kind: "tool_call",
+			toolName: `tool-${index}`,
+			text: "",
+		}));
+
+		expect(buildMcpIndex(calls)).toHaveLength(6);
+		expect(buildMcpIndex(calls).map((entry) => entry.identity)).toEqual([
+			"tool-0", "tool-1", "tool-2", "tool-3", "tool-4", "tool-5",
+		]);
 	});
 });
 

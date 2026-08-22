@@ -3,6 +3,7 @@
 	import { cubicOut } from "svelte/easing";
 	import type { AccordionStore } from "../../engine/store.svelte";
 	import type { Block, Group } from "../../engine/types";
+	import { blockTier } from "../../engine/extractors";
 	import Icon from "$lib/ui/Icon.svelte";
 
 	let {
@@ -280,6 +281,12 @@
 					{/if}
 					{#if block.proactivelyCompressed}
 						<span class="pill pill-info" data-testid="pcc-pill" title="Proactively compressed — original available via agent recall">PCC</span>
+					{/if}
+					{#if true}
+						{@const tier = blockTier({ kind: block.kind, toolName: block.toolName, isError: block.isError, text: block.text })}
+						<span class="pill" class:pill-tier-high={tier === 'high'} class:pill-tier-medium={tier === 'medium'} class:pill-tier-low={tier === 'low'} title="Block tier: {tier} — gates digest quality">
+							{tier}
+						</span>
 					{/if}
 				</div>
 				<!-- Token data: tabular mono -->
@@ -589,6 +596,21 @@
 	.pill-info {
 		color: var(--accent);
 		background: var(--accent-soft);
+	}
+
+	.pill-tier-high {
+		color: #d97706;
+		background: color-mix(in srgb, #d97706 14%, transparent);
+		font-weight: 600;
+	}
+	.pill-tier-medium {
+		color: var(--muted);
+		background: color-mix(in srgb, var(--muted) 12%, transparent);
+	}
+	.pill-tier-low {
+		color: var(--faint, #888);
+		background: color-mix(in srgb, var(--faint, #888) 10%, transparent);
+		opacity: 0.7;
 	}
 
 	/* Token table: tabular mono data display */

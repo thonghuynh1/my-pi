@@ -1,0 +1,12 @@
+{
+  "captures": [
+    {"file": "01-empty-state.png", "description": "Initial empty state of Accordion dashboard"},
+    {"file": "02-context-map.png", "description": "Context map with session loaded"},
+    {"file": "03-after-tile-click.png", "description": "Inspector panel after clicking a tile"},
+    {"file": "04-conductor-menu.png", "description": "Conductor switching menu"},
+    {"file": "05-semantic-group-digest.png", "description": "Dashboard with demo loaded showing semantic group digest in store"},
+    {"file": "slice-2-semantic-digests.html", "description": "Full Slice 2 evidence: live digest output, assertion results, unit tests, architecture confirmation"}
+  ],
+  "lastUpdated": "2026-08-22T22:17:00Z",
+  "sliceVerified": 2
+}

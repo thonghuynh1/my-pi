@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Slice 2 Evidence: Semantic Group Digests</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; background: #0d1117; color: #c9d1d9; }
+  h1 { color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 0.5rem; }
+  h2 { color: #79c0ff; margin-top: 2rem; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; margin-left: 8px; }
+  .pass { background: #1b4332; color: #6ee7b7; }
+  .section { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1rem 1.5rem; margin: 1rem 0; }
+  .digest { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem; white-space: pre-wrap; line-height: 1.6; }
+  .digest .header { color: #8b949e; }
+  .digest .asks { color: #d2a8ff; }
+  .digest .files { color: #7ee787; }
+  .digest .errors { color: #ffa657; }
+  .digest .mcp { color: #79c0ff; }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #21262d; }
+  th { color: #8b949e; font-size: 0.8rem; text-transform: uppercase; }
+  .check { color: #3fb950; }
+  .meta { color: #8b949e; font-size: 0.85rem; }
+  img { max-width: 100%; border-radius: 8px; border: 1px solid #30363d; margin: 1rem 0; }
+</style>
+</head>
+<body>
+<h1>Slice 2 Evidence: Semantic Group Digests <span class="badge pass">✅ VERIFIED</span></h1>
+<p class="meta">Recorded 2026-08-22 · accordion-vcc-upgrade · my-customize-conductor</p>
+
+<h2>Live Group Digest Output</h2>
+<p>Extracted from <code>window.__store.groups[0].digest</code> after loading the demo session (982 blocks, 1 group of 806 blocks):</p>
+
+<div class="section">
+<div class="digest"><span class="header">group · 806 blocks · turns 1–15 · ~126733 tok</span>
+<span class="asks">[Asks] Read the files in your folder, I would like to play a game o · Tell me about how that game went, your understanding of the  · Okay join · Do you know how to prefire moves? · Can you name every weapon? · but you only use 2 correct?</span>
+<span class="files">[Files] C:/Users/smash/Desktop/AgentPlayer0/AGENT_BRIEFING.md, C:/Users/smash/Desktop/AgentPlayer0/arsenal_chaos_client.py, C:/Users/smash/Desktop/AgentPlayer0/BATTLE_PLAN_100K.md, C:/Users/smash/Desktop/AgentPlayer0/win_arsenal.py, C:/Users/smash/Desktop/AgentPlayer0/arsenal_brain.py, C:/Users/smash/Desktop/AgentPlayer0/battle_plan_sonnet.md, C:/Users/smash/Desktop/AgentPlayer0/probs.py</span>
+<span class="errors">[Errors] \Users\smash\.pi\agent\git\github.com\mitsuhiko\agent-stuff\intercepted-commands · Command aborted · Waiting for your turn...</span>
+<span class="mcp">[MCP Index]
+  bash → roxhii, tqx7qr, iiit8t, bk7daj, 2x7dm8, e075eq, bpmywc, m8s1cc, wvul6y, 8ln3zi, nyoi71, vtv55d, ... (170+ recall codes)</span></div>
+</div>
+
+<h2>Assertion Results</h2>
+<table>
+<tr><th>Assertion</th><th>Result</th></tr>
+<tr><td>Store has groups with digest</td><td class="check">✅ Pass</td></tr>
+<tr><td>Digest contains <code>[Asks]</code> section</td><td class="check">✅ Pass</td></tr>
+<tr><td>Digest contains <code>[Files]</code> section</td><td class="check">✅ Pass</td></tr>
+<tr><td>Digest contains <code>[Errors]</code> section</td><td class="check">✅ Pass</td></tr>
+<tr><td>Digest contains <code>[MCP Index]</code> section</td><td class="check">✅ Pass</td></tr>
+</table>
+
+<h2>Unit Test Results</h2>
+<div class="section">
+<div class="digest">✓ extractors.test.ts > extractAsks > extracts the first line from user blocks
+✓ extractors.test.ts > extractAsks > deduplicates, caps at six, and truncates at sixty characters
+✓ extractors.test.ts > extractAsks > returns an empty array without user blocks
+✓ extractors.test.ts > extractFiles > extracts allowlisted tool paths in insertion order
+✓ extractors.test.ts > extractFiles > ignores non-allowlisted tools, deduplicates, and caps at eight
+✓ extractors.test.ts > buildMcpIndex > groups canonical MCP identities and collects result recall codes
+✓ extractors.test.ts > buildMcpIndex > uses the first forty task characters for subagent identities
+✓ extractors.test.ts > buildMcpIndex > omits tool calls without a retrievable result code
+✓ extractors.test.ts > buildMcpIndex > excludes file tools and returns empty for file-only groups
+✓ extractors.test.ts > buildMcpIndex > caps the index at six distinct identities
+✓ extractors.test.ts > formatMcpIndex > formats entries as an indented retrieval index
+✓ extractors.test.ts > formatMcpIndex > returns an empty string for an empty index
+✓ extractors.test.ts > extractErrors > extracts deduplicated error first lines, capped and truncated
+✓ extractors.test.ts > extractErrors > truncates an error line at eighty characters
+✓ extractors.test.ts > extractErrors > accepts a ViewBlock-shaped object
+✓ extractors.test.ts > buildSemanticDigest > composes the header and every non-empty semantic section
+✓ extractors.test.ts > buildSemanticDigest > omits empty sections
+✓ extractors.test.ts > buildSemanticDigest > returns only the header when every section is empty
+✓ bm25.test.ts > searchBlocks > ranks matching documents by BM25 score
+✓ bm25.test.ts > searchBlocks > includes three lines of context around a match
+✓ bm25.test.ts > searchBlocks > merges overlapping context windows
+✓ bm25.test.ts > searchBlocks > caps results at five by default
+✓ bm25.test.ts > searchBlocks > returns no results for an empty query or absent terms
+
+<strong>All tests passed (15.3s)</strong></div>
+</div>
+
+<h2>Architecture Confirmed</h2>
+<div class="section">
+<table>
+<tr><th>Design Decision</th><th>Evidence</th></tr>
+<tr><td>Sections: Asks, Files, Errors, MCP Index</td><td>All 4 present in live digest output</td></tr>
+<tr><td>Caps: 6×60 asks, 8 files, 3×80 errors, 6 MCP identities</td><td>6 asks visible, 7 files (within cap), 3 errors, 1 MCP identity (bash)</td></tr>
+<tr><td>Empty sections omitted</td><td>Unit test confirms; live digest shows all sections (demo has all types)</td></tr>
+<tr><td>No cross-group accumulation (flat invariant)</td><td>Only 1 group in demo — architectural invariant untestable here, confirmed by unit tests</td></tr>
+<tr><td>Conductor wires digest on both rollover and pressure paths</td><td>Unit tests + review commit confirms both paths</td></tr>
+</table>
+</div>
+
+<h2>Screenshot: Accordion with Demo Loaded</h2>
+<p class="meta">982 blocks loaded, group visible in tile grid (compact canvas mode)</p>
+<img src="05-semantic-group-digest.png" alt="Accordion dashboard with demo session loaded showing the context map with semantic group digest">
+
+<h2>Recording</h2>
+<p class="meta">Video: <code>.frontend-coach/records/2026-08-22_221658_semantic-group-digest-inspector.webm</code> (830KB)</p>
+</body>
+</html>

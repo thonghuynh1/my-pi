@@ -1,0 +1,173 @@
+{
+  "version": 1,
+  "name": "my-pi",
+  "color": "",
+  "dockState": {
+    "zones": {
+      "left": {
+        "position": "left",
+        "visible": false,
+        "size": 260,
+        "layout": null
+      },
+      "right": {
+        "position": "right",
+        "visible": false,
+        "size": 260,
+        "layout": null
+      },
+      "bottom": {
+        "position": "bottom",
+        "visible": false,
+        "size": 240,
+        "layout": null
+      },
+      "center": {
+        "position": "center",
+        "visible": true,
+        "size": 0,
+        "layout": {
+          "type": "tabs",
+          "id": "823ac481-223d-4b67-9a07-3f088572fd85",
+          "panelIds": [
+            "cca77017-782a-41e3-98f2-4b337f69b0dd"
+          ],
+          "activeIndex": 0
+        }
+      }
+    }
+  },
+  "panels": {
+    "f4fadb20-976a-4e94-99cf-60d1ea07901d": {
+      "type": "browser",
+      "title": "Orca — The most powerful Agent Development Environment (ADE)",
+      "tabs": [
+        {
+          "id": "e3d9e80b-ff22-44af-bd55-3b1985239fb3",
+          "url": "https://www.onorca.dev/",
+          "title": "Orca — The most powerful Agent Development Environment (ADE)",
+          "favicon": "https://www.onorca.dev/favicon.ico?favicon.0q~gf93kfs-ii.ico"
+        }
+      ],
+      "activeTabId": "e3d9e80b-ff22-44af-bd55-3b1985239fb3"
+    },
+    "52e899e8-36e5-402d-8d4b-49906ab2eb4b": {
+      "type": "terminal",
+      "title": "Terminal 1"
+    },
+    "bcc6fd1e-7c83-469f-8d06-d27cb5d17ff5": {
+      "type": "editor",
+      "title": "canvas-agent-workspaces-windows.md •",
+      "filePath": ".scratch/research/canvas-agent-workspaces-windows.md"
+    },
+    "b27aa1ce-8326-4909-8e29-6e44527377f9": {
+      "type": "editor",
+      "title": "canvas-agent-workspaces-5k-orca.md",
+      "filePath": ".scratch/research/canvas-agent-workspaces-5k-orca.md"
+    },
+    "cca77017-782a-41e3-98f2-4b337f69b0dd": {
+      "type": "canvas",
+      "title": "Canvas"
+    }
+  },
+  "canvases": {
+    "cca77017-782a-41e3-98f2-4b337f69b0dd": {
+      "id": "cca77017-782a-41e3-98f2-4b337f69b0dd",
+      "canvasNodes": {
+        "73979474-4065-4d07-a988-fc22eacc97ce": {
+          "id": "73979474-4065-4d07-a988-fc22eacc97ce",
+          "origin": {
+            "x": 1005.5937331879358,
+            "y": -812.6837354178781
+          },
+          "size": {
+            "width": 662.3069811017997,
+            "height": 677.5979870446171
+          },
+          "zOrder": 58,
+          "creationIndex": 1,
+          "animationState": "idle",
+          "dockLayout": {
+            "type": "tabs",
+            "id": "cb4842d3-2b25-4c82-a4a3-6e81a5e2552f",
+            "panelIds": [
+              "f4fadb20-976a-4e94-99cf-60d1ea07901d"
+            ],
+            "activeIndex": 0
+          }
+        },
+        "4205fc15-b324-49ff-8e55-2e00d7cdd707": {
+          "id": "4205fc15-b324-49ff-8e55-2e00d7cdd707",
+          "origin": {
+            "x": 185.635921132428,
+            "y": -826.4047985594277
+          },
+          "size": {
+            "width": 799.675853051586,
+            "height": 690.1282155513536
+          },
+          "zOrder": 71,
+          "creationIndex": 2,
+          "animationState": "idle",
+          "dockLayout": {
+            "type": "tabs",
+            "id": "92e743d3-58a9-4c5f-9323-344e937f651f",
+            "panelIds": [
+              "52e899e8-36e5-402d-8d4b-49906ab2eb4b"
+            ],
+            "activeIndex": 0
+          }
+        },
+        "4832dcef-4989-4fd6-a6f8-6e8edba7b68b": {
+          "id": "4832dcef-4989-4fd6-a6f8-6e8edba7b68b",
+          "origin": {
+            "x": 681.525150355837,
+            "y": -1506.8330694788679
+          },
+          "size": {
+            "width": 813.0231773204528,
+            "height": 688.7883201616
+          },
+          "zOrder": 60,
+          "creationIndex": 3,
+          "animationState": "idle",
+          "dockLayout": {
+            "type": "tabs",
+            "id": "944da077-8a01-4b3f-a528-77bc4e4e99b5",
+            "panelIds": [
+              "bcc6fd1e-7c83-469f-8d06-d27cb5d17ff5"
+            ],
+            "activeIndex": 0
+          }
+        },
+        "a79fa02c-bccc-4ffa-ab58-ac06c9cef7de": {
+          "id": "a79fa02c-bccc-4ffa-ab58-ac06c9cef7de",
+          "origin": {
+            "x": -680,
+            "y": -820
+          },
+          "size": {
+            "width": 813.0231773204528,
+            "height": 688.7883201616
+          },
+          "zOrder": 66,
+          "creationIndex": 4,
+          "animationState": "idle",
+          "dockLayout": {
+            "type": "tabs",
+            "id": "5fd76227-baaf-47f5-a95e-fc29d0ec416c",
+            "panelIds": [
+              "b27aa1ce-8326-4909-8e29-6e44527377f9"
+            ],
+            "activeIndex": 0
+          }
+        }
+      },
+      "zoomLevel": 0.9617312648437497,
+      "viewportOffset": {
+        "x": 967.8070114425187,
+        "y": 995.4275973555918
+      }
+    }
+  }
+}

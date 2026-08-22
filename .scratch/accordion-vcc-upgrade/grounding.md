@@ -75,3 +75,53 @@
 - GUI process: holds `AccordionStore.blocks[]` — searchable for normal blocks only
 - Extension process: holds `originals` Map — searchable for PCC blocks only
 - No shared memory; only connected by WebSocket
+
+## Conductor fold-order logic (my-customize-conductor)
+
+- `my-customize-conductor.ts` — NO scoring or ranking exists today
+- Fold order is purely **oldest-first by `.order`** (absolute position)
+- `conduct()` called on every context change (streaming token, budget change, tail resize)
+- O(1) dirty guard keys on `headBlockCount`, `cap`, `viewKey` hash — essential for performance
+- Fold sequence: hard-cap emergency → rollover → normal pressure → folds-to-cap → MCP recovery
+- `FoldCommand` carries zero "why" metadata — just `ids[]`, optional `digest`, optional `breakFrozen`
+- Guards: `held`, `protected`, `grouped`, `proactivelyCompressed` → skip; only `FOLDABLE_KINDS` (text, thinking, tool_result)
+
+## ColdScoreConductor (separate conductor, not MyCustomize)
+
+- `conductors/cold-score/score.ts` — full ACT-R scoring model
+- Formula: `coldScore(b) = prior[kind] + activation(b) + pairWarmthBonus?`
+- Kind priors: tool_result=0, thinking=8, text=16, tool_call=24, user=32 (lower = fold first)
+- Decay: power-law ACT-R, per-kind exponents (tool_result=0.9, thinking=0.7, text=0.5)
+- Pair warmth: +4 for blocks paired with tail callId
+- Lexical pre-unfold: keep live blocks whose identifier appears in protected tail text
+
+## pi-vcc rank.ts (reference scoring for brief selection)
+
+- `pi-vcc/src/core/rank.ts` — additive weighted model for selecting blocks into a summary brief
+- Recency: linear 0–12 (`round(index/(total-1)*12)`)
+- Weights: edit=+34, test=+26, user=+18, workflow=+14, bash=+12, assistant=+10, read=+6, tool_result=+1
+- Penalties: trivial bash=−16, long tool result (>1000ch)=−8
+- Adjacency boost: blocks near important events (score≥34) get +10/+7/+5
+- Segment-closing assistants: long assistant before user → +14
+- Selection: preserve recent 16, sort rest by score desc, deduplicate repeated ops
+
+## ViewBlock fields available for scoring
+
+- `id`, `kind`, `turn`, `order`, `tokens`, `foldedTokens`, `toolName?`, `callId?`, `isError?`
+- `text?` (optional — only with `wants:"full"`), `preview?`
+- `held`, `folded`, `protected`, `grouped`, `proactivelyCompressed`
+
+## ReplaceCommand (single-block digest substitution)
+
+- `ReplaceCommand { kind: "replace"; id: string; content: string; recoverable?: boolean; breakFrozen?: boolean }`
+- Empty content falls back to engine digest
+- `recoverable: true` → host prepends `{#code FOLDED}` tag (agent can recall)
+- Used today for MCP summaries in hard-cap emergency
+
+## extractors.ts (slice 2 build)
+
+- `extractAsks(blocks)` — user blocks, first line ≤60ch, 6 cap
+- `extractFiles(blocks)` — tool_call for read/write/edit/find/grep/ls, path arg, 8 cap
+- `extractErrors(blocks)` — isError===true, first line ≤80ch, 3 cap
+- `buildMcpIndex(blocks)` — non-file tool_call with recallCode, 6 identities
+- `buildSemanticDigest(blocks, meta)` — assembles sections, omits empties

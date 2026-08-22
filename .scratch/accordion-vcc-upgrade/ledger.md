@@ -90,3 +90,35 @@ Status: accepted
 Choice: isError === true blocks only. First line of text, truncated at 80 chars, capped at 3, deduped.
 Rationale: isError is high-confidence signal from pi's tool framework. Regex scanning for error patterns (FAIL, Exception) risks false positives. Agent can use recall(query="FAIL") for soft failures.
 Dependencies: D7, D9
+
+## Decisions — Ticket 06 (per-block ranking scores)
+
+### D14 — Score purpose: fold order vs digest quality vs search boost
+Status: accepted
+Choice: Score gates digest quality ONLY. Does not influence fold order (stays oldest-first) or search results (stays pure BM25).
+Rationale: Fold order is well-tested across 2 slices. BM25 handles search relevance within small group corpora (5–20 blocks) without needing structural boost. Score's sole consumer is ticket 07's richer digest system.
+Dependencies: none
+
+### D15 — Scoring model: continuous weights vs tiers
+Status: accepted
+Choice: 3 structural tiers (High / Medium / Low) — not continuous additive weights.
+Rationale: Score is a digest quality gate, not a fine-grained ranking signal. Three tiers express the preference without pretending we have empirically-tuned weights for a novel use case. Easy to implement, test, and graduate later.
+Dependencies: D14
+
+### D16 — Recency in scoring
+Status: accepted
+Choice: No recency. Tier is purely structural (kind + toolName + isError).
+Rationale: An edit deserves a rich digest whether 5 turns old or 50 turns old. Digest quality depends on what the block IS, not when it happened. Makes tier O(1), no caching, no invalidation.
+Dependencies: D15
+
+### D17 — Tier classification (High tier)
+Status: accepted
+Choice: High = edit/write/multiedit (toolName), run_tests (toolName), isError===true, bash+test-regex (fallback). Graceful degradation: if text absent, ambiguous bash defaults to Medium.
+Rationale: run_tests is the primary test tool in pi; bash fallback covers cases where run_tests suggests manual bash. isError is high-confidence from pi's framework. Edit tools are primary session artifacts.
+Dependencies: D15, D16
+
+### D18 — Where tier logic lives
+Status: accepted
+Choice: `blockTier(block)` function in `extractors.ts`, operating on `ExtractableBlock` interface.
+Rationale: Extractors already understand block signals, conductor already imports the module, ticket 07's digest templates will also consume it. No new file for a 10-line function.
+Dependencies: D15

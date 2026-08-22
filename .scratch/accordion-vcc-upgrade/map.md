@@ -25,15 +25,18 @@ The conductor is `my-customize-conductor` (the default). Changes touch the condu
 ## Decisions so far
 
 - [01 — What data does the conductor actually see per block?](wayfinder/01-conductor-view-data.md): **Conductor sees everything** — `ViewBlock.text` (full content), `toolName`, `isError`, `callId`, `tokens`, `order`. Ranking/scoring lives in the conductor; richer digests delivered via `ReplaceCommand`.
-- [03 — What pi-vcc ranking signals can we port?](wayfinder/03-portable-ranking-signals.md): **All 10 signals are feasible.** `toolName`, `isError`, `tokens`, `order` are first-class fields; tool args and bash commands parseable from `text`.
+- [03 — What pi-vcc ranking signals can we port?](wayfinder/03-portable-ranking-signals.md): **All 10 signals are feasible.** `toolName`, `isError`, `tokens`, `order` are first-class fields; tool args and bash commands parseable from `text`. ✅ *Confirmed by slice 2 build* — signals used by extractors (toolName, isError, text parsing) work in practice.
 - [05 — Can we port pi-vcc's BM25 search?](wayfinder/05-bm25-portability.md): **Yes, ~110 lines clean-room, self-contained.** ✅ *Confirmed by slice 1 build* — `bm25.ts` landed, all tests pass.
 - [02 — How should search-within-fold work architecturally?](wayfinder/02-search-within-fold-architecture.md): **Extend `recall` with optional `query` param.** ✅ *Confirmed by slice 1 build* — BM25 search within the targeted block/group, top-5 fragments in `RecallContent.text`, ±3-line context windows. Wire: `query?: string` on `RecallRequestMessage` (backward-compatible). No new tool, no new message types, no pagination. `recallText` helper abstracts the branch.
 
-- [04 — How should group digests accumulate semantic sections?](wayfinder/04-group-semantic-sections.md): **Three sections (Asks, Files, Errors) + MCP Retrieval Index.** Shared library, conductor-invoked. Self-contained per group (flat invariant). Always extracted, empty sections omitted. Multi-line structured format for agent selection.
+- [04 — How should group digests accumulate semantic sections?](wayfinder/04-group-semantic-sections.md): **Three sections (Asks, Files, Errors) + MCP Retrieval Index.** Shared library, conductor-invoked. Self-contained per group (flat invariant). Always extracted, empty sections omitted. Multi-line structured format for agent selection. ✅ *Confirmed by slice 2 build* — extractors, composer, and conductor wiring all landed.
+
+- [06 — How should per-block ranking scores be computed?](wayfinder/06-per-block-ranking-scores.md): **3 structural tiers (High/Medium/Low), no recency, no fold-order change, no search boost.** Score gates digest quality only. `blockTier()` in `extractors.ts`. High = edit/write/multiedit, run_tests, isError, bash+test-regex. Medium = user, bash, assistant, MCP/subagent. Low = read, ls, find, grep, generic tool_result, thinking. ✅ *Confirmed by slice 3 build* — `blockTier()` implemented, 38 tests pass, all AC met.
+- [07 — How should richer individual fold digests work?](wayfinder/07-richer-fold-digests.md): Open. ~~Blocked by 06.~~ **Unblocked.** Structured digests per block type (read→path+size, bash→cmd+exit, edit→path+lines). Tiered quality gated by ranking score. Extraction parsers, emit timing, recoverable flag.
 
 ## Not yet specified
 
-- Performance implications of BM25 on large groups (pi-vcc caps at 3 seconds)
+- Performance implications of BM25 on large groups (already mitigated: 3-second budget built into bm25.ts, confirmed working on 806-block group in demo)
 
 ## Out of scope
 

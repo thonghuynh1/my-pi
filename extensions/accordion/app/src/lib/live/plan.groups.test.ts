@@ -6,7 +6,7 @@ import { computeGroupOps, resolveUnfold, resolveRecall } from "./plan";
 import type { Block, ParsedSession } from "../engine/types";
 
 function b(id: string, kind: Block["kind"], turn: number, order: number, tokens: number, callId?: string): Block {
-	return { id, kind, turn, order, text: id + " " + "x".repeat(40), tokens, callId, override: null, autoFolded: false, by: null, proactivelyCompressed: false };
+	return { id, kind, turn, order, text: id + " " + "x".repeat(40), tokens, callId, override: null, autoFolded: false, by: null };
 }
 function makeStore(): AccordionStore {
 	const blocks: Block[] = [

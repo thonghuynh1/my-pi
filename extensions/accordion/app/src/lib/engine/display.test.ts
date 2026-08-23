@@ -3,7 +3,7 @@ import { buildDisplay, segmentDisplay } from "./display";
 import type { Block, Group } from "./types";
 
 function blk(id: string): Block {
-	return { id, kind: "text", turn: 1, order: 0, text: "x", tokens: 100, override: null, autoFolded: false, by: null, proactivelyCompressed: false };
+	return { id, kind: "text", turn: 1, order: 0, text: "x", tokens: 100, override: null, autoFolded: false, by: null };
 }
 const ids = (rows: ReturnType<typeof buildDisplay>) =>
 	rows.map((r) => (r.type === "block" ? `b:${r.block.id}` : `${r.type}:${r.group.id}(${r.members.length})`));

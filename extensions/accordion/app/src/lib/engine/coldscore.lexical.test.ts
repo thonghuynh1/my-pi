@@ -22,7 +22,7 @@ function makeViewBlock(id: string, text: string | undefined): ViewBlock {
 		held: false,
 		folded: false,
 		protected: false,
-		grouped: false, proactivelyCompressed: false,
+		grouped: false,
 		text,
 	};
 }

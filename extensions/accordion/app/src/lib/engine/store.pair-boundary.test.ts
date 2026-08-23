@@ -67,7 +67,6 @@ function blk(i: number, kind: Block["kind"] = "text", tokens = 1000, extra: Part
 		override: null,
 		autoFolded: false,
 		by: null,
-		proactivelyCompressed: false,
 		...extra,
 	};
 }
@@ -177,7 +176,6 @@ describe("parallel tool_calls: benchmark-shaped transcript", () => {
 				held: false,
 				folded: false,
 				grouped: false,
-				proactivelyCompressed: false,
 				messageKey: b.id,
 			})),
 			protectedFromIndex: pf,
@@ -188,7 +186,7 @@ describe("parallel tool_calls: benchmark-shaped transcript", () => {
 
 		// Pre-group starts at the newest block just before the tail. If snap did its job the
 		// tail contains BOTH members of every callId in the batch, so pair check must pass.
-		const preGroupFromIndex = computePreGroupFromIndex(view, 50_000, (b) => (b as { held?: boolean; folded?: boolean; proactivelyCompressed?: boolean }).held || (b as { folded?: boolean }).folded || (b as { proactivelyCompressed?: boolean }).proactivelyCompressed || false);
+		const preGroupFromIndex = computePreGroupFromIndex(view, 50_000, (b) => b.held || b.folded);
 		expect(noOpenToolPairAcrossPreGroupTail(view, preGroupFromIndex)).toBe(true);
 	});
 });

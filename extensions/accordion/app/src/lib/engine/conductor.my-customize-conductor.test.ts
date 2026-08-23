@@ -25,7 +25,7 @@ function vb(
 	order: number,
 	tokens: number,
 	foldedTokens: number,
-	opts: { held?: boolean; folded?: boolean; protected?: boolean; grouped?: boolean; proactivelyCompressed?: boolean; callId?: string; toolName?: string; text?: string; isError?: boolean } = {},
+	opts: { held?: boolean; folded?: boolean; protected?: boolean; grouped?: boolean; callId?: string; toolName?: string; text?: string; isError?: boolean } = {},
 ): ViewBlock {
 	return {
 		id,
@@ -38,7 +38,6 @@ function vb(
 		folded: opts.folded ?? false,
 		protected: opts.protected ?? false,
 		grouped: opts.grouped ?? false,
-		proactivelyCompressed: opts.proactivelyCompressed ?? false,
 		callId: opts.callId,
 		toolName: opts.toolName,
 		text: opts.text,
@@ -495,23 +494,6 @@ describe("rollover-only conduct", () => {
 		expect(grouped.has(pstack.id)).toBe(false);
 		expect(replaceOf(result.commands, mcp.id)).toMatchObject({ recoverable: true });
 		expect(result.preGroup?.memberIds).not.toContain(mcp.id);
-	});
-
-	it("replays committed groups on under-budget and between-rollover passes", () => {
-		const blocks = Array.from({ length: 10 }, (_, i) => vb(`replay:${i}`, "text", i, 3_000, 100, { text: `block ${i}` }));
-		const tail = vb("replay:tail", "user", blocks.length, 100, 100, { protected: true });
-		const conductor = new ProductionMyCustomizeConductor();
-		const first = conductor.conduct(makeView([...blocks, tail], 20_000, 35_000, { contextWindow: 128_000 }));
-		const firstGroups = first.commands.filter((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
-		const underBudget = conductor.conduct(makeView([...blocks, tail], 40_000, 30_000, { contextWindow: 128_000 }));
-		const barrier = vb("replay:barrier", "text", blocks.length + 1, 1_000, 100, { proactivelyCompressed: true });
-		const betweenRollovers = conductor.conduct(makeView([...blocks, barrier, tail], 20_000, 25_000, { contextWindow: 128_000 }));
-
-		expect(underBudget.commands).toEqual(firstGroups);
-		expect(betweenRollovers.commands).toEqual(firstGroups);
-		const replayedIds = groupedIdsOf(firstGroups);
-		expect(underBudget.preGroup?.memberIds.every((id) => !replayedIds.has(id))).toBe(true);
-		expect(betweenRollovers.preGroup?.memberIds.every((id) => !replayedIds.has(id))).toBe(true);
 	});
 
 	it("stacks prior groups with a later rollover", () => {

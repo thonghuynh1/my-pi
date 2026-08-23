@@ -13,7 +13,7 @@ function blk(i: number): Block {
 		tokens: 1000,
 		override: null,
 		autoFolded: false,
-		by: null, proactivelyCompressed: false,
+		by: null,
 	};
 }
 

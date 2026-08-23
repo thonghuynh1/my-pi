@@ -226,9 +226,6 @@
 					<div class="member-row">
 						<span class="member-kind">{KIND_LABEL[member.kind]}</span>
 						<span class="member-id mono">{member.id}</span>
-						{#if member.proactivelyCompressed}
-							<span class="pill pill-info" data-testid="pcc-pill" title="Proactively compressed — original available via agent recall">PCC</span>
-						{/if}
 					</div>
 				{/each}
 			</div>
@@ -279,9 +276,6 @@
 							protected
 						</span>
 					{/if}
-					{#if block.proactivelyCompressed}
-						<span class="pill pill-info" data-testid="pcc-pill" title="Proactively compressed — original available via agent recall">PCC</span>
-					{/if}
 					{#if true}
 						{@const tier = blockTier({ kind: block.kind, toolName: block.toolName, isError: block.isError, text: block.text })}
 						<span class="pill" class:pill-tier-high={tier === 'high'} class:pill-tier-medium={tier === 'medium'} class:pill-tier-low={tier === 'low'} title="Block tier: {tier} — gates digest quality">
@@ -316,13 +310,11 @@
 					class="action-btn"
 					class:action-primary={folded}
 					class:action-outline={!folded && canFoldBlock}
-					class:action-disabled={steerLocked || block.proactivelyCompressed || (!folded && !canFoldBlock)}
-					disabled={steerLocked || block.proactivelyCompressed || (!folded && !canFoldBlock)}
-					aria-disabled={steerLocked || block.proactivelyCompressed}
+					class:action-disabled={steerLocked || (!folded && !canFoldBlock)}
+					disabled={steerLocked || (!folded && !canFoldBlock)}
+					aria-disabled={steerLocked}
 					title={steerLocked
 						? lockTip
-						: block.proactivelyCompressed
-							? "Proactively compressed — original available via agent recall"
 						: folded
 							? "Unfold block"
 							: canFoldBlock

@@ -14,7 +14,7 @@ function block(id: string, order: number, tokens: number): Block {
 		tokens,
 		override: null,
 		autoFolded: false,
-		by: null, proactivelyCompressed: false,
+		by: null,
 	};
 }
 

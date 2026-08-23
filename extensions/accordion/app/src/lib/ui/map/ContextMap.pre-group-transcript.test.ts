@@ -9,7 +9,7 @@ import type { Conductor, ConductorHost, ConductorPlan, ConductorResult } from "$
 import "./ContextMap.test-support";
 
 function block(id: string, order: number, tokens = 1_000): Block {
-	return { id, order, turn: order + 1, kind: "text", text: id, tokens, override: null, autoFolded: false, by: null, proactivelyCompressed: false };
+	return { id, order, turn: order + 1, kind: "text", text: id, tokens, override: null, autoFolded: false, by: null };
 }
 
 type Phase = "accumulating" | "waiting-safe-rollover" | "rolled-over";

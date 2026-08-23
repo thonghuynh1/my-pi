@@ -226,7 +226,7 @@ export type SafeCompactionRange = {
 /**
  * Select a contiguous sub-range of `[fromIndex, view.protectedFromIndex)` that:
  *   - Contains only complete accordion turns (never splits a turn across the boundary).
- *   - Stops before any hard barrier (held, grouped, proactivelyCompressed).
+ *   - Stops before any hard barrier (held, grouped).
  *   - Allows user / MCP / recall / pstack blocks — they may belong to an eligible turn.
  *
  * Returns `null` when the resulting range would be empty.
@@ -247,21 +247,20 @@ export function selectCompactionRange(view: ConductorView, fromIndex: number): S
 		safeFromIndex > 0 &&
 		blocks[safeFromIndex - 1].turn === blocks[safeFromIndex].turn &&
 		!blocks[safeFromIndex].held &&
-		!blocks[safeFromIndex].grouped &&
-		!blocks[safeFromIndex].proactivelyCompressed
+		!blocks[safeFromIndex].grouped
 	) {
 		safeFromIndex++;
 	}
 	if (safeFromIndex >= end) return null;
 
-	// Hard barrier scan: the first held/proactivelyCompressed block caps the range.
+	// Hard barrier scan: the first held block caps the range.
 	// Grouped blocks are NOT hard barriers — they are handled as segment boundaries
 	// by the caller's isRolloverGroupBoundary, allowing the range to span across
 	// preserved groups and reach ungrouped content between them.
 	let harderEnd = end;
 	for (let i = safeFromIndex; i < end; i++) {
 		const b = blocks[i];
-		if (b.held || b.proactivelyCompressed) {
+		if (b.held) {
 			harderEnd = i;
 			break;
 		}

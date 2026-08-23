@@ -15,7 +15,6 @@ export function generateBlocks(setup: PerfScenario["setup"], start = 0): WireBlo
 			order: block.order,
 			text: block.text,
 			tokens: block.tokens,
-			proactivelyCompressed: false,
 		};
 	});
 }

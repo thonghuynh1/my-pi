@@ -22,7 +22,7 @@ function blk(o: Partial<Block> & { id: string; kind: BlockKind }): Block {
 		isError: o.isError,
 		override: null,
 		autoFolded: false,
-		by: null, proactivelyCompressed: false,
+		by: null,
 	};
 }
 

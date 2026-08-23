@@ -43,15 +43,6 @@ describe("linearize", () => {
 		expect(result.callId).toBe("call_1");
 	});
 
-	it("propagates proactive compression from tool results into blocks", () => {
-		const [compressed] = linearize([
-			{ role: "toolResult", toolCallId: "compressed", content: "compressed", _pccCompressed: true },
-		]);
-		const [normal] = linearize([{ role: "toolResult", toolCallId: "normal", content: "normal" }]);
-
-		expect(wireToBlock(compressed).proactivelyCompressed).toBe(true);
-		expect(wireToBlock(normal).proactivelyCompressed).toBe(false);
-	});
 
 	it("increments turn on user messages and assigns dense order", () => {
 		const blocks = linearize(sample());

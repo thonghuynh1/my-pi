@@ -29,7 +29,7 @@ function makeBlock(kind: Block["kind"] = "text", tokens = 100): Block {
 		tokens,
 		override: null,
 		autoFolded: false,
-		by: null, proactivelyCompressed: false,
+		by: null,
 	};
 }
 

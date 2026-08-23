@@ -12,7 +12,7 @@ import "./ContextMap.test-support";
 function block(id: string, order = 0, tokens = 1_000): Block {
 	return {
 		id, order, turn: order + 1, kind: "text", text: id, tokens,
-		override: null, autoFolded: false, by: null, proactivelyCompressed: false,
+		override: null, autoFolded: false, by: null,
 	};
 }
 

@@ -64,7 +64,7 @@ class Sink {
 			tokens: estTokens(text) + BLOCK_OVERHEAD,
 			override: null,
 			autoFolded: false,
-			by: null, proactivelyCompressed: false,
+			by: null,
 			...extra,
 		});
 	}

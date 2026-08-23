@@ -15,7 +15,6 @@ export function blk(i: number, kind: BlockKind = "text", tokens = 1_000): Block 
     override: null,
     autoFolded: false,
     by: null,
-    proactivelyCompressed: false,
   };
 }
 

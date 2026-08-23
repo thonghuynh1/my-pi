@@ -11,7 +11,6 @@ function block(id: string, order: number, folded: boolean): ViewBlock {
 		order,
 		tokens: 80,
 		foldedTokens: 10,
-		proactivelyCompressed: false,
 		held: false,
 		folded,
 		protected: false,

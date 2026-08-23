@@ -79,7 +79,7 @@ function vb(
 		held: opts.held ?? false,
 		folded: false,
 		protected: opts.protected ?? false,
-		grouped: opts.grouped ?? false, proactivelyCompressed: false,
+		grouped: opts.grouped ?? false,
 		text: opts.text ?? `content of ${id}`,
 		toolName: opts.toolName,
 	};
@@ -128,7 +128,7 @@ function blk(
 		tokens,
 		override: null,
 		autoFolded: false,
-		by: null, proactivelyCompressed: false,
+		by: null,
 		...extra,
 	};
 }
@@ -1591,7 +1591,6 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 			folded: false,
 			protected: false,
 			grouped: false,
-			proactivelyCompressed: false,
 			text: `chunk ${id}`,
 			...extra,
 		};
@@ -1785,7 +1784,6 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 	for (const [name, barrier] of [
 		["held blocks", { held: true }],
 		["existing groups", { grouped: true }],
-		["proactively compressed blocks", { proactivelyCompressed: true }],
 	] as const) {
 		it(`atomic rebase stops at ${name}`, () => {
 			const blocks = [...Array.from({ length: 6 }, (_, i) => chunkedBlock(`${name}-${i}`, i, 4_000)), chunkedBlock(`${name}-barrier`, 6, 4_000, barrier), ...Array.from({ length: 4 }, (_, i) => chunkedBlock(`${name}-after-${i}`, i + 7, 4_000)), chunkedBlock(`${name}-tail`, 11, 100, { kind: "user", protected: true })];
@@ -1898,7 +1896,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 
 	it("pre-existing frozen-grouping pressure valve is unaffected", () => {
 		const frozen = [
-			chunkedBlock("f0", 0, 5_000, { foldedTokens: 5_000, proactivelyCompressed: true }),
+			chunkedBlock("f0", 0, 5_000, { foldedTokens: 5_000 }),
 			chunkedBlock("f1", 1, 5_000, { foldedTokens: 5_000 }),
 		];
 		const protectedTail = Array.from({ length: 19 }, (_, i) => chunkedBlock(`tail${i}`, i + 2, 10_000, { protected: true }));
@@ -2416,10 +2414,10 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 
 		// Apply to AccordionStore.
 		const storeBlocks: Block[] = [
-			{ id: "u:t1", kind: "user", turn: 1, order: 0, tokens: 500, text: "load poteto mode", override: null, autoFolded: false, by: null, proactivelyCompressed: false },
-			{ id: "a:t1:p0", kind: "tool_call", turn: 1, order: 1, tokens: 100, text: mcpCallText, callId: "c1", toolName: "mcp", override: null, autoFolded: false, by: null, proactivelyCompressed: false },
-			{ id: "r:c1", kind: "tool_result", turn: 1, order: 2, tokens: 16_000, text: "MCP result: " + "x".repeat(60_000), callId: "c1", toolName: "mcp", override: null, autoFolded: false, by: null, proactivelyCompressed: false },
-			{ id: "u:t2", kind: "user", turn: 2, order: 3, tokens: 100, text: "continue", override: null, autoFolded: false, by: null, proactivelyCompressed: false },
+			{ id: "u:t1", kind: "user", turn: 1, order: 0, tokens: 500, text: "load poteto mode", override: null, autoFolded: false, by: null },
+			{ id: "a:t1:p0", kind: "tool_call", turn: 1, order: 1, tokens: 100, text: mcpCallText, callId: "c1", toolName: "mcp", override: null, autoFolded: false, by: null },
+			{ id: "r:c1", kind: "tool_result", turn: 1, order: 2, tokens: 16_000, text: "MCP result: " + "x".repeat(60_000), callId: "c1", toolName: "mcp", override: null, autoFolded: false, by: null },
+			{ id: "u:t2", kind: "user", turn: 2, order: 3, tokens: 100, text: "continue", override: null, autoFolded: false, by: null },
 		];
 		const store = makeStore(storeBlocks);
 		store.setProtect(100);

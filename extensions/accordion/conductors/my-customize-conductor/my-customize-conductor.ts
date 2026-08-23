@@ -73,7 +73,7 @@ function rolloverBlockedReason(
 }
 
 function isAccumulationBoundary(block: ViewBlock): boolean {
-	return block.held || block.folded || block.proactivelyCompressed;
+	return block.held || block.folded;
 }
 
 function isRolloverGroupBoundary(block: ViewBlock): boolean {
@@ -355,7 +355,7 @@ export class MyCustomizeConductor implements Conductor {
 		// complete run immediately before it. In particular, do not emit one group per
 		// 15k slice: that would leave the host with several cache breaks for one rollover.
 		let end = range.toIndexExclusive;
-		const hardBarrier = (block: ViewBlock): boolean => block.held || block.grouped || block.proactivelyCompressed;
+		const hardBarrier = (block: ViewBlock): boolean => block.held || block.grouped;
 		const barrierIndex = view.blocks.slice(range.fromIndex, range.toIndexExclusive)
 			.findIndex(hardBarrier);
 		const hasBarrier = barrierIndex >= 0 || (end < view.protectedFromIndex && hardBarrier(view.blocks[end]));
@@ -376,7 +376,7 @@ export class MyCustomizeConductor implements Conductor {
 
 		const minimumGroupSaving = Math.max(2_000, 0.05 * cap);
 		const candidates = view.blocks.slice(range.fromIndex, end)
-			.filter((block) => !block.held && !block.protected && !block.grouped && !block.proactivelyCompressed);
+			.filter((block) => !block.held && !block.protected && !block.grouped);
 		const planned = this.createGroup(candidates, view, minimumGroupSaving);
 		if (!planned) return { commands: [], saving: 0, groupSaving: 0 };
 		return { commands: [planned.command], saving: planned.saving, groupSaving: planned.saving };
@@ -399,7 +399,7 @@ export class MyCustomizeConductor implements Conductor {
 		if (end <= 0) return [];
 		const commands: Command[] = [];
 		const candidates = view.blocks.slice(0, end).filter((block) =>
-			!block.held && !block.protected && !block.grouped && !block.proactivelyCompressed,
+			!block.held && !block.protected && !block.grouped,
 		);
 		if (candidates.length === 0) return [];
 
@@ -425,7 +425,7 @@ export class MyCustomizeConductor implements Conductor {
 		const commands: Command[] = [];
 		for (const block of view.blocks.slice(0, Math.min(preGroupFromIndex, view.protectedFromIndex))) {
 			if (projected <= cap) break;
-			if (excluded.has(block.id) || block.held || block.protected || block.grouped || block.proactivelyCompressed) continue;
+			if (excluded.has(block.id) || block.held || block.protected || block.grouped) continue;
 			if (!FOLDABLE_KINDS.has(block.kind) || block.foldedTokens >= block.tokens) continue;
 			this.foldOrReplace(commands, block.id);
 			projected -= block.tokens - block.foldedTokens;
@@ -477,7 +477,7 @@ export class MyCustomizeConductor implements Conductor {
 		let live = view.liveTokens;
 		const frozenCandidates = view.blocks
 			.filter((block) => block.order < view.frozenFromIndex && !block.held && !block.protected &&
-				!block.grouped && !block.proactivelyCompressed && block.foldedTokens < block.tokens &&
+				!block.grouped && block.foldedTokens < block.tokens &&
 				FOLDABLE_KINDS.has(block.kind))
 			.sort((left, right) => left.order - right.order);
 
@@ -644,7 +644,7 @@ export class MyCustomizeConductor implements Conductor {
 			});
 		}
 
-		const hardBarrier = (block: ViewBlock): boolean => block.held || block.grouped || block.proactivelyCompressed;
+		const hardBarrier = (block: ViewBlock): boolean => block.held || block.grouped;
 		const barrierBeforePreGroup = preGroupFromIndex > view.frozenFromIndex &&
 			view.blocks.slice(view.frozenFromIndex, preGroupFromIndex).some(hardBarrier);
 		let rolloverFromIndex = preGroupFromIndex < view.frozenFromIndex ? preGroupFromIndex : view.frozenFromIndex;

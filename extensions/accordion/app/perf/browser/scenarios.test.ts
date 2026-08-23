@@ -33,7 +33,7 @@ describe("browser performance harness", () => {
 	it("generates unique wire blocks with required fields", () => {
 		const blocks = generateBlocks({ blockCount: 12, tokensPerBlock: 42 });
 		expect(new Set(blocks.map((block) => block.id)).size).toBe(12);
-		for (const block of blocks) expect(block).toMatchObject({ id: expect.any(String), kind: "text", turn: expect.any(Number), order: expect.any(Number), text: expect.any(String), tokens: 42, proactivelyCompressed: false });
+		for (const block of blocks) expect(block).toMatchObject({ id: expect.any(String), kind: "text", turn: expect.any(Number), order: expect.any(Number), text: expect.any(String), tokens: 42 });
 	});
 
 	it("evaluates per-scenario thresholds and the global hard ceiling", () => {

@@ -14,7 +14,6 @@ function block(id: string, order: number, tokens: number, kind: Block["kind"] = 
 		override: null,
 		autoFolded: false,
 		by: null,
-		proactivelyCompressed: false,
 	};
 }
 

@@ -22,7 +22,7 @@ function blk(i: number, kind: Block["kind"] = "text", tokens = 1000, extra: Part
 		tokens,
 		override: null,
 		autoFolded: false,
-		by: null, proactivelyCompressed: false,
+		by: null,
 		...extra,
 	};
 }

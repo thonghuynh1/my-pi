@@ -46,7 +46,7 @@ function blk(
 		tokens,
 		override: null,
 		autoFolded: false,
-		by: null, proactivelyCompressed: false,
+		by: null,
 		...extra,
 	};
 }
@@ -384,7 +384,7 @@ describe("Bear2HybridConductor — hard-failure freeze on persistent Bear-2 erro
 				held: false,
 				folded: false,
 				protected: false,
-				grouped: false, proactivelyCompressed: false,
+				grouped: false,
 			})),
 			budget: 40_000,
 			liveTokens: 45_000,

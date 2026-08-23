@@ -48,7 +48,7 @@ function blk(o: BlkOpts): Block {
 		callId: o.callId,
 		override: null,
 		autoFolded: false,
-		by: null, proactivelyCompressed: false,
+		by: null,
 	};
 }
 

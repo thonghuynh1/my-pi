@@ -53,9 +53,6 @@ export interface Block {
 	/** Model that produced an assistant block, if known. */
 	model?: string;
 	isError?: boolean;
-	/** True when Proactive Content Compression shortened this tool result before linearization. */
-	proactivelyCompressed: boolean;
-
 	// --- mutable, reactive state -------------------------------------------
 	override: Override;
 	/** Set by the automatic folder; only meaningful when override is null. */

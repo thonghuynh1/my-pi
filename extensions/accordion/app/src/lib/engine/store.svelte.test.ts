@@ -13,7 +13,6 @@ function block(i: number): Block {
 		override: null,
 		autoFolded: false,
 		by: null,
-		proactivelyCompressed: false,
 	};
 }
 

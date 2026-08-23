@@ -6,6 +6,7 @@ export interface ExtractableBlock {
 	text?: string;
 	recallCode?: string;
 	retrievalIdentity?: string;
+	tokens?: number;
 }
 
 export type BlockTier = "high" | "medium" | "low";

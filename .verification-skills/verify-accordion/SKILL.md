@@ -135,7 +135,7 @@ codebase and unlikely to change:
 | Composition bar | `[role="img"][aria-label="Context composition"]` |
 | Port input (browser mode) | `[aria-label="pi port"]` |
 | Demo session button | `[aria-label="Demo session"]` |
-| PCC pill (inspector) | `[data-testid="pcc-pill"]` |
+| ~~PCC pill~~ | ~~removed in Slice 5~~ |
 | Group member list | `[data-testid="group-member-list"]` |
 | View toggle (map/transcript) | `.view-seg` or `SegControl` with map/transcript options |
 

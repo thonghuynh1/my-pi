@@ -10,8 +10,6 @@ and content for a selected block or group.
   since tiles are canvas-rendered, not DOM nodes).
 - **Group inspector** — shows group members (`[data-testid="group-member-list"]`),
   combined token count. Opened by clicking `[data-group]` tiles.
-- **PCC pill** — `[data-testid="pcc-pill"]` badge shown for proactively
-  compressed blocks.
 - **Close button** — `[aria-label="Close inspector"]` dismisses the panel.
 - **Double-click fold/unfold** — double-clicking a tile toggles its fold state
   (live sessions only).
@@ -56,3 +54,5 @@ await page.screenshot({ path: "evidence/inspector-open.png" });
 - Double-click fold/unfold only works with live sessions, not demo mode.
 - Clicking a different tile while the inspector is open switches the detail
   view without closing/reopening — no need to close first.
+- PCC pill (`[data-testid="pcc-pill"]`) was removed in Slice 5 along with all
+  Proactive Content Compression artifacts. It no longer exists in the UI.

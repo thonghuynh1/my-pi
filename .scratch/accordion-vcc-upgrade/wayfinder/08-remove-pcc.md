@@ -1,7 +1,7 @@
 # 08 — Should Proactive Content Compression be removed?
 
 Type: grilling
-Status: open
+Status: resolved
 Blocked by: 07
 
 ## Question

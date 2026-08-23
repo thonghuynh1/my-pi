@@ -166,6 +166,28 @@ Choice: Batch pre-compute (50 blocks/pass) with high-water mark. After catch-up 
 Rationale: Cold-start (enable mid-session, reattach) could face 300–500 blocks. Amortizing over 10 passes avoids blocking. Upgrade pass ensures blocks don't permanently miss rich digests. Frozen guard prevents unsafe prefix changes automatically.
 Dependencies: D20
 
+## Decisions — Ticket 08 (PCC removal)
+
+### D31 — Remove PCC entirely
+Status: accepted
+Choice: Remove Proactive Content Compression. Clean deletion, no replacement logic.
+Rationale: PCC is structurally dead in practice. `shouldCompress()` excludes `mcp` toolName (Pi routes most tools through MCP gateway), combined with 300-token threshold and frozenFromIndex check. User has never observed a PCC block. Conductor's richer digests (slice 4) + hard-cap emergency `breakFrozen` cover the theoretical frozen-prefix deadlock.
+Evidence: `proactive-compress.ts:86` — `if (name === "mcp" || name === "recall") return false` blocks virtually all tool results. `accordion.ts:1479` — installed unconditionally but never fires.
+Dependencies: D28 (rich digest templates), D30 (cold-start performance)
+
+### D32 — No PCC migration path
+Status: accepted
+Choice: Skip migration entirely. No safety guard for orphaned PCC blocks on upgrade.
+Rationale: PCC blocks don't exist in practice. No originals Map entries to recover. `originals` is volatile (module-level, lost on restart anyway).
+Dependencies: D31
+
+### D33 — Remove "proactively-compressed" from ClampReason
+Status: accepted
+Choice: Clean removal from ClampReason union type and substOne guard chain.
+Rationale: Internal contract, diagnostic-only. No conductor branches on clamp reasons. Dead variant worse than clean break.
+Evidence: `conductor.ts:335` — ClampReason type. `store.svelte.ts:1223–1230` — substOne guard chain.
+Dependencies: D31
+
 ## Decisions — Ticket 06 (per-block ranking scores)
 
 ### D14 — Score purpose: fold order vs digest quality vs search boost

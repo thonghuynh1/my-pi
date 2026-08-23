@@ -10,3 +10,4 @@ Features are ordered by user visibility and interaction frequency.
 | 4 | [Conductor Control](conductor-control.md) | Conductor switching + budget | Browser |
 | 5 | [Settings Panel](settings-panel.md) | App settings dialog | Browser |
 | 6 | [Semantic Digests & Recall](semantic-digests-and-recall.md) | BM25 search-within-fold + semantic group sections | Engine |
+| 7 | [Block Digests](block-digests.md) | Per-block rich fold summaries (📄🔀❌🤖💭🔌) | Engine |

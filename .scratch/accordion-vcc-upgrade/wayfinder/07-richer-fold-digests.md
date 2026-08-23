@@ -1,7 +1,7 @@
 # 07 — How should richer individual fold digests work?
 
 Type: grilling
-Status: resolved
+Status: closed
 Blocked by: 06
 
 ## Resolution

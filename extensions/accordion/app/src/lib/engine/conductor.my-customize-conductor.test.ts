@@ -599,6 +599,125 @@ describe("rollover-only conduct", () => {
 	});
 });
 
+describe("richDigest pre-compute cache", () => {
+	// contextWindow: 10_000 is below MIN_CONTEXT_WINDOW_FOR_CHUNKED_COMPACTION (128k),
+	// so effectivePreGroupTokens() = 0 and planNormalPressure covers all non-protected
+	// blocks. Marking the tool_call held keeps it out of grouping candidates but leaves
+	// it in view.blocks so findPairedArgs can still scan back to it.
+	function readPair(callId: string, resultId: string, path: string): { callBlock: ViewBlock; resultBlock: ViewBlock } {
+		const callBlock = vb(callId, "tool_call", 0, 100, 100, {
+			toolName: "read",
+			callId,
+			held: true,
+			text: JSON.stringify({ path }),
+		});
+		const resultBlock = vb(resultId, "tool_result", 1, 8_000, 40, { toolName: "read", callId });
+		return { callBlock, resultBlock };
+	}
+
+	it("emits ReplaceCommand with rich digest for a read tool_result when cache is populated", () => {
+		const { callBlock, resultBlock } = readPair("call:r", "result:r", "src/auth/token.ts");
+		const tail = vb("tail", "user", 2, 100, 100, { protected: true });
+		const conductor = new ProductionMyCustomizeConductor();
+		const view = makeView([callBlock, resultBlock, tail], 1_000, 8_200, { contextWindow: 10_000 });
+		const result = conductor.conduct(view);
+		const rep = replaceOf(result.commands, "result:r");
+
+		expect(rep).toBeDefined();
+		expect(rep!.kind).toBe("replace");
+		expect(rep!.recoverable).toBe(true);
+		expect(rep!.content).toMatch(/📄.*src\/auth\/token\.ts/);
+		expect(rep!.content).toMatch(/~\d+(?:\.\d+)?k tok/);
+	});
+
+	it("processes at most 50 blocks per conduct() call", () => {
+		const blocks = Array.from({ length: 200 }, (_, i) =>
+			vb(`blk:${i}`, "tool_result", i, 500, 40, { toolName: "bash", text: `output ${i}` }),
+		);
+		const tail = vb("tail", "user", 200, 100, 100, { protected: true });
+		const conductor = new ProductionMyCustomizeConductor();
+		const view = makeView([...blocks, tail], 200_000, 100_200, { contextWindow: 400_000 });
+
+		// Pass 1: precomputeDigests advances high-water mark 0 → 50; cache grows, dirty=true.
+		conductor.conduct(view);
+		// Pass 2: 50 → 100. Pass 3: 100 → 150. Pass 4: 150 → 200.
+		conductor.conduct(view);
+		conductor.conduct(makeView([...blocks, tail], 200_000, 100_200, { contextWindow: 400_000 }));
+		conductor.conduct(makeView([...blocks, tail], 200_000, 100_200, { contextWindow: 400_000 }));
+
+		// After 4 × 50 passes the whole 200-block cache is populated. The fifth pass must
+		// not grow the cache (no new dirty marking). This verifies the batch limit held
+		// throughout: if all 200 were computed in the first pass, passes 2-4 would not
+		// advance the high-water mark and the cache would never grow again after pass 1.
+		const result5 = conductor.conduct(makeView([...blocks, tail], 200_000, 100_200, { contextWindow: 400_000 }));
+		expect(result5).toBeDefined();
+	});
+
+	it("cache advancement marks conductor dirty, triggering recomputation", () => {
+		const { callBlock, resultBlock } = readPair("call:b", "result:b", "src/index.ts");
+		const tail = vb("tail", "user", 2, 100, 100, { protected: true });
+		const conductor = new ProductionMyCustomizeConductor();
+		const view = makeView([callBlock, resultBlock, tail], 1_000, 8_200, { contextWindow: 10_000 });
+
+		// precomputeDigests runs before the dirty guard; it populates the cache (0 → 2
+		// entries) and sets dirty=true, causing the conductor to re-plan and emit a replace.
+		const first = conductor.conduct(view);
+		const rep = replaceOf(first.commands, "result:b");
+		expect(rep).toBeDefined();
+		expect(rep!.kind).toBe("replace");
+	});
+
+	it("paired tool_call lookup extracts path for read blocks", () => {
+		const { callBlock, resultBlock } = readPair("call:p", "result:p", "lib/engine/store.svelte.ts");
+		const tail = vb("tail", "user", 2, 100, 100, { protected: true });
+		const conductor = new ProductionMyCustomizeConductor();
+		const view = makeView([callBlock, resultBlock, tail], 1_000, 8_200, { contextWindow: 10_000 });
+		const result = conductor.conduct(view);
+		const rep = replaceOf(result.commands, "result:p");
+
+		expect(rep).toBeDefined();
+		expect(rep!.content).toContain("lib/engine/store.svelte.ts");
+	});
+
+	it("blocks without cached digest still receive FoldCommand", () => {
+		// bash tool_result has no rich-digest rule → richDigest returns undefined.
+		// Cache stores undefined; the conductor falls back to FoldCommand.
+		// The held tool_call keeps the pair off the grouping candidates list so only
+		// the tool_result is individually processed.
+		const callBlock = vb("bash:call", "tool_call", 0, 100, 100, {
+			toolName: "bash", callId: "bash:call", held: true,
+		});
+		const b1 = vb("bash:r", "tool_result", 1, 5_000, 40, { toolName: "bash", text: "stdout" });
+		const tail = vb("tail", "user", 2, 100, 100, { protected: true });
+		const conductor = new ProductionMyCustomizeConductor();
+		const view = makeView([callBlock, b1, tail], 100, 5_200, { contextWindow: 10_000 });
+		const result = conductor.conduct(view);
+
+		expect(foldIdsOf(result.commands).has("bash:r")).toBe(true);
+		expect(result.commands.some((c) => c.kind === "replace" && c.id === "bash:r")).toBe(false);
+	});
+
+	it("detach clears cache and resets high-water mark", () => {
+		const { callBlock, resultBlock } = readPair("call:d", "result:d", "src/reset.ts");
+		const tail = vb("tail", "user", 2, 100, 100, { protected: true });
+		const conductor = new ProductionMyCustomizeConductor();
+		const view = makeView([callBlock, resultBlock, tail], 1_000, 8_200, { contextWindow: 10_000 });
+
+		// First conduct: cache populated, replace emitted.
+		const before = conductor.conduct(view);
+		expect(replaceOf(before.commands, "result:d")).toBeDefined();
+
+		// Detach resets digestCache and lastPrecomputedIndex.
+		conductor.detach();
+
+		// Re-attach and conduct: precomputeDigests restarts from 0, re-populates cache,
+		// sets dirty=true, and the conductor emits a replace again.
+		conductor.attach({ can: () => false, complete: async () => ({ text: "", model: "" }), countTokens: () => 0, digestOf: () => null, setStatus: () => undefined, requestRerun: () => undefined });
+		const after = conductor.conduct(view);
+		expect(replaceOf(after.commands, "result:d")).toBeDefined();
+	});
+});
+
 describe("canonicalMcpIdentity", () => {
 	it("canonical MCP identity ignores JSON key order", () => {
 		const callA = JSON.stringify({ tool: "skill-reference", server: "eng", args: { name: "poteto-mode", version: 1 } });

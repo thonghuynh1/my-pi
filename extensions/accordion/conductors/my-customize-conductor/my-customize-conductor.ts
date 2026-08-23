@@ -8,6 +8,7 @@
  * DEC-003: O(1) dirty detection via markDirty() from the store, not O(n) scanning.
  */
 import { buildSemanticDigest } from "../../app/src/lib/engine/extractors";
+import { richDigest } from "../../app/src/lib/engine/block-digest";
 import type { Command, Conductor, ConductorHost, ConductorPlan, ConductorView, ViewBlock } from "../contract";
 import { availableCap, contextWindowCap } from "../contract";
 import { FOLDABLE_KINDS } from "../cold-score/score";
@@ -109,6 +110,11 @@ export class MyCustomizeConductor implements Conductor {
 	private lastHeadBlockCount = 0;
 	private lastViewKey: string | null = null;
 
+	// D20/D27/D30: pre-computed rich-digest cache
+	private digestCache = new Map<string, string | undefined>();
+	private lastPrecomputedIndex = 0;
+	private static readonly PRECOMPUTE_BATCH = 50;
+
 	constructor(opts: chunkedCompaction.MyCustomizeConductorOpts = {}) {
 		this.opts = { preGroupTokens: opts.preGroupTokens ?? DEFAULT_PRE_GROUP_TOKENS };
 	}
@@ -117,9 +123,56 @@ export class MyCustomizeConductor implements Conductor {
 		this.host = host;
 	}
 
+	detach(): void {
+		this.digestCache.clear();
+		this.lastPrecomputedIndex = 0;
+	}
+
 	/** DEC-003: store calls this from fold/pin/unpin/unfold to signal held-state changed. */
 	markDirty(): void {
 		this.dirty = true;
+	}
+
+	/** D20/D30: populate digest cache incrementally, up to PRECOMPUTE_BATCH entries per call. */
+	private precomputeDigests(view: ConductorView): void {
+		const batch = MyCustomizeConductor.PRECOMPUTE_BATCH;
+		let computed = 0;
+		const prevSize = this.digestCache.size;
+
+		for (let i = this.lastPrecomputedIndex; i < view.blocks.length && computed < batch; i++) {
+			const block = view.blocks[i];
+			if (this.digestCache.has(block.id)) { this.lastPrecomputedIndex = i + 1; continue; }
+
+			let pairedArgs: Record<string, unknown> | undefined;
+			if (block.toolName === "read" || block.toolName === "subagent") {
+				pairedArgs = this.findPairedArgs(block.callId, view.blocks, i);
+			}
+
+			this.digestCache.set(block.id, richDigest({
+				kind: block.kind,
+				toolName: block.toolName,
+				isError: block.isError,
+				text: block.text,
+				tokens: block.tokens,
+			}, pairedArgs));
+			this.lastPrecomputedIndex = i + 1;
+			computed++;
+		}
+
+		if (this.digestCache.size > prevSize) {
+			this.dirty = true;
+		}
+	}
+
+	/** D27: backwards scan from resultIndex for the paired tool_call with id === callId. */
+	private findPairedArgs(callId: string | undefined, blocks: ViewBlock[], fromIndex: number): Record<string, unknown> | undefined {
+		if (!callId) return undefined;
+		for (let i = fromIndex - 1; i >= 0; i--) {
+			if (blocks[i].id === callId && blocks[i].kind === "tool_call") {
+				try { return JSON.parse(blocks[i].text ?? "{}"); } catch { return undefined; }
+			}
+		}
+		return undefined;
 	}
 
 	private replayPriorCommands(view: ConductorView, excluded: ReadonlySet<string> = new Set()): Command[] {
@@ -345,7 +398,12 @@ export class MyCustomizeConductor implements Conductor {
 		if (normalGroup) commands.push(normalGroup);
 		for (const block of candidates) {
 			if (grouped.has(block.id) || !FOLDABLE_KINDS.has(block.kind) || block.foldedTokens >= block.tokens) continue;
-			commands.push({ kind: "fold", ids: [block.id] });
+			const cachedDigest = this.digestCache.get(block.id);
+			if (cachedDigest) {
+				commands.push({ kind: "replace", id: block.id, content: cachedDigest, recoverable: true });
+			} else {
+				commands.push({ kind: "fold", ids: [block.id] });
+			}
 		}
 		return commands;
 	}
@@ -364,7 +422,12 @@ export class MyCustomizeConductor implements Conductor {
 			if (projected <= cap) break;
 			if (excluded.has(block.id) || block.held || block.protected || block.grouped || block.proactivelyCompressed) continue;
 			if (!FOLDABLE_KINDS.has(block.kind) || block.foldedTokens >= block.tokens) continue;
-			commands.push({ kind: "fold", ids: [block.id] });
+			const cachedDigest = this.digestCache.get(block.id);
+			if (cachedDigest) {
+				commands.push({ kind: "replace", id: block.id, content: cachedDigest, recoverable: true });
+			} else {
+				commands.push({ kind: "fold", ids: [block.id] });
+			}
 			projected -= block.tokens - block.foldedTokens;
 		}
 		return commands;
@@ -469,6 +532,7 @@ export class MyCustomizeConductor implements Conductor {
 	}
 
 	conduct(view: ConductorView): ConductorPlan {
+		this.precomputeDigests(view);
 		const cap = availableCap(view);
 		const hardCap = contextWindowCap(view);
 		const headBlockCount = view.protectedFromIndex;

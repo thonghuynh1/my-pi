@@ -46,7 +46,6 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { runToolsAudit } from "./tools-audit";
 import * as payloadAudit from "./payload-audit";
 import * as cacheTracker from "./cache-tracker";
-import * as proactiveCompress from "./proactive-compress";
 import { buildUnreportedChunkedCompactionDiagnostic } from "./chunked-compaction-diagnostic";
 
 import { linearize, applyPlan, type PiMessage } from "../app/src/lib/live/mapping";
@@ -1476,7 +1475,6 @@ export default function accordionLive(pi: ExtensionAPI): void {
 	// dumps the actual provider payload's per-field token cost — finds the bytes
 	// that tools-audit can't see (MCP tools spliced at request time, cache_control
 	// system blocks, etc). All logic in payload-audit.ts.
-	proactiveCompress.install(pi);
 	cacheTracker.install(pi, () => latestModel?.provider);
 	payloadAudit.install(pi);
 	pi.registerCommand("tools-audit", {
@@ -1569,22 +1567,18 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			if (!codes.length) {
 				return { content: [{ type: "text", text: 'No fold codes given. Pass the code(s) from a {#<code> FOLDED} tag, e.g. recall({codes:["3f9a2c"]}).' }] };
 			}
-			const proactive = proactiveCompress.resolveOriginals(codes, params.query);
-			const proactiveCodes = new Set(proactive.map(({ code }) => code));
-			const remainingCodes = codes.filter((code) => !proactiveCodes.has(code));
-			if (proactive.length === 0 && !attached()) {
+			if (!attached()) {
 				return { content: [{ type: "text", text: "Accordion isn't attached, so nothing in your context is folded right now — it is already full." }] };
 			}
-			let res = remainingCodes.length > 0 ? await requestRecall(remainingCodes, params.query) : { restored: [], missing: [] };
-			if (res === null && proactive.length === 0) {
+			const res = await requestRecall(codes, params.query);
+			if (res === null) {
 				return { content: [{ type: "text", text: "Accordion did not respond. If it has detached, your context is already full; otherwise try again." }], isError: true };
 			}
-			res ??= { restored: [], missing: remainingCodes };
 			// The defining difference from `unfold`: echo the FULL original content back THIS turn,
 			// one text block per recalled item, each prefixed with its label + code so the agent
 			// knows what it is reading. A short note lists any codes that resolved to nothing.
 			const content: Array<{ type: "text"; text: string }> = [];
-			for (const r of [...proactive, ...res.restored]) {
+			for (const r of res.restored) {
 				content.push({ type: "text", text: `[recalled ${r?.label ?? "block"} (#${r?.code ?? "?"})]\n${r?.text ?? ""}` });
 			}
 			if (res.missing.length) {

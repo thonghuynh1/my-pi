@@ -496,6 +496,19 @@ describe("rollover-only conduct", () => {
 		expect(result.preGroup?.memberIds).not.toContain(mcp.id);
 	});
 
+	it("replays committed groups when a later pass falls under budget", () => {
+		const blocks = Array.from({ length: 10 }, (_, i) => vb(`replay:${i}`, "text", i, 3_000, 100, { text: `block ${i}` }));
+		const tail = vb("replay:tail", "user", blocks.length, 100, 100, { protected: true });
+		const conductor = new ProductionMyCustomizeConductor();
+		const first = conductor.conduct(makeView([...blocks, tail], 20_000, 35_000, { contextWindow: 128_000 }));
+		const firstGroups = first.commands.filter((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
+		const underBudget = conductor.conduct(makeView([...blocks, tail], 40_000, 30_000, { contextWindow: 128_000 }));
+
+		expect(underBudget.commands).toEqual(firstGroups);
+		const replayedIds = groupedIdsOf(firstGroups);
+		expect(underBudget.preGroup?.memberIds.every((id) => !replayedIds.has(id))).toBe(true);
+	});
+
 	it("stacks prior groups with a later rollover", () => {
 		const firstBlocks = Array.from({ length: 10 }, (_, i) => vb(`first:${i}`, "text", i, 3_000, 100, { text: `first ${i}` }));
 		const firstTail = vb("first:tail", "user", firstBlocks.length, 100, 100, { protected: true });

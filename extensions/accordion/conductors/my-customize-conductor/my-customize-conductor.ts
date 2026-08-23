@@ -501,8 +501,7 @@ export class MyCustomizeConductor implements Conductor {
 
 		// Phase 2: group remaining blocks when individual folds were not enough. With no
 		// frozen prefix this is the emergency's only legal pressure valve; with a frozen
-		// prefix it is limited to that prefix. Proactively-compressed blocks may be grouped
-		// (grouping preserves their recoverable content) but remain ineligible for folds.
+		// prefix it is limited to that prefix.
 		let run: ViewBlock[] = [];
 		const flushRun = (): void => {
 			if (live <= hardCap || run.length === 0) {

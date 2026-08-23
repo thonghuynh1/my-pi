@@ -32,7 +32,8 @@ The conductor is `my-customize-conductor` (the default). Changes touch the condu
 - [04 — How should group digests accumulate semantic sections?](wayfinder/04-group-semantic-sections.md): **Three sections (Asks, Files, Errors) + MCP Retrieval Index.** Shared library, conductor-invoked. Self-contained per group (flat invariant). Always extracted, empty sections omitted. Multi-line structured format for agent selection. ✅ *Confirmed by slice 2 build* — extractors, composer, and conductor wiring all landed.
 
 - [06 — How should per-block ranking scores be computed?](wayfinder/06-per-block-ranking-scores.md): **3 structural tiers (High/Medium/Low), no recency, no fold-order change, no search boost.** Score gates digest quality only. `blockTier()` in `extractors.ts`. High = edit/write/multiedit, run_tests, isError, bash+test-regex. Medium = user, bash, assistant, MCP/subagent. Low = read, ls, find, grep, generic tool_result, thinking. ✅ *Confirmed by slice 3 build* — `blockTier()` implemented, 38 tests pass, all AC met.
-- [07 — How should richer individual fold digests work?](wayfinder/07-richer-fold-digests.md): Open. ~~Blocked by 06.~~ **Unblocked.** Structured digests per block type (read→path+size, bash→cmd+exit, edit→path+lines). Tiered quality gated by ranking score. Extraction parsers, emit timing, recoverable flag.
+- [07 — How should richer individual fold digests work?](wayfinder/07-richer-fold-digests.md): **Resolved.** Conductor-side `block-digest.ts`, pre-computed cache (50/pass amortized), 6 rich templates (read, subagent, isError, text, thinking, mcp), engine fallback for the rest. Paired lookup for read+subagent. Upgrade pass after cold-start catch-up.
+- [08 — Should Proactive Content Compression be removed?](wayfinder/08-remove-pcc.md): Open. Blocked by 07. With pre-computed richer digests and conductor folding at tail-exit, PCC's frozen-prefix protection may be redundant.
 
 ## Not yet specified
 

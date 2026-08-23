@@ -125,3 +125,22 @@
 - `extractErrors(blocks)` — isError===true, first line ≤80ch, 3 cap
 - `buildMcpIndex(blocks)` — non-file tool_call with recallCode, 6 identities
 - `buildSemanticDigest(blocks, meta)` — assembles sections, omits empties
+- `blockTier(block)` — High/Medium/Low classification, NOT used by digest system
+- `ExtractableBlock` interface: `id?`, `kind`, `toolName?`, `isError?`, `text?`, `recallCode?`, `retrievalIdentity?`, `tokens?` (D23 adds tokens)
+
+## block-digest.ts (ticket 07 — to be built)
+
+- New module in `app/src/lib/conductors/my-customize/block-digest.ts`
+- Entry point: `richDigest(block: ExtractableBlock, viewBlocks: ViewBlock[]): string | undefined`
+- Returns digest body (NO fold tag — engine owns tag via `substOne` recoverable path)
+- Returns `undefined` for unrecognized tools → conductor skips ReplaceCommand, block goes in FoldCommand (engine fallback)
+- Paired lookup: scans `viewBlocks` backwards for `read` and `subagent` to find tool_call args
+- Templates: read (📄 path+tok), subagent (🔀 type+task+tok), isError (❌ first line), text (🤖 first sentence+tok), thinking (💭 tok), mcp (🔌 server/tool+tok)
+
+## Conductor digest cache (ticket 07 — to be built)
+
+- `Map<string, string | undefined>` in MyCustomizeConductor instance
+- Populated incrementally: each conduct() pass computes digests for new blocks not yet in cache
+- Consumed at fold time: lookup cached digest, emit ReplaceCommand { id, content, recoverable: true } or include in FoldCommand.ids
+- No invalidation — Block.text is immutable
+- Pre-compute happens for ALL blocks (including protected tail) since dirty guard fires on new block arrival

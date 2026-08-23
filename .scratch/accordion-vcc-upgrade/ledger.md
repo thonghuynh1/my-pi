@@ -91,6 +91,81 @@ Choice: isError === true blocks only. First line of text, truncated at 80 chars,
 Rationale: isError is high-confidence signal from pi's tool framework. Regex scanning for error patterns (FAIL, Exception) risks false positives. Agent can use recall(query="FAIL") for soft failures.
 Dependencies: D7, D9
 
+## Decisions — Ticket 07 (richer fold digests)
+
+### D19 — Where richer digest templates live
+Status: accepted
+Choice: Conductor-side, new module alongside extractors.ts. Engine's `digestBody()` remains universal fallback.
+Rationale: Tier gating is a conductor concern. `ReplaceCommand` is the existing delivery mechanism. Isolated blast radius and testing. Engine fallback unchanged for other conductors.
+Dependencies: none
+
+### D20 — Emit timing and performance
+Status: accepted
+Choice: Pre-computed digest cache (`Map<blockId, string | undefined>`) populated incrementally while blocks are in the protected tail, consumed at fold time.
+Rationale: Amortizes parsing cost to O(1–3 new blocks) per conduct() pass. Zero burst at fold time. Block.text is immutable — no invalidation needed. Piggybacks on existing dirty-guard trigger (headBlockCount changes on new block).
+Dependencies: none
+
+### D21 — Module shape
+Status: accepted
+Choice: New `block-digest.ts` module with single entry point `richDigest(block): string | undefined`.
+Rationale: Distinct responsibility from extractors (one block → one string vs many blocks → accumulated list). Keeps extractors focused on group-level semantics.
+Dependencies: D19
+
+### D22 — Size indicator
+Status: accepted
+Choice: Token count (`ViewBlock.tokens`), not line count. Formatted as `~Nk tok`.
+Rationale: Agent budgets in tokens, not lines. Zero parsing cost. Pre-compute makes line-counting feasible but unnecessary — tokens are the truth the agent acts on.
+Dependencies: D20
+
+### D23 — Input interface
+Status: accepted
+Choice: Add `tokens?: number` to existing `ExtractableBlock` interface.
+Rationale: Thin interface already designed as Block/ViewBlock subset. One optional field serves both group extractors (ignore it) and per-block digest (use it).
+Dependencies: D21
+
+### D25 — Recall result tier
+Status: accepted
+Choice: `recall` tool_results use engine fallback (no rich digest). Re-derivable — agent can always re-query the original block.
+Rationale: The original source block is still in the store with immutable text. Recall results are caches of queries the agent can repeat.
+Dependencies: D28
+
+### D26 — Paired tool_call lookup scope
+Status: accepted
+Choice: Paired tool_call lookup for `read` and `subagent` only. All other tool types use engine fallback digest.
+Rationale: `read` result text is raw file content (no path header). `subagent` result doesn't self-describe its task. Other tools (bash, grep, find, ls) have adequate engine fallback: `<toolName> → OK/ERR, ~N tok · <peek>`.
+Dependencies: D28
+
+### D27 — Paired lookup mechanism
+Status: accepted
+Choice: Simple backwards scan of `view.blocks` for block with `id === callId`.
+Rationale: Fires once per read/subagent block during pre-compute. Even with frequent use, cost is negligible (amortized, not burst).
+Dependencies: D26
+
+### D28 — Final template set
+Status: accepted
+Choice: Rich digest for 6 types, engine fallback for everything else.
+- `read` result: `📄 <path> (~Nk tok)` — path from paired tool_call
+- `subagent` result: `🔀 <type>: "<task>" (~Nk tok)` — task from paired tool_call
+- `isError=true`: `❌ <first error line>` — first non-empty line of text
+- `text` (assistant): `🤖 "<first sentence>" (~Nk tok)` — first sentence boundary
+- `thinking`: `💭 (~Nk tok)` — just tokens
+- `mcp__*`: `🔌 <server/tool> (~Nk tok)` — parsed from toolName
+- Everything else (bash, run_tests, grep, find, ls, recall, generic): engine fallback `<toolName> → OK/ERR, ~N tok · <peek>`
+Rationale: Focuses parsing effort on blocks where result text doesn't self-describe (read, subagent) or where structural signal matters most (errors, assistant reasoning). Engine fallback already produces informative digests for output-heavy tools.
+Dependencies: D22, D23, D26, D27
+
+### D29 — Tier gating
+Status: accepted
+Choice: No tier gating for digests. `richDigest()` pattern-matches on toolName/kind regardless of tier. `blockTier()` exists but is unused by digest system.
+Rationale: Every recognized type that benefits from a rich template gets one. Tier distinction collapsed — the template set is the gate, not the tier score. `blockTier()` remains for ticket 08 (PCC removal) or future use.
+Dependencies: D28
+
+### D30 — Cold-start performance: amortized pre-compute + upgrade pass
+Status: accepted
+Choice: Batch pre-compute (50 blocks/pass) with high-water mark. After catch-up completes, one-time upgrade pass emits ReplaceCommand for folded blocks that were assigned engine fallback during catch-up. Frozen blocks are naturally rejected by existing substOne() guard — no special logic.
+Rationale: Cold-start (enable mid-session, reattach) could face 300–500 blocks. Amortizing over 10 passes avoids blocking. Upgrade pass ensures blocks don't permanently miss rich digests. Frozen guard prevents unsafe prefix changes automatically.
+Dependencies: D20
+
 ## Decisions — Ticket 06 (per-block ranking scores)
 
 ### D14 — Score purpose: fold order vs digest quality vs search boost

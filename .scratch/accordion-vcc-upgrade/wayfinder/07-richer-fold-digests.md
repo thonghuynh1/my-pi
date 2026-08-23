@@ -1,8 +1,23 @@
 # 07 — How should richer individual fold digests work?
 
 Type: grilling
-Status: open
+Status: resolved
 Blocked by: 06
+
+## Resolution
+
+**Conductor-side `block-digest.ts` module** with `richDigest(block, viewBlocks): string | undefined`. Pre-computed incrementally via a cached Map (50 blocks/pass, high-water mark). Consumed at fold time: blocks with a cached digest get `ReplaceCommand { recoverable: true }`, others go in `FoldCommand` (engine fallback). One-time upgrade pass after cold-start catch-up.
+
+**Templates (6 rich, rest engine fallback):**
+- `read`: `📄 <path> (~Nk tok)` — path from paired tool_call
+- `subagent`: `🔀 <type>: "<task>" (~Nk tok)` — task from paired tool_call
+- `isError`: `❌ <first error line>`
+- `text` (assistant): `🤖 "<first sentence>" (~Nk tok)`
+- `thinking`: `💭 (~Nk tok)`
+- `mcp__*`: `🔌 <server/tool> (~Nk tok)`
+- Everything else: engine fallback `<toolName> → OK/ERR, ~N tok · <peek>`
+
+**Key decisions:** No tier gating. Paired tool_call lookup only for read + subagent. Token count as size indicator. `ExtractableBlock` gains `tokens?` field. Amortized cold-start with upgrade pass.
 
 ## Question
 

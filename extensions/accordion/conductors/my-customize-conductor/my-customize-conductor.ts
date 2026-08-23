@@ -164,6 +164,16 @@ export class MyCustomizeConductor implements Conductor {
 		}
 	}
 
+	/** Emit a ReplaceCommand (rich digest) or FoldCommand (engine fallback) for a single block. */
+	private foldOrReplace(commands: Command[], blockId: string): void {
+		const cachedDigest = this.digestCache.get(blockId);
+		if (cachedDigest) {
+			commands.push({ kind: "replace", id: blockId, content: cachedDigest, recoverable: true });
+		} else {
+			commands.push({ kind: "fold", ids: [blockId] });
+		}
+	}
+
 	/** D27: backwards scan from resultIndex for the paired tool_call with id === callId. */
 	private findPairedArgs(callId: string | undefined, blocks: ViewBlock[], fromIndex: number): Record<string, unknown> | undefined {
 		if (!callId) return undefined;
@@ -398,12 +408,7 @@ export class MyCustomizeConductor implements Conductor {
 		if (normalGroup) commands.push(normalGroup);
 		for (const block of candidates) {
 			if (grouped.has(block.id) || !FOLDABLE_KINDS.has(block.kind) || block.foldedTokens >= block.tokens) continue;
-			const cachedDigest = this.digestCache.get(block.id);
-			if (cachedDigest) {
-				commands.push({ kind: "replace", id: block.id, content: cachedDigest, recoverable: true });
-			} else {
-				commands.push({ kind: "fold", ids: [block.id] });
-			}
+			this.foldOrReplace(commands, block.id);
 		}
 		return commands;
 	}
@@ -422,12 +427,7 @@ export class MyCustomizeConductor implements Conductor {
 			if (projected <= cap) break;
 			if (excluded.has(block.id) || block.held || block.protected || block.grouped || block.proactivelyCompressed) continue;
 			if (!FOLDABLE_KINDS.has(block.kind) || block.foldedTokens >= block.tokens) continue;
-			const cachedDigest = this.digestCache.get(block.id);
-			if (cachedDigest) {
-				commands.push({ kind: "replace", id: block.id, content: cachedDigest, recoverable: true });
-			} else {
-				commands.push({ kind: "fold", ids: [block.id] });
-			}
+			this.foldOrReplace(commands, block.id);
 			projected -= block.tokens - block.foldedTokens;
 		}
 		return commands;

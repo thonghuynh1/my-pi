@@ -1073,6 +1073,38 @@ function truncateForToolResult(text: string, maxBytes = 50 * 1024): string {
 	return `${truncated}\n\n[Subagent output truncated to ${maxBytes} bytes.]`;
 }
 
+interface CompletedChildToolOutput {
+	name: string;
+	isError: boolean;
+	text: string;
+}
+
+const RETAINED_TOOL_OUTPUT_MAX_BYTES = 40 * 1024;
+
+export function extractToolResultText(result: unknown): string {
+	if (!isRecord(result) || !Array.isArray(result.content)) return "";
+	const text: string[] = [];
+	for (const part of result.content) {
+		if (isRecord(part) && part.type === "text" && typeof part.text === "string") text.push(part.text);
+	}
+	return text.join("\n");
+}
+
+export function appendRetainedToolOutput({
+	assistantOutput,
+	toolOutputs,
+}: {
+	assistantOutput: string;
+	toolOutputs: ReadonlyArray<CompletedChildToolOutput>;
+}): string {
+	if (toolOutputs.length === 0) return assistantOutput;
+	const retained = toolOutputs
+		.map((output) => `${output.name} (${output.isError ? "failed" : "completed"}):\n${output.text}`)
+		.join("\n\n");
+	const assistantSection = assistantOutput ? `\n\nPartial assistant output before termination:\n\n${assistantOutput}` : "";
+	return `Completed child tool results before termination:\n\n${retained}${assistantSection}`;
+}
+
 function statusLine(config: RunConfig, toolCalls: Array<{ name: string }>, turns: number): string {
 	const bits = [`${config.type}:${config.name}`];
 	if (turns > 0) bits.push(`${turns} turn${turns === 1 ? "" : "s"}`);
@@ -1224,6 +1256,8 @@ async function runSubagent(
 	let streamingText = "";
 	let turns = 0;
 	const toolCalls: Array<{ name: string; args: unknown; isError?: boolean }> = [];
+	const completedToolOutputs: CompletedChildToolOutput[] = [];
+	let retainedToolOutputBytes = 0;
 	let session: Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"] | undefined;
 	let unsubscribeSession: (() => void) | undefined;
 	let verificationReport: VerificationReportV1 | undefined;
@@ -1431,6 +1465,13 @@ async function runSubagent(
 				case "tool_execution_end": {
 					const last = [...toolCalls].reverse().find((call) => call.name === event.toolName && call.isError === undefined);
 					if (last) last.isError = event.isError;
+					const text = extractToolResultText(event.result);
+					if (text && retainedToolOutputBytes < RETAINED_TOOL_OUTPUT_MAX_BYTES) {
+						const remainingBytes = RETAINED_TOOL_OUTPUT_MAX_BYTES - retainedToolOutputBytes;
+						const retainedText = truncateForToolResult(text, remainingBytes);
+						completedToolOutputs.push({ name: event.toolName, isError: event.isError, text: retainedText });
+						retainedToolOutputBytes += Buffer.byteLength(retainedText, "utf8");
+					}
 					liveStatus.currentTool = undefined;
 					liveStatus.preview = `${event.toolName} ${event.isError ? "failed" : "finished"}`;
 					publishStatus();
@@ -1544,7 +1585,9 @@ async function runSubagent(
 			tools: config.tools,
 			model: `${resolvedModel.provider}/${resolvedModel.id}`,
 			status: runFailed ? "error" : "completed",
-			output: parentOutput,
+			output: runFailed
+				? appendRetainedToolOutput({ assistantOutput: parentOutput, toolOutputs: completedToolOutputs })
+				: parentOutput,
 			...(runFailed ? { error: failure ?? (packetProjection.incomplete ? `Structured verification incomplete (${termination}).` : `Subagent terminated (${termination}).`) } : {}),
 			turns,
 			toolCalls,
@@ -1563,7 +1606,7 @@ async function runSubagent(
 		const message = error instanceof Error ? error.message : String(error);
 		if (packet && termination === "completed") termination = runtimeState ? packetLimitTermination(runtimeState) : "error";
 		const packetProjection = projectPacketResult(packetSelection, verificationReport, termination, effectiveLimits);
-		const output = streamingText.trim();
+		const output = appendRetainedToolOutput({ assistantOutput: streamingText.trim(), toolOutputs: completedToolOutputs });
 		return {
 			type: config.type,
 			name: config.name,

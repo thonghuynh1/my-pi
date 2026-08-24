@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { buildEvidencePacketPrompt, formatPacketResultForParent, projectPacketResult, resolveEvidencePacket } from "../lib/subagent-runtime.ts";
+import { appendRetainedToolOutput, extractToolResultText } from "../subagents.ts";
 
 const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "subagents.ts"), "utf8");
 
@@ -143,4 +144,30 @@ test("partial packet reports synthesize unresolved claims", () => {
 	assert.equal(projection.incomplete, true);
 	assert.equal(projection.termination, "timeout");
 	assert.equal(projection.verification?.claims.find((claim) => claim.claimId === "missing")?.status, "unresolved");
+});
+
+test("timeout output preserves completed child tool results", () => {
+	const output = appendRetainedToolOutput({
+		assistantOutput: "I found a threshold.",
+		toolOutputs: [
+			{ name: "read", isError: false, text: "ESLint defaults to 20." },
+			{ name: "bash", isError: true, text: "command exited 1" },
+		],
+	});
+	assert.match(output, /I found a threshold\./);
+	assert.match(output, /Completed child tool results before termination/);
+	assert.match(output, /read \(completed\):\nESLint defaults to 20\./);
+	assert.match(output, /bash \(failed\):\ncommand exited 1/);
+	assert.ok(output.indexOf("Completed child tool results before termination") < output.indexOf("I found a threshold."));
+});
+
+test("tool result extraction keeps textual content and ignores other parts", () => {
+	assert.equal(extractToolResultText({
+		content: [
+			{ type: "text", text: "first finding" },
+			{ type: "image", data: "ignored" },
+			{ type: "text", text: "second finding" },
+		],
+	}), "first finding\nsecond finding");
+	assert.equal(extractToolResultText({ content: [{ type: "image", data: "ignored" }] }), "");
 });

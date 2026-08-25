@@ -713,6 +713,194 @@ describe("richDigest pre-compute cache", () => {
 	});
 });
 
+describe("frozen-prefix stability (flip-flop fix)", () => {
+
+	/** Extract all block ids targeted by fold, replace, or group commands. */
+	function targetedIds(commands: Command[]): Set<string> {
+		return new Set(commands.flatMap((c) =>
+			c.kind === "fold" ? c.ids : c.kind === "group" ? c.ids : c.kind === "replace" ? [c.id] : c.kind === "restore" ? c.ids : [],
+		));
+	}
+
+	/** Assert no command targets a block with order < frozenFromIndex,
+	 *  except rollover/digest group replays (which are host no-ops on already-grouped blocks)
+	 *  and breakFrozen emergency commands. */
+	function assertNothingTargetsFrozen(commands: Command[], blocks: ViewBlock[], frozenFromIndex: number): void {
+		const frozenIds = new Set(blocks.filter((b) => b.order < frozenFromIndex).map((b) => b.id));
+		for (const cmd of commands) {
+			const ids = cmd.kind === "fold" ? cmd.ids
+				: cmd.kind === "replace" ? [cmd.id]
+				: cmd.kind === "group" ? cmd.ids
+				: cmd.kind === "restore" ? cmd.ids
+				: [];
+			const breakFrozen = (cmd.kind === "fold" || cmd.kind === "replace") &&
+				(cmd as Record<string, unknown>).breakFrozen === true;
+			if (breakFrozen) continue;
+			// Replayed rollover/digest groups are no-ops on already-grouped frozen blocks.
+			if (cmd.kind === "group") {
+				const g = cmd as Extract<Command, { kind: "group" }>;
+				if (g.lifecycle === "rollover" || (typeof g.digest === "string" && g.digest.length > 0)) continue;
+			}
+			for (const id of ids) {
+				expect(frozenIds.has(id), `command targets frozen block ${id}`).toBe(false);
+			}
+		}
+	}
+
+	it("does NOT restore folded blocks inside the frozen prefix", () => {
+		const blocks = [
+			vb("old:0", "text", 0, 20_000, 100, { text: "old block 0", folded: true }),
+			vb("old:1", "text", 1, 20_000, 100, { text: "old block 1", folded: true }),
+			vb("old:2", "text", 2, 20_000, 100, { text: "old block 2" }),
+			vb("tail", "user", 3, 10_000, 10_000, { protected: true, text: "continue" }),
+		];
+		const view = makeView(blocks, 70_000, 70_200, { frozenFromIndex: 2, contextWindow: 200_000 });
+		const result = new ProductionMyCustomizeConductor().conduct(view);
+
+		expect(result.commands.filter((c) => c.kind === "restore")).toEqual([]);
+		assertNothingTargetsFrozen(result.commands, blocks, 2);
+	});
+
+	it("cold-start 120k/70k: 5-turn lifecycle with advancing frozenFromIndex", () => {
+		const conductor = new ProductionMyCustomizeConductor();
+
+		// 12 blocks × 10k = 120k content + 5k tail = 125k total.
+		// Budget 70k, contextWindow 200k.
+		const content = Array.from({ length: 12 }, (_, i) =>
+			vb(`b:${i}`, i % 3 === 0 ? "user" : i % 3 === 1 ? "tool_call" : "tool_result", i, 10_000,
+				i % 3 === 2 ? 100 : 10_000,
+				{
+					text: `content block ${i}`,
+					toolName: i % 3 === 1 ? "read" : i % 3 === 2 ? "read" : undefined,
+					callId: i % 3 >= 1 ? `call:${Math.floor(i / 3)}` : undefined,
+				},
+			),
+		);
+		const tail = vb("tail", "user", 12, 5_000, 5_000, { protected: true, text: "go" });
+
+		// Turn 1: cold start, frozenFromIndex=0. Conductor must fold to fit 70k.
+		const allBlocks = [...content, tail];
+		const r1 = conductor.conduct(makeView(allBlocks, 70_000, 125_000, { frozenFromIndex: 0, contextWindow: 200_000 }));
+		expect(r1.commands.length).toBeGreaterThan(0);
+		expect(r1.commands.filter((c) => c.kind === "restore")).toEqual([]);
+		const r1Targeted = targetedIds(r1.commands);
+
+		// Turn 2: provider cached the prefix. frozenFromIndex advances past the first 4 blocks.
+		const r2 = conductor.conduct(makeView(allBlocks, 70_000, 125_000, { frozenFromIndex: 4, contextWindow: 200_000 }));
+		expect(r2.commands.filter((c) => c.kind === "restore")).toEqual([]);
+		assertNothingTargetsFrozen(r2.commands, allBlocks, 4);
+
+		// Turn 3: frozenFromIndex advances further.
+		const r3 = conductor.conduct(makeView(allBlocks, 70_000, 125_000, { frozenFromIndex: 8, contextWindow: 200_000 }));
+		expect(r3.commands.filter((c) => c.kind === "restore")).toEqual([]);
+		assertNothingTargetsFrozen(r3.commands, allBlocks, 8);
+
+		// Turn 4: almost everything frozen.
+		const r4 = conductor.conduct(makeView(allBlocks, 70_000, 125_000, { frozenFromIndex: 11, contextWindow: 200_000 }));
+		expect(r4.commands.filter((c) => c.kind === "restore")).toEqual([]);
+		assertNothingTargetsFrozen(r4.commands, allBlocks, 11);
+
+		// Turn 5: fully frozen except the protected tail.
+		const r5 = conductor.conduct(makeView(allBlocks, 70_000, 125_000, { frozenFromIndex: 12, contextWindow: 200_000 }));
+		expect(r5.commands.filter((c) => c.kind === "restore")).toEqual([]);
+		assertNothingTargetsFrozen(r5.commands, allBlocks, 12);
+	});
+
+	it("plan commands shrink as frozen prefix grows (no new targets in frozen zone)", () => {
+		const conductor = new ProductionMyCustomizeConductor();
+		const blocks = Array.from({ length: 8 }, (_, i) =>
+			vb(`s:${i}`, "text", i, 5_000, 100, { text: `block ${i}` }),
+		);
+		const tail = vb("tail", "user", 8, 2_000, 2_000, { protected: true, text: "go" });
+		const allBlocks = [...blocks, tail];
+
+		const counts: number[] = [];
+		for (let frozen = 0; frozen <= 8; frozen += 2) {
+			conductor.markDirty?.();
+			const result = conductor.conduct(makeView(allBlocks, 20_000, 42_000, { frozenFromIndex: frozen, contextWindow: 200_000 }));
+			assertNothingTargetsFrozen(result.commands, allBlocks, frozen);
+			const unfrozenTargets = [...targetedIds(result.commands)].filter((id) => {
+				const b = allBlocks.find((x) => x.id === id);
+				return b && b.order >= frozen;
+			});
+			counts.push(unfrozenTargets.length);
+		}
+		// As frozen prefix grows, fewer unfrozen blocks are available to target.
+		for (let i = 1; i < counts.length; i++) {
+			expect(counts[i]).toBeLessThanOrEqual(counts[i - 1]);
+		}
+	});
+
+	it("does not replay replace commands on frozen blocks", () => {
+		const conductor = new ProductionMyCustomizeConductor();
+		const blocks = [
+			vb("call:r", "tool_call", 0, 100, 100, { toolName: "read", callId: "call:r", held: true, text: '{"path":"src/foo.ts"}' }),
+			vb("result:r", "tool_result", 1, 8_000, 40, { toolName: "read", callId: "call:r" }),
+			vb("tail", "user", 2, 100, 100, { protected: true }),
+		];
+
+		const r1 = conductor.conduct(makeView(blocks, 1_000, 8_200, { frozenFromIndex: 0, contextWindow: 10_000 }));
+		expect(replaceOf(r1.commands, "result:r")).toBeDefined();
+
+		const r2 = conductor.conduct(makeView(blocks, 1_000, 8_200, { frozenFromIndex: 2, contextWindow: 10_000 }));
+		expect(replaceOf(r2.commands, "result:r")).toBeUndefined();
+	});
+
+	it("hard-cap emergency still uses breakFrozen when context window overflows", () => {
+		const blocks = [
+			vb("frozen:0", "tool_result", 0, 80_000, 100, { toolName: "bash", text: "big output" }),
+			vb("frozen:1", "text", 1, 80_000, 100, { text: "big text" }),
+			vb("tail", "user", 2, 50_000, 50_000, { protected: true, text: "go" }),
+		];
+		const view = makeView(blocks, 70_000, 210_000, { frozenFromIndex: 2, contextWindow: 200_000 });
+		const result = new ProductionMyCustomizeConductor().conduct(view);
+
+		// Hard-cap emergency IS allowed to break frozen (safety valve).
+		const breakFrozenCmds = result.commands.filter((c) =>
+			(c.kind === "fold" || c.kind === "replace") && (c as Record<string, unknown>).breakFrozen === true,
+		);
+		expect(breakFrozenCmds.length).toBeGreaterThan(0);
+		expect(projected(view, result.commands)).toBeLessThanOrEqual(200_000);
+	});
+
+	it("rollover with new blocks past the frozen prefix targets only unfrozen blocks", () => {
+		const conductor = new ProductionMyCustomizeConductor();
+
+		// Turn 1: 6 blocks, no frozen prefix. Triggers rollover.
+		const initial = Array.from({ length: 6 }, (_, i) =>
+			vb(`r:${i}`, "text", i, 3_000, 100, { text: `block ${i}` }),
+		);
+		const tail1 = vb("tail", "user", 6, 100, 100, { protected: true });
+		const r1 = conductor.conduct(makeView([...initial, tail1], 10_000, 18_100, { frozenFromIndex: 0, contextWindow: 128_000 }));
+		const r1Groups = r1.commands.filter((c) => c.kind === "group");
+		expect(r1Groups.length).toBeGreaterThan(0);
+
+		// Turn 2: original blocks are now frozen. 12 new blocks arrive (36k fresh > 30k dynamic target).
+		const fresh = Array.from({ length: 12 }, (_, i) =>
+			vb(`f:${i}`, "text", i + 6, 3_000, 100, { text: `fresh ${i}` }),
+		);
+		const tail2 = vb("tail2", "user", 18, 100, 100, { protected: true });
+		const r2 = conductor.conduct(makeView(
+			[...initial, ...fresh, tail2], 10_000, 54_200,
+			{ frozenFromIndex: 6, contextWindow: 128_000 },
+		));
+
+		// No fold, replace, or restore should target frozen blocks.
+		assertNothingTargetsFrozen(r2.commands, [...initial, ...fresh, tail2], 6);
+
+		// New groups (beyond replayed r1 groups) should only contain fresh block ids.
+		const r2NewGroups = r2.commands.filter((c) =>
+			c.kind === "group" && !r1Groups.some((g) => g.kind === "group" && g.ids.join() === c.ids.join()),
+		);
+		for (const g of r2NewGroups) {
+			if (g.kind !== "group") continue;
+			for (const id of g.ids) {
+				expect(id, `new group should only contain fresh blocks, got ${id}`).toMatch(/^f:/);
+			}
+		}
+	});
+});
+
 describe("canonicalMcpIdentity", () => {
 	it("canonical MCP identity ignores JSON key order", () => {
 		const callA = JSON.stringify({ tool: "skill-reference", server: "eng", args: { name: "poteto-mode", version: 1 } });

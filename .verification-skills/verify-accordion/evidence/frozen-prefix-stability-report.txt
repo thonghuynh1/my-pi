@@ -1,0 +1,50 @@
+
+ RUN  v4.1.10 F:/MyWork/my-pi/extensions/accordion/app
+
+stdout | src/lib/engine/frozen-prefix-evidence.test.ts > frozen-prefix stability — evidence capture > 6-turn cold-start lifecycle report
+
+╔══════════════════════════════════════════════════════════════╗
+║   FROZEN-PREFIX STABILITY — 6-TURN EVIDENCE REPORT          ║
+╠══════════════════════════════════════════════════════════════╣
+║ Blocks: 21  Budget: 70000  Total: 113000  Window: 200k
+╠══════════════════════════════════════════════════════════════╣
+║ Turn 1  frozenFromIndex=0
+║   folds=0  groups=6  replaces=0  restores=0
+║   frozen-targeted: NONE ✅
+║   unfrozen-targeted: none
+║
+║ Turn 2  frozenFromIndex=4
+║   folds=0  groups=6  replaces=0  restores=0
+║   frozen-targeted: NONE ✅
+║   unfrozen-targeted: none
+║
+║ Turn 3  frozenFromIndex=8
+║   folds=0  groups=6  replaces=0  restores=0
+║   frozen-targeted: NONE ✅
+║   unfrozen-targeted: none
+║
+║ Turn 4  frozenFromIndex=12
+║   folds=0  groups=6  replaces=0  restores=0
+║   frozen-targeted: NONE ✅
+║   unfrozen-targeted: none
+║
+║ Turn 5  frozenFromIndex=16
+║   folds=0  groups=6  replaces=0  restores=0
+║   frozen-targeted: NONE ✅
+║   unfrozen-targeted: none
+║
+║ Turn 6  frozenFromIndex=20
+║   folds=0  groups=6  replaces=0  restores=0
+║   frozen-targeted: NONE ✅
+║   unfrozen-targeted: none
+║
+╚══════════════════════════════════════════════════════════════╝
+
+
+ ✓ src/lib/engine/frozen-prefix-evidence.test.ts > frozen-prefix stability — evidence capture > 6-turn cold-start lifecycle report 58ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  23:09:56
+   Duration  2.63s (transform 908ms, setup 1.84s, import 571ms, tests 59ms, environment 0ms)
+

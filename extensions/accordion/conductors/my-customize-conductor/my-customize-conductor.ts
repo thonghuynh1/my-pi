@@ -109,6 +109,7 @@ export class MyCustomizeConductor implements Conductor {
 	private lastCap = 0;
 	private lastHeadBlockCount = 0;
 	private lastViewKey: string | null = null;
+	private lastFrozenFromIndex = 0;
 
 	// D20/D27/D30: pre-computed rich-digest cache
 	private digestCache = new Map<string, string | undefined>();
@@ -205,7 +206,7 @@ export class MyCustomizeConductor implements Conductor {
 			} else if (command.kind === "replace") {
 				if (excluded.has(command.id)) continue;
 				const block = blockById.get(command.id);
-				if (block && !block.held && !block.protected && !block.grouped) {
+				if (block && !block.held && !block.protected && !block.grouped && block.order >= view.frozenFromIndex) {
 					replayable.push(command);
 				}
 			}
@@ -399,7 +400,7 @@ export class MyCustomizeConductor implements Conductor {
 		if (end <= 0) return [];
 		const commands: Command[] = [];
 		const candidates = view.blocks.slice(0, end).filter((block) =>
-			!block.held && !block.protected && !block.grouped,
+			!block.held && !block.protected && !block.grouped && block.order >= view.frozenFromIndex,
 		);
 		if (candidates.length === 0) return [];
 
@@ -426,6 +427,7 @@ export class MyCustomizeConductor implements Conductor {
 		for (const block of view.blocks.slice(0, Math.min(preGroupFromIndex, view.protectedFromIndex))) {
 			if (projected <= cap) break;
 			if (excluded.has(block.id) || block.held || block.protected || block.grouped) continue;
+			if (block.order < view.frozenFromIndex) continue;
 			if (!FOLDABLE_KINDS.has(block.kind) || block.foldedTokens >= block.tokens) continue;
 			this.foldOrReplace(commands, block.id);
 			projected -= block.tokens - block.foldedTokens;
@@ -540,7 +542,7 @@ export class MyCustomizeConductor implements Conductor {
 		// is unchanged, return the cached result. New blocks appended to the protected
 		// tail don't affect planning (they're protected, can't be folded). Budget overage
 		// alone doesn't invalidate — the conductor already planned for the domain it has.
-		if (!this.dirty && this.lastResult && headBlockCount === this.lastHeadBlockCount && cap <= this.lastCap) {
+		if (!this.dirty && this.lastResult && headBlockCount === this.lastHeadBlockCount && cap <= this.lastCap && view.frozenFromIndex === this.lastFrozenFromIndex) {
 			return this.lastResult;
 		}
 
@@ -588,7 +590,7 @@ export class MyCustomizeConductor implements Conductor {
 
 		// Secondary fast path: viewKey unchanged after O(n) computation. Keeps
 		// the original behavioral contract as a second line of defence.
-		if (!this.dirty && previousViewKey === viewKey && this.lastPlan && cap <= this.lastCap && view.liveTokens <= hardCap) {
+		if (!this.dirty && previousViewKey === viewKey && this.lastPlan && cap <= this.lastCap && view.liveTokens <= hardCap && view.frozenFromIndex === this.lastFrozenFromIndex) {
 			return this.finishConduct(prior, preGroupTokens, preGroupTarget, false, preGroupMembers(priorIds), {
 				newPreGroupTokens,
 				rolloverBlockedReason: "stable-plan",
@@ -600,22 +602,11 @@ export class MyCustomizeConductor implements Conductor {
 			if (block.kind === "tool_call" && block.callId) callById.set(block.callId, block);
 		}
 
-		// A folded block that is now in the frozen prefix is host-owned, but a folded
-		// pre-group member must be made live before the next rollover can consume it.
-		// This is intentionally a restore only; it never weakens pair or protection checks.
-		const restores = preGroupTarget > 0
-			? view.blocks.filter((block) => block.order < view.frozenFromIndex && block.folded && !block.grouped && !block.held && !block.protected)
-			: [];
-		if (restores.length > 0) {
-			const plan: Command[] = [{ kind: "restore", ids: restores.map((block) => block.id) }];
-			this.dirty = false;
-			this.lastCap = cap;
-			this.lastHeadBlockCount = headBlockCount;
-			return this.finishConduct(plan, preGroupTokens, preGroupTarget, false, preGroupMembers(), {
-				newPreGroupTokens,
-				rolloverBlockedReason: blockedReason,
-			});
-		}
+		// FIX: Do NOT restore folded blocks inside the frozen prefix. The cached prefix
+		// already contains the folded version; restoring it would break the cache and
+		// trigger a fold/unfold flip-flop cycle (restore → over-budget → fold others →
+		// those enter frozen prefix → restore again → …). Rollover is clamped to start
+		// at frozenFromIndex instead, so it never needs to consume frozen folded blocks.
 
 		// DEC-002: hard-cap emergency always re-plans (safety valve).
 		if (view.liveTokens > hardCap) {
@@ -627,6 +618,7 @@ export class MyCustomizeConductor implements Conductor {
 				this.dirty = false;
 				this.lastCap = cap;
 				this.lastHeadBlockCount = headBlockCount;
+				this.lastFrozenFromIndex = view.frozenFromIndex;
 				return this.finishConduct(plan, preGroupTokens, preGroupTarget, false, preGroupMembers(commandIds(plan)), {
 					newPreGroupTokens,
 					rolloverBlockedReason: "hard-cap-emergency",
@@ -636,7 +628,7 @@ export class MyCustomizeConductor implements Conductor {
 
 		// DEC-002: nothing material changed — return stable plan with updated pre-group membership.
 		// (Hard-cap cases are handled above; this catches cap-change or dirty-only scenarios.)
-		if (!this.dirty && previousViewKey === viewKey && this.lastPlan && cap <= this.lastCap) {
+		if (!this.dirty && previousViewKey === viewKey && this.lastPlan && cap <= this.lastCap && view.frozenFromIndex === this.lastFrozenFromIndex) {
 			return this.finishConduct(prior, preGroupTokens, preGroupTarget, false, preGroupMembers(priorIds), {
 				newPreGroupTokens,
 				rolloverBlockedReason: "stable-plan",
@@ -649,6 +641,9 @@ export class MyCustomizeConductor implements Conductor {
 		let rolloverFromIndex = preGroupFromIndex < view.frozenFromIndex ? preGroupFromIndex : view.frozenFromIndex;
 		if (rolloverFromIndex === view.frozenFromIndex && barrierBeforePreGroup) rolloverFromIndex = preGroupFromIndex;
 		while (rolloverFromIndex < view.protectedFromIndex && hardBarrier(view.blocks[rolloverFromIndex])) rolloverFromIndex++;
+		// FIX: Clamp rollover to never touch the frozen (cache-warm) prefix.
+		// Folding or grouping inside the frozen prefix breaks prompt cache.
+		rolloverFromIndex = Math.max(rolloverFromIndex, view.frozenFromIndex);
 
 		// Rollover trigger: enough NEW content accumulated AND no open tool pair straddles
 		// the boundary. A budget smaller than the base interval cannot safely fund a cache
@@ -670,6 +665,7 @@ export class MyCustomizeConductor implements Conductor {
 				this.dirty = false;
 				this.lastCap = cap;
 				this.lastHeadBlockCount = headBlockCount;
+				this.lastFrozenFromIndex = view.frozenFromIndex;
 				return this.finishConduct(plan, preGroupTokens, preGroupTarget, true, preGroupMembers(commandIds(plan)), {
 					newPreGroupTokens,
 					rolloverBlockedReason: "none",
@@ -706,6 +702,7 @@ export class MyCustomizeConductor implements Conductor {
 				this.dirty = false;
 				this.lastCap = cap;
 				this.lastHeadBlockCount = headBlockCount;
+				this.lastFrozenFromIndex = view.frozenFromIndex;
 				return this.finishConduct(plan, preGroupTokens, preGroupTarget, true, preGroupMembers(commandIds(plan)), {
 					newPreGroupTokens,
 					rolloverBlockedReason: "none",
@@ -723,6 +720,7 @@ export class MyCustomizeConductor implements Conductor {
 				this.dirty = false;
 				this.lastCap = cap;
 				this.lastHeadBlockCount = headBlockCount;
+				this.lastFrozenFromIndex = view.frozenFromIndex;
 				return this.finishConduct(plan, preGroupTokens, preGroupTarget, false, preGroupMembers(commandIds(plan)), {
 					newPreGroupTokens,
 					rolloverBlockedReason: blockedReason,
@@ -734,6 +732,7 @@ export class MyCustomizeConductor implements Conductor {
 			this.dirty = false;
 			this.lastCap = cap;
 			this.lastHeadBlockCount = headBlockCount;
+			this.lastFrozenFromIndex = view.frozenFromIndex;
 			return this.finishConduct(prior, preGroupTokens, preGroupTarget, false, preGroupMembers(priorIds), {
 				newPreGroupTokens,
 				rolloverBlockedReason: blockedReason,
@@ -755,6 +754,7 @@ export class MyCustomizeConductor implements Conductor {
 			this.dirty = false;
 			this.lastCap = cap;
 			this.lastHeadBlockCount = headBlockCount;
+			this.lastFrozenFromIndex = view.frozenFromIndex;
 			return this.finishConduct(plan, preGroupTokens, preGroupTarget, false, preGroupMembers(commandIds(plan)), {
 				newPreGroupTokens,
 				rolloverBlockedReason: blockedReason,
@@ -764,6 +764,7 @@ export class MyCustomizeConductor implements Conductor {
 		this.dirty = false;
 		this.lastCap = cap;
 		this.lastHeadBlockCount = headBlockCount;
+		this.lastFrozenFromIndex = view.frozenFromIndex;
 
 		// Recovery after a conductor reset may still deterministically replace an MCP result,
 		// but never touch the active Pre-Group itself.

@@ -1,0 +1,48 @@
+{
+  "timestamp": "2026-08-25T16:54:17.107Z",
+  "scenario": "120k cold-start growing to 800k with 70k budget, my-customize-conductor",
+  "mockServer": {
+    "CW": 70000,
+    "GROW": true,
+    "sampleBlocks": 982
+  },
+  "result": {
+    "totalPlans": 3881,
+    "restoreCommands": 0,
+    "maxFoldsPerPlan": 567,
+    "maxGroupsPerPlan": 1,
+    "milestones": [
+      {
+        "tokens": "~125k",
+        "plan": "#450: 0 folds, 1 group",
+        "loop": 0
+      },
+      {
+        "tokens": "~252k",
+        "plan": "#900: 49 folds, 1 group",
+        "loop": 1
+      },
+      {
+        "tokens": "~405k",
+        "plan": "#1800: 191 folds, 1 group",
+        "loop": 2
+      },
+      {
+        "tokens": "~603k",
+        "plan": "#2700: 324 folds, 1 group",
+        "loop": 4
+      },
+      {
+        "tokens": "~723k (timeout)",
+        "plan": "#4099: 514 folds, 1 group",
+        "loop": 4
+      }
+    ],
+    "verdict": "PASS — 3881 plans, 0 restores, stable 1-group rollover, monotonically growing fold count"
+  },
+  "evidence": [
+    "demo-conductor-plan-log.txt",
+    "frozen-prefix-stability-report.txt",
+    "demo-capture-summary.json"
+  ]
+}

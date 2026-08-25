@@ -59,6 +59,7 @@ const { REGISTRY_PROTOCOL, REGISTRY_DIR, SESSIONS_SUBDIR, FOCUS_FILE, HEARTBEAT_
 const PORT = Number(process.env.PORT || DEFAULT_PORT);
 const CONTROL_PORT = Number(process.env.CONTROL_PORT || PORT + 1);
 const CW = Number(process.env.CW || 60_000);
+const CONTEXT_WINDOW = Number(process.env.CONTEXT_WINDOW || CW);
 const GROW = process.env.GROW !== "0";
 const SAMPLE = process.env.SAMPLE || path.join(__dirname, "../app/static/sample-session.jsonl");
 const JUNK = "[stub completion] fake pi — connect a real pi session for a real model response.";
@@ -188,7 +189,7 @@ function pushStatus() {
 
 function emitBlock(wire) {
 	emitted.push(wire);
-	broadcastApps({ type: "sync", reqId: ++reqId, full: false, blocks: [wire], contextWindow: CW });
+	broadcastApps({ type: "sync", reqId: ++reqId, full: false, blocks: [wire], contextWindow: CONTEXT_WINDOW });
 }
 
 // Restart: rewind to the top and reset every connected app's store (full:true).
@@ -197,7 +198,7 @@ function doRestart() {
 	loop = 0;
 	idx = 0;
 	emitted = [];
-	broadcastApps({ type: "sync", reqId: ++reqId, full: true, blocks: [], contextWindow: CW });
+	broadcastApps({ type: "sync", reqId: ++reqId, full: true, blocks: [], contextWindow: CONTEXT_WINDOW });
 	pushStatus();
 }
 
@@ -243,7 +244,7 @@ async function genLoop() {
 				// reset each loop: clear the apps' stores and our caught-up cache.
 				epoch++;
 				emitted = [];
-				broadcastApps({ type: "sync", reqId: ++reqId, full: true, blocks: [], contextWindow: CW });
+				broadcastApps({ type: "sync", reqId: ++reqId, full: true, blocks: [], contextWindow: CONTEXT_WINDOW });
 			}
 		}
 		pushStatus();
@@ -320,10 +321,10 @@ piWss.on("connection", (ws) => {
 		type: "hello",
 		protocolVersion: PROTOCOL_VERSION,
 		sessionId,
-		meta: { title: meta.title || "FAKE pi session", cwd: meta.cwd || "", model: meta.model || "fake-model", contextWindow: CW, format: "pi" },
+		meta: { title: meta.title || "FAKE pi session", cwd: meta.cwd || "", model: meta.model || "fake-model", contextWindow: CONTEXT_WINDOW, format: "pi" },
 	});
 	// Catch a mid-stream joiner up to the current state.
-	send(ws, { type: "sync", reqId: ++reqId, full: true, blocks: emitted, contextWindow: CW });
+	send(ws, { type: "sync", reqId: ++reqId, full: true, blocks: emitted, contextWindow: CONTEXT_WINDOW });
 	pushStatus();
 
 	ws.on("message", (d) => {
@@ -421,5 +422,5 @@ console.log(
 		`  session : "${meta.title}" — ${blocks.length} blocks, advertised as ${sessionId}\n` +
 		`  pi-wire : ws://127.0.0.1:${PORT}   (desktop app discovers it via ~/.accordion)\n` +
 		`  control : http://localhost:${CONTROL_PORT}   ← open this in a browser\n` +
-		`  TPS=${tps}  CW=${CW}  GROW=${GROW ? 1 : 0}`,
+		`  TPS=${tps}  CW=${CW}  CONTEXT_WINDOW=${CONTEXT_WINDOW}  GROW=${GROW ? 1 : 0}`,
 );

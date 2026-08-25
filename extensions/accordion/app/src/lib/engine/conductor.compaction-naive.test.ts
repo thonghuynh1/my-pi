@@ -2197,7 +2197,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		expect(plan.commands[0].digest).toMatch(/^group ·/);
 	});
 
-	it("early rollover groups a pre-group zone in the frozen prefix", () => {
+	it("early rollover skips frozen-prefix blocks to preserve cache", () => {
 		const blocks = [
 			chunkedBlock("pg0", 0, 6_000),
 			chunkedBlock("pg1", 1, 6_000),
@@ -2209,8 +2209,10 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 
 		const plan = new MyCustomizeConductor().conduct(view);
 
-		expect(plan.commands).toHaveLength(1);
-		expect(plan.commands[0]).toMatchObject({ kind: "group", ids: ["pg0", "pg1"] });
+		// Frozen-prefix blocks must NOT be grouped — that would break prompt cache.
+		// The conductor should emit no commands since all candidates are frozen.
+		expect(plan.commands.filter((cmd) => cmd.kind === "group")).toHaveLength(0);
+		expect(plan.commands.filter((cmd) => cmd.kind === "restore")).toHaveLength(0);
 	});
 
 	it("early rollover is skipped when liveTokens does not exceed cap", () => {
@@ -2310,9 +2312,10 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 			expect(hit, `contextWindow=${contextWindow} should still act on pre-group-position blocks`).toBe(true);
 		}
 	});
-	it("restores folded pre-group blocks that are in the frozen prefix", () => {
-		// A block that was folded when in the frozen prefix enters the pre-group range.
-		// The conductor must emit a restore for it (clearConductorState preserves frozen folds).
+	it("does NOT restore folded blocks in the frozen prefix (cache stability)", () => {
+		// Previously the conductor would restore folded frozen-prefix blocks to prepare
+		// for rollover, but this broke the prompt cache and caused fold/unfold flip-flop.
+		// Now frozen-prefix blocks are left untouched regardless of their folded state.
 		const blocks = [
 			chunkedBlock("pg0", 0, 2_000, { folded: true }),
 			chunkedBlock("pg1", 1, 2_000, { folded: true }),
@@ -2320,15 +2323,10 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 			chunkedBlock("tail", 3, 100, { kind: "user", protected: true }),
 		];
 		const view = rolloverView(blocks, 200_000);
-		// Put frozenFromIndex above the folded blocks so they are in the frozen prefix
 		view.frozenFromIndex = 2;
 		const plan = new MyCustomizeConductor().conduct(view);
 		const restoreCmd = plan.commands.find((cmd) => cmd.kind === "restore");
-		expect(restoreCmd).toBeDefined();
-		expect(restoreCmd!.ids).toContain("pg0");
-		expect(restoreCmd!.ids).toContain("pg1");
-		// pg2 is above frozenFromIndex, so clearConductorState handles it — no restore needed
-		expect(restoreCmd!.ids).not.toContain("pg2");
+		expect(restoreCmd).toBeUndefined();
 	});
 
 	it("keeps complete turns together at the protected boundary", () => {

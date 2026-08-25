@@ -11,3 +11,4 @@ Features are ordered by user visibility and interaction frequency.
 | 5 | [Settings Panel](settings-panel.md) | App settings dialog | Browser |
 | 6 | [Semantic Digests & Recall](semantic-digests-and-recall.md) | BM25 search-within-fold + semantic group sections | Engine |
 | 7 | [Block Digests](block-digests.md) | Per-block rich fold summaries (📄🔀❌🤖💭🔌) | Engine |
+| 8 | [Frozen-Prefix Stability](frozen-prefix-stability.md) | Cache-safe fold plans across turns | Engine |

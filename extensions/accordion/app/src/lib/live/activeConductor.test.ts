@@ -51,7 +51,7 @@ describe("attachActiveConductor", () => {
 		expect(store.foldedCount).toBeGreaterThan(0);
 	});
 
-	it("atomically groups an oversized backlog on the first populated live view", () => {
+	it("batches an oversized backlog into chunked groups on the first populated live view", () => {
 		setActiveConductor("my-customize-conductor");
 		const store = makeStore();
 		store.setContextWindow(200_000);
@@ -65,8 +65,8 @@ describe("attachActiveConductor", () => {
 		]);
 
 		expect(store.fullTokens).toBeGreaterThan(140_000);
-		expect(store.groups).toHaveLength(1);
-		expect(store.groups[0].memberIds.length).toBeGreaterThan(1);
+		expect(store.groups).toHaveLength(6);
+		expect(store.groups.every((group) => group.memberIds.length > 1)).toBe(true);
 		expect(store.groupSummary(store.groups[0])).toMatch(/^\{#[a-z0-9]+ FOLDED\} group ·/);
 	});
 });

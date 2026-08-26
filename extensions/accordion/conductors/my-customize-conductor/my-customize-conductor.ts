@@ -414,24 +414,21 @@ export class MyCustomizeConductor implements Conductor {
 		return commands;
 	}
 
-	private planFoldsToCap(
+	private planOverflowGroups(
 		view: ConductorView,
 		preGroupFromIndex: number,
-		cap: number,
-		initialSaving: number,
 		excluded: ReadonlySet<string>,
 	): Command[] {
-		let projected = view.liveTokens - initialSaving;
-		if (projected <= cap) return [];
+		const end = Math.min(preGroupFromIndex, view.protectedFromIndex);
+		const segment = view.blocks.slice(view.frozenFromIndex, end).filter((block) =>
+			!excluded.has(block.id) && !block.held && !block.protected && !block.grouped &&
+			FOLDABLE_KINDS.has(block.kind) && block.foldedTokens < block.tokens,
+		);
 		const commands: Command[] = [];
-		for (const block of view.blocks.slice(0, Math.min(preGroupFromIndex, view.protectedFromIndex))) {
-			if (projected <= cap) break;
-			if (excluded.has(block.id) || block.held || block.protected || block.grouped) continue;
-			if (block.order < view.frozenFromIndex) continue;
-			if (!FOLDABLE_KINDS.has(block.kind) || block.foldedTokens >= block.tokens) continue;
-			this.foldOrReplace(commands, block.id);
-			projected -= block.tokens - block.foldedTokens;
-		}
+		const minimumSaving = Math.max(2_000, 0.05 * availableCap(view));
+		this.sliceSegmentIntoGroups(segment, view, minimumSaving, commands, (saving) => {
+			this.tokensSavedByRollover += saving;
+		});
 		return commands;
 	}
 
@@ -658,8 +655,8 @@ export class MyCustomizeConductor implements Conductor {
 				this.tokensSavedByRollover += rollover.saving;
 				this.lastEstimatedGroupSaving = rollover.groupSaving;
 				const consumed = commandIds(rollover.commands);
-				const folds = view.liveTokens > cap ? this.planFoldsToCap(view, preGroupFromIndex, cap, rollover.saving, consumed) : [];
-				const commands = [...rollover.commands, ...folds];
+				const overflowGroups = view.liveTokens > cap ? this.planOverflowGroups(view, preGroupFromIndex, consumed) : [];
+				const commands = [...rollover.commands, ...overflowGroups];
 				const plan = [...this.replayPriorCommands(view, commandIds(commands)), ...commands];
 				this.lastPlan = plan;
 				this.dirty = false;
@@ -695,8 +692,8 @@ export class MyCustomizeConductor implements Conductor {
 				this.tokensSavedByRollover += early.saving;
 				this.lastEstimatedGroupSaving = early.groupSaving;
 				const consumed = commandIds(early.commands);
-				const folds = view.liveTokens > cap ? this.planFoldsToCap(view, preGroupFromIndex, cap, early.saving, consumed) : [];
-				const commands = [...early.commands, ...folds];
+				const overflowGroups = view.liveTokens > cap ? this.planOverflowGroups(view, preGroupFromIndex, consumed) : [];
+				const commands = [...early.commands, ...overflowGroups];
 				const plan = [...this.replayPriorCommands(view, commandIds(commands)), ...commands];
 				this.lastPlan = plan;
 				this.dirty = false;

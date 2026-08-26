@@ -362,6 +362,30 @@ describe("rollover-only conduct", () => {
 		expect(result.preGroup?.memberIds).toEqual([]);
 	});
 
+	it("batches overflow after rollover into stable rollover groups", () => {
+		const blocks = Array.from({ length: 10 }, (_, i) => vb(`overflow:${i}`, "text", i, 10_000, 100, { text: `block ${i}` }));
+		const tail = vb("overflow:tail", "user", blocks.length, 100, 100, { protected: true });
+		const conductor = new ProductionMyCustomizeConductor();
+		const firstView = { ...makeView([...blocks, tail], 70_000, 100_100, { contextWindow: 128_000 }), harnessOverhead: 0 };
+		const first = conductor.conduct(firstView);
+		const firstGroups = first.commands.filter((command): command is Extract<Command, { kind: "group" }> => command.kind === "group");
+
+		expect(first.commands.every((command) => command.kind === "group")).toBe(true);
+		expect(firstGroups).toHaveLength(3);
+		expect(firstGroups.every((group) => group.lifecycle === "rollover")).toBe(true);
+		expect(firstGroups.flatMap((group) => group.ids)).toEqual(blocks.slice(0, 7).map((block) => block.id));
+
+		const fresh = vb("overflow:fresh", "text", blocks.length, 1_000, 100, { text: "fresh" });
+		const nextTail = vb("overflow:next-tail", "user", blocks.length + 1, 100, 100, { protected: true });
+		const secondView = {
+			...makeView([...blocks.slice(0, 9), { ...blocks[9], grouped: true }, fresh, nextTail], 120_000, 101_100, { frozenFromIndex: 8, contextWindow: 128_000 }),
+			harnessOverhead: 0,
+		};
+		const second = conductor.conduct(secondView);
+
+		expect(second.commands).toEqual(first.commands);
+	});
+
 	it("keeps every turn intact when a slice crosses 15k", () => {
 		const blocks = Array.from({ length: 6 }, (_, i) => ({
 			...vb(`same-turn:${i}`, "text", i, 3_000, 100, { text: `block ${i}` }),

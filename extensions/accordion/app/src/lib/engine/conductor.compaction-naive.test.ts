@@ -1770,8 +1770,8 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const secondBlocks = [...Array.from({ length: 24 }, (_, i) => chunkedBlock(`later-b-${i}`, i, 4_000)), chunkedBlock("later-tail-b", 24, 100, { kind: "user", protected: true })];
 		const first = conductor.conduct({ ...rolloverView(firstBlocks), budget: 70_000, liveTokens: 100_000 });
 		const second = conductor.conduct({ ...rolloverView(secondBlocks), budget: 60_000, liveTokens: 100_000 });
-		expect(first.commands.filter((command) => command.kind === "group" && command.lifecycle === "rollover")).toHaveLength(1);
-		expect(second.commands.filter((command) => command.kind === "group" && command.lifecycle === "rollover")).toHaveLength(1);
+		expect(first.commands.filter((command) => command.kind === "group" && command.lifecycle === "rollover")).toHaveLength(3);
+		expect(second.commands.filter((command) => command.kind === "group" && command.lifecycle === "rollover")).toHaveLength(3);
 	});
 
 	it("atomic rebase keeps complete turns in canonical order", () => {
@@ -1818,7 +1818,7 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		const first = conductor.conduct({ ...rolloverView(blocks), budget: 70_000, liveTokens: 100_000 });
 		conductor.markDirty();
 		const second = conductor.conduct({ ...rolloverView(blocks.map((block) => ({ ...block, grouped: block.id !== "resume-tail" }))), budget: 70_000, liveTokens: 55_000 });
-		expect(first.commands.filter((command) => command.kind === "group" && command.lifecycle === "rollover")).toHaveLength(1);
+		expect(first.commands.filter((command) => command.kind === "group" && command.lifecycle === "rollover")).toHaveLength(3);
 		expect(second.commands.filter((command) => command.kind === "group" && command.lifecycle === "rollover")).toHaveLength(0);
 	});
 

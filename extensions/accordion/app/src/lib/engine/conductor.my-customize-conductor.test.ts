@@ -370,6 +370,21 @@ describe("rollover-only conduct", () => {
 		expect(result.commands).toEqual([]);
 	});
 
+	it("groups later normal-pressure runs after a held boundary", () => {
+		const blocks = [
+			vb("normal:before", "text", 0, 10_000, 100, { text: "before" }),
+			vb("normal:held", "text", 1, 100, 100, { held: true, text: "held" }),
+			vb("normal:after-a", "text", 2, 5_000, 100, { text: "after a" }),
+			vb("normal:after-b", "text", 3, 10_000, 100, { text: "after b" }),
+			vb("normal:pre-group", "text", 4, 20_000, 100, { text: "pre-group" }),
+		];
+		const tail = vb("normal:boundary-tail", "user", blocks.length, 100, 100, { protected: true });
+		const result = new ProductionMyCustomizeConductor({ preGroupTokens: 1 }).conduct(makeView([...blocks, tail], 40_000, 45_100));
+
+		expect(result.commands).toHaveLength(1);
+		expect(result.commands).toMatchObject([{ kind: "group", ids: ["normal:after-a", "normal:after-b"], lifecycle: "rollover" }]);
+	});
+
 	it("emits multiple 15k groups in one rollover", () => {
 		const blocks = Array.from({ length: 15 }, (_, i) => vb(`roll:${i}`, "text", i, 3_000, 100, { text: `block ${i}` }));
 		const tail = vb("roll:tail", "user", blocks.length, 100, 100, { protected: true });
@@ -660,8 +675,7 @@ describe("frozen-prefix stability (flip-flop fix)", () => {
 				: cmd.kind === "group" ? cmd.ids
 				: cmd.kind === "restore" ? cmd.ids
 				: [];
-			const breakFrozen = (cmd.kind === "fold" || cmd.kind === "replace") &&
-				(cmd as Record<string, unknown>).breakFrozen === true;
+			const breakFrozen = (cmd.kind === "fold" || cmd.kind === "replace") && cmd.breakFrozen === true;
 			if (breakFrozen) continue;
 			// Replayed rollover/digest groups are no-ops on already-grouped frozen blocks.
 			if (cmd.kind === "group") {
@@ -769,7 +783,7 @@ describe("frozen-prefix stability (flip-flop fix)", () => {
 
 		// Hard-cap emergency IS allowed to break frozen (safety valve).
 		const breakFrozenCmds = result.commands.filter((c) =>
-			(c.kind === "fold" || c.kind === "replace") && (c as Record<string, unknown>).breakFrozen === true,
+			(c.kind === "fold" || c.kind === "replace") && c.breakFrozen === true,
 		);
 		expect(breakFrozenCmds.length).toBeGreaterThan(0);
 		expect(projected(view, result.commands)).toBeLessThanOrEqual(200_000);

@@ -262,7 +262,7 @@ export class MyCustomizeConductor implements Conductor {
 			const minimumGroupSaving = Math.max(2_000, 0.05 * cap);
 			let segment: ViewBlock[] = [];
 			const flush = (): void => {
-				this.sliceSegmentIntoGroups(segment, view, minimumGroupSaving, commands, (amount) => {
+				this.sliceCandidateRunsIntoGroups(segment, view, minimumGroupSaving, commands, (amount) => {
 					saving += amount;
 					groupSaving += amount;
 				});
@@ -342,7 +342,7 @@ export class MyCustomizeConductor implements Conductor {
 		if (candidates.length === 0) return [];
 
 		const minimumSaving = Math.max(2_000, 0.05 * availableCap(view));
-		this.sliceSegmentIntoGroups(candidates, view, minimumSaving, commands, () => undefined);
+		this.sliceCandidateRunsIntoGroups(candidates, view, minimumSaving, commands, () => undefined);
 		return commands;
 	}
 
@@ -358,44 +358,71 @@ export class MyCustomizeConductor implements Conductor {
 		);
 		const commands: Command[] = [];
 		const minimumSaving = Math.max(2_000, 0.05 * availableCap(view));
-		this.sliceSegmentIntoGroups(segment, view, minimumSaving, commands, (saving) => {
+		this.sliceCandidateRunsIntoGroups(segment, view, minimumSaving, commands, (saving) => {
 			this.tokensSavedByRollover += saving;
 		});
 		return commands;
 	}
 
-	/** Slice a contiguous segment into turn-aligned groups of ~15k tokens each. */
-	private sliceSegmentIntoGroups(
-		segment: readonly ViewBlock[],
+	/** Partition candidates into contiguous, complete-turn groups of ~15k tokens each. */
+	private sliceCandidateRunsIntoGroups(
+		candidates: readonly ViewBlock[],
 		view: ConductorView,
 		minimumSaving: number,
 		out: Command[],
 		onSaving: (saving: number) => void,
 	): void {
-		if (segment.length === 0) return;
-		let slice: ViewBlock[] = [];
-		let sliceTokens = 0;
-
-		for (let start = 0; start < segment.length;) {
-			// Gather one complete turn.
-			let end = start + 1;
-			while (end < segment.length && segment[end].turn === segment[start].turn) end++;
-			for (let i = start; i < end; i++) {
-				slice.push(segment[i]);
-				sliceTokens += segment[i].tokens;
+		if (candidates.length === 0) return;
+		const indexById = new Map(view.blocks.map((block, index) => [block.id, index]));
+		const isPartialStart = (block: ViewBlock): boolean => {
+			const index = indexById.get(block.id);
+			return index !== undefined && index > 0 && view.blocks[index - 1].turn === block.turn;
+		};
+		const isPartialEnd = (block: ViewBlock): boolean => {
+			const index = indexById.get(block.id);
+			return index !== undefined && index + 1 < view.blocks.length && view.blocks[index + 1].turn === block.turn;
+		};
+		const flushRun = (run: readonly ViewBlock[]): void => {
+			let start = 0;
+			let end = run.length;
+			while (start < end && isPartialStart(run[start])) start++;
+			while (end > start && isPartialEnd(run[end - 1])) end--;
+			let slice: ViewBlock[] = [];
+			let sliceTokens = 0;
+			for (let index = start; index < end;) {
+				let next = index + 1;
+				while (next < end && run[next].turn === run[index].turn) next++;
+				for (let current = index; current < next; current++) {
+					slice.push(run[current]);
+					sliceTokens += run[current].tokens;
+				}
+				if (sliceTokens >= DEFAULT_PRE_GROUP_TOKENS) {
+					const planned = this.createGroup(slice, view, minimumSaving);
+					if (planned) { out.push(planned.command); onSaving(planned.saving); }
+					slice = [];
+					sliceTokens = 0;
+				}
+				index = next;
 			}
-			if (sliceTokens >= DEFAULT_PRE_GROUP_TOKENS) {
+			if (slice.length > 0) {
 				const planned = this.createGroup(slice, view, minimumSaving);
 				if (planned) { out.push(planned.command); onSaving(planned.saving); }
-				slice = [];
-				sliceTokens = 0;
 			}
-			start = end;
+		};
+
+		let run: ViewBlock[] = [];
+		let previousIndex: number | undefined;
+		for (const block of candidates) {
+			const index = indexById.get(block.id);
+			if (index === undefined) continue;
+			if (previousIndex !== undefined && index !== previousIndex + 1) {
+				flushRun(run);
+				run = [];
+			}
+			run.push(block);
+			previousIndex = index;
 		}
-		if (slice.length > 0) {
-			const planned = this.createGroup(slice, view, minimumSaving);
-			if (planned) { out.push(planned.command); onSaving(planned.saving); }
-		}
+		flushRun(run);
 	}
 
 	private planHardCapEmergency(

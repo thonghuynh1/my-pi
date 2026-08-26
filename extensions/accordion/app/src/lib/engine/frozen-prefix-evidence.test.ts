@@ -52,7 +52,7 @@ function classifyCommands(commands: Command[], blocks: ViewBlock[], frozenFromIn
 			: cmd.kind === "restore" ? cmd.ids
 			: [];
 		if (cmd.kind === "group") continue;
-		const breakFrozen = (cmd.kind === "fold" || cmd.kind === "replace") && (cmd as Record<string, unknown>).breakFrozen === true;
+		const breakFrozen = (cmd.kind === "fold" || cmd.kind === "replace") && cmd.breakFrozen === true;
 		if (breakFrozen) continue;
 		for (const id of ids) {
 			if (frozenIds.has(id)) frozen.push(id);

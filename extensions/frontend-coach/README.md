@@ -119,7 +119,7 @@ Each run writes files to `./.frontend-coach/records/`:
 2026-06-09_143022_send-button.md          ← human-readable report
 ```
 
-Steps can target a Playwright a11y snapshot ref (`e12` style) or a CSS selector. `ref` wins when both are set. The tool result includes the snapshot so the next call can copy refs. Widget auto-steps from `browser_record_for_widget` still use CSS `mountSelector`.
+Steps can target a Playwright a11y snapshot ref (`e12` style) or a CSS selector. `ref` wins when both are set. The tool result includes the snapshot so the next call can copy refs. Omit `url` on that follow-up; a navigation invalidates refs. Widget auto-steps from `browser_record_for_widget` still use CSS `mountSelector`.
 
 ### How failures auto-fix
 

@@ -113,17 +113,23 @@ before(async () => {
 	stepTarget = rec.stepTarget;
 });
 
-after(() => {
-	try { chromeProc?.kill(); } catch { /* ignore */ }
+after(async () => {
+	if (chromeProc && chromeProc.pid) {
+		try { chromeProc.kill("SIGKILL"); } catch { /* ignore */ }
+		await new Promise((r) => setTimeout(r, 400));
+	}
 	try { httpServer?.close(); } catch { /* ignore */ }
 	if (prevCwd) process.chdir(prevCwd);
-	if (workDir) rmSync(workDir, { recursive: true, force: true });
+	if (workDir) {
+		try { rmSync(workDir, { recursive: true, force: true }); } catch { /* chrome may still hold the profile */ }
+	}
 });
 
 test("stepTarget prefers Playwright aria-ref over CSS selector", () => {
 	assert.equal(ariaRefSelector("e12"), "aria-ref=e12");
 	assert.equal(ariaRefSelector("ref=e12"), "aria-ref=e12");
 	assert.equal(ariaRefSelector("aria-ref=e12"), "aria-ref=e12");
+	assert.equal(ariaRefSelector("f1e2"), "aria-ref=f1e2");
 	assert.equal(stepTarget({ ref: "e12", selector: "#nope" }), "aria-ref=e12");
 	assert.equal(stepTarget({ selector: "#save" }), "#save");
 	assert.equal(stepTarget({}), undefined);
@@ -137,14 +143,13 @@ test("browser_record_test clicks via a11y snapshot ref and writes trace.zip besi
 		steps: [{ action: "wait", ms: 50 }],
 	});
 	assert.ok(probe.report.snapshot, "recorder must return an a11y snapshot");
-	assert.match(probe.report.snapshot ?? "", /\[ref=e\d+\]/);
+	assert.match(probe.report.snapshot ?? "", /\[ref=[a-z]*\d+[a-z0-9]*\]/i);
 	const refMatch = probe.report.snapshot?.match(/button "Save" \[ref=([^\]]+)\]/);
 	assert.ok(refMatch, `Save button ref missing from snapshot:\n${probe.report.snapshot}`);
 	const ref = refMatch![1]!;
 
 	const clicked = await recordTest({
 		name: "click save via ref",
-		url,
 		steps: [{ action: "click", ref, selector: "#does-not-exist" }],
 		assertions: [
 			{ description: "clicked Save", expression: "document.getElementById('out')?.textContent === 'saved'" },

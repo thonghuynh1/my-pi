@@ -16,7 +16,7 @@ Drive the Edge tab already launched by `/coach-launch-edge`. Do not start a Play
 
 CSS `selector` still works when you already have a stable locator (widget `mountSelector`, `data-testid`). If both are set, `ref` wins. `coach_resolve_widget` / `browser_record_for_widget` auto-steps keep using CSS.
 
-Refs are for this page load. After navigation or a DOM rewrite, read the snapshot from that run's tool result and use the new refs on the next call.
+Refs are for this page load. Passing `url` navigates and invalidates them. After you have a snapshot, call `browser_record_test` again with those refs and omit `url` so you keep the current tab. Refs look like `e12` on the top-level page and `f1e2` inside an iframe.
 
 ## What a run writes
 

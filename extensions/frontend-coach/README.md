@@ -98,7 +98,7 @@ browser_record_test({
   "relatedChange": "Web/src/Chat/SendButton.tsx — add <Spinner/> while isPending",
   "steps": [
     { "action": "fill",  "selector": "textarea[name=message]", "value": "hello" },
-    { "action": "click", "selector": "button#send" },
+    { "action": "click", "ref": "e12" },
     { "action": "wait",  "ms": 200 }
   ],
   "assertions": [
@@ -108,15 +108,18 @@ browser_record_test({
 })
 ```
 
-Supported step actions: `click`, `dblclick`, `type`/`fill`, `press`, `hover`, `wait` (`ms`), `waitFor` (selector + optional `ms` timeout), `navigate` (`url`), `scroll` (selector, scrolls into view), `eval` (`expression`).
+Supported step actions: `click`, `dblclick`, `type`/`fill`, `press`, `hover`, `wait` (`ms`), `waitFor` (selector or ref + optional `ms` timeout), `navigate` (`url`), `scroll` (selector or ref, scrolls into view), `eval` (`expression`). Target with `ref` (Playwright a11y snapshot, e.g. `e12`) or CSS `selector`.
 
-Each run writes three files to `./.frontend-coach/records/`:
+Each run writes files to `./.frontend-coach/records/`:
 
 ```
-2026-06-09_143022_send-button.webm   ← the actual screen recording
-2026-06-09_143022_send-button.json   ← structured transcript (steps, console, network, assertions)
-2026-06-09_143022_send-button.md     ← human-readable report
+2026-06-09_143022_send-button.webm        ← ffmpeg screencast
+2026-06-09_143022_send-button.trace.zip   ← Playwright trace
+2026-06-09_143022_send-button.json        ← structured transcript (steps, console, network, assertions, a11y snapshot)
+2026-06-09_143022_send-button.md          ← human-readable report
 ```
+
+Steps can target a Playwright a11y snapshot ref (`e12` style) or a CSS selector. `ref` wins when both are set. The tool result includes the snapshot so the next call can copy refs. Omit `url` on that follow-up; a navigation invalidates refs. Widget auto-steps from `browser_record_for_widget` still use CSS `mountSelector`.
 
 ### How failures auto-fix
 
@@ -225,8 +228,9 @@ frontend-coach/
 ├── README.md
 ├── index.ts     ← pi extension entry (HTTP+WS server, tool/command wiring)
 ├── edge.ts      ← locate, launch, attach to Microsoft Edge via CDP
-├── recorder.ts  ← drive page + pipe Page.screencastFrame into ffmpeg → webm
+├── recorder.ts  ← drive page + pipe Page.screencastFrame into ffmpeg → webm; Playwright snapshot/ref + trace.zip
 ├── records.ts   ← on-disk record format (id, paths, markdown rendering)
 ├── widgets.ts   ← MyOffice + MyBusiness widget catalog resolver (workflow 3)
-└── picker.js    ← injected into your page (workflow 1 only)
+├── picker.js    ← injected into your page (workflow 1 only)
+└── skills/frontend-coach-record/SKILL.md  ← how to use snapshot refs without a fat MCP schema
 ```

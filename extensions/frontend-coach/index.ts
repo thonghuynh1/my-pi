@@ -25,7 +25,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
@@ -355,7 +355,8 @@ export default async function (pi: ExtensionAPI) {
 			Type.Literal("navigate"), Type.Literal("scroll"),
 			Type.Literal("eval"),
 		], { description: "What to do at this step." }),
-		selector: Type.Optional(Type.String({ description: "CSS selector (click/dblclick/type/fill/hover/waitFor/scroll/optional for press)." })),
+		selector: Type.Optional(Type.String({ description: "CSS selector fallback (click/dblclick/type/fill/hover/waitFor/scroll/optional for press). Ignored when ref is set." })),
+		ref: Type.Optional(Type.String({ description: "Playwright a11y snapshot ref (e.g. e12). Preferred over selector. Copy from the snapshot returned by a previous or current browser_record_test." })),
 		value: Type.Optional(Type.String({ description: "Text for type/fill." })),
 		key: Type.Optional(Type.String({ description: "Key name for press (e.g. 'Enter', 'Tab', 'Control+S')." })),
 		url: Type.Optional(Type.String({ description: "URL for navigate." })),
@@ -371,10 +372,11 @@ export default async function (pi: ExtensionAPI) {
 		defaultVisibility: "agent-visible",
 		label: "Record browser test",
 		description:
-			"Run an autonomous UI test in the controlled Edge tab (no user prompts) and save a .webm screen recording " +
-			"plus a structured report under ./.frontend-coach/records/. Use this after implementing a frontend change " +
-			"to prove it works. If any step or assertion fails, the tool returns isError=true with a transcript — fix the " +
-			"code and call it again. Requires /coach-launch-edge to have been run first.",
+			"Run an autonomous UI test in the controlled Edge tab (no user prompts) and save a .webm screen recording, " +
+			"a Playwright .trace.zip, and a structured report under ./.frontend-coach/records/. Target steps with a11y " +
+			"snapshot refs (e.g. e12) from the report snapshot; CSS selector is the fallback. Use this after implementing " +
+			"a frontend change to prove it works. If any step or assertion fails, the tool returns isError=true with a " +
+			"transcript. Fix the code and call it again. Requires /coach-launch-edge to have been run first.",
 		parameters: Type.Object({
 			name: Type.String({ description: "Short title for the recording (used in filename and report)." }),
 			url: Type.Optional(Type.String({ description: "Navigate to this URL before recording. Omit to use the current tab." })),
@@ -395,13 +397,14 @@ export default async function (pi: ExtensionAPI) {
 				lines.push(`${report.passed ? "✅ PASSED" : "❌ FAILED"} — ${report.name}`);
 				lines.push(`id    : ${report.id}`);
 				lines.push(`video : ${report.videoPath} (${(report.video.sizeBytes / 1024).toFixed(1)} KiB)`);
+				if (report.tracePath) lines.push(`trace : ${report.tracePath}`);
 				lines.push(`report: ${pathsForId(report.id).md}`);
 				if (report.failure) lines.push(`fail  : ${report.failure}`);
 				const failedSteps = report.steps.filter((s) => !s.ok);
 				const failedAsserts = report.assertions.filter((a) => !a.ok);
 				if (failedSteps.length) {
 					lines.push("failed steps:");
-					for (const s of failedSteps) lines.push(`  - ${s.action} ${s.selector ?? s.url ?? s.expression ?? ""} → ${s.error}`);
+					for (const s of failedSteps) lines.push(`  - ${s.action} ${s.ref ? `ref=${s.ref}` : (s.selector ?? s.url ?? s.expression ?? "")} → ${s.error}`);
 				}
 				if (failedAsserts.length) {
 					lines.push("failed assertions:");
@@ -411,6 +414,12 @@ export default async function (pi: ExtensionAPI) {
 				if (recentErrors.length) {
 					lines.push("console errors:");
 					for (const c of recentErrors) lines.push(`  [${c.type}] ${c.text}`);
+				}
+				if (report.snapshot) {
+					const snap = report.snapshot.length > 12000 ? `${report.snapshot.slice(0, 11999)}…` : report.snapshot;
+					lines.push("");
+					lines.push("a11y snapshot (use step.ref like e12; CSS selector is fallback):");
+					lines.push(snap);
 				}
 				return {
 					content: [{ type: "text", text: lines.join("\n") }],
@@ -634,13 +643,19 @@ export default async function (pi: ExtensionAPI) {
 				const head = `${report.passed ? "\u2705 PASSED" : "\u274C FAILED"} \u2014 ${report.name}\n` +
 					`widget: ${plan.widget.uid} [${plan.widget.scope}] @ ${plan.absoluteUrl}\n` +
 					`id    : ${report.id}\n` +
-					`video : ${report.videoPath}`;
+					`video : ${report.videoPath}` +
+					(report.tracePath ? `\ntrace : ${report.tracePath}` : "");
 				const failBits: string[] = [];
 				if (report.failure) failBits.push(`fail  : ${report.failure}`);
-				for (const s of report.steps.filter((x) => !x.ok)) failBits.push(`  step ${s.action} ${s.selector ?? s.url ?? s.expression ?? ""} \u2192 ${s.error}`);
+				for (const s of report.steps.filter((x) => !x.ok)) failBits.push(`  step ${s.action} ${s.ref ? `ref=${s.ref}` : (s.selector ?? s.url ?? s.expression ?? "")} \u2192 ${s.error}`);
 				for (const a of report.assertions.filter((x) => !x.ok)) failBits.push(`  assert FAIL: ${a.description}${a.error ? ` (${a.error})` : ""}`);
+				let text = failBits.length ? `${head}\n${failBits.join("\n")}` : head;
+				if (report.snapshot) {
+					const snap = report.snapshot.length > 12000 ? `${report.snapshot.slice(0, 11999)}…` : report.snapshot;
+					text += `\n\na11y snapshot (use step.ref like e12; CSS selector is fallback):\n${snap}`;
+				}
 				return {
-					content: [{ type: "text", text: failBits.length ? `${head}\n${failBits.join("\n")}` : head }],
+					content: [{ type: "text", text }],
 					details: { plan, report } as any,
 					isError: !report.passed,
 				};
@@ -920,6 +935,16 @@ export default async function (pi: ExtensionAPI) {
 				ctx.ui.notify("Usage: /coach [on|off]", "info");
 			}
 		},
+	});
+
+	pi.on("resources_discover", () => {
+		try {
+			const skillDir = join(here, "skills", "frontend-coach-record");
+			if (existsSync(skillDir)) return { skillPaths: [skillDir] };
+		} catch {
+			/* best-effort: never break a session over skill discovery */
+		}
+		return {};
 	});
 
 	// ------- Cleanup -------

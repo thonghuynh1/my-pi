@@ -21,10 +21,15 @@
 	// addInitScript may fire before <body> exists. Defer DOM work until ready.
 	function whenBodyReady(fn) {
 		if (document.body) return fn();
+		const root = document.documentElement;
+		if (!root) {
+			document.addEventListener("DOMContentLoaded", () => fn(), { once: true });
+			return;
+		}
 		const observer = new MutationObserver(() => {
 			if (document.body) { observer.disconnect(); fn(); }
 		});
-		observer.observe(document.documentElement, { childList: true });
+		observer.observe(root, { childList: true });
 	}
 
 	// ---------- WebSocket ----------

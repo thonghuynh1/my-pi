@@ -1,17 +1,23 @@
 /**
  * recorder.ts — drive a real Edge tab with Playwright over CDP,
  * stream the tab's frames into ffmpeg, and produce a .webm video
- * + structured transcript of the agent's autonomous test.
+ * + Playwright trace.zip + structured transcript of the agent's
+ * autonomous test.
  *
  * Frame pipeline:
  *   CDP `Page.startScreencast` (jpeg)  ──►  ffmpeg image2pipe  ──►  out.webm (vp9)
+ *
+ * Targeting: Playwright AI aria snapshot refs (`e12`) first, CSS
+ * selector as fallback. Snapshot/ref and tracing attach to the
+ * existing CDP session from /coach-launch-edge; this file does not
+ * launch a Playwright browser server.
  *
  * No "share this tab" prompt is ever shown — CDP gives us silent
  * access to the tab the user (or /coach-launch-edge) opened.
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { ensureBrowser, ensurePickerInstalled, findAppPage } from "./edge.ts";
 import {
 	makeRecordId,
@@ -53,6 +59,8 @@ export type StepAction =
 export interface Step {
 	action: StepAction;
 	selector?: string;
+	/** Playwright AI snapshot ref (e.g. `e12`). Wins over `selector` when both are set. */
+	ref?: string;
 	value?: string;
 	key?: string;
 	url?: string;
@@ -81,47 +89,71 @@ export interface RecordTestOutcome {
 	videoBytes: number;
 }
 
+// ---------- Targeting: aria-ref first, CSS selector fallback ----------
+
+/** Turn a step's `ref` (`e12`, `ref=e12`, `aria-ref=e12`) into a Playwright selector. */
+export function ariaRefSelector(ref: string): string {
+	const raw = ref.trim();
+	if (/^aria-ref=/i.test(raw)) return raw;
+	return `aria-ref=${raw.replace(/^ref=/i, "")}`;
+}
+
+/** Locator string for a step. `ref` wins; CSS `selector` is the fallback. */
+export function stepTarget(step: Pick<Step, "ref" | "selector">): string | undefined {
+	const ref = step.ref?.trim();
+	if (ref) return ariaRefSelector(ref);
+	const selector = step.selector?.trim();
+	return selector || undefined;
+}
+
+function needTarget(step: Step, action: string): string {
+	const target = stepTarget(step);
+	if (!target) throw new Error(`${action} step needs ref or selector`);
+	return target;
+}
+
+async function captureAriaSnapshot(page: Page): Promise<string> {
+	return await page.ariaSnapshot({ mode: "ai" });
+}
+
 // ---------- Step driver ----------
 
 async function runStep(page: Page, step: Step): Promise<void> {
 	const timeout = 10_000;
 	switch (step.action) {
 		case "click":
-			if (!step.selector) throw new Error("click step needs selector");
-			await page.click(step.selector, { timeout });
+			await page.click(needTarget(step, "click"), { timeout });
 			break;
 		case "dblclick":
-			if (!step.selector) throw new Error("dblclick step needs selector");
-			await page.dblclick(step.selector, { timeout });
+			await page.dblclick(needTarget(step, "dblclick"), { timeout });
 			break;
 		case "type":
 		case "fill":
-			if (!step.selector) throw new Error(`${step.action} step needs selector`);
-			await page.fill(step.selector, step.value ?? "", { timeout });
+			await page.fill(needTarget(step, step.action), step.value ?? "", { timeout });
 			break;
 		case "press":
 			if (!step.key) throw new Error("press step needs key");
-			if (step.selector) await page.press(step.selector, step.key, { timeout });
-			else await page.keyboard.press(step.key);
+			{
+				const target = stepTarget(step);
+				if (target) await page.press(target, step.key, { timeout });
+				else await page.keyboard.press(step.key);
+			}
 			break;
 		case "hover":
-			if (!step.selector) throw new Error("hover step needs selector");
-			await page.hover(step.selector, { timeout });
+			await page.hover(needTarget(step, "hover"), { timeout });
 			break;
 		case "wait":
 			await page.waitForTimeout(Math.max(0, step.ms ?? 0));
 			break;
 		case "waitFor":
-			if (!step.selector) throw new Error("waitFor step needs selector");
-			await page.waitForSelector(step.selector, { timeout: step.ms ?? timeout });
+			await page.waitForSelector(needTarget(step, "waitFor"), { timeout: step.ms ?? timeout });
 			break;
 		case "navigate":
 			if (!step.url) throw new Error("navigate step needs url");
 			await page.goto(step.url, { timeout: 30_000, waitUntil: "load" });
 			break;
 		case "scroll":
-			if (!step.selector) throw new Error("scroll step needs selector");
-			await page.locator(step.selector).first().scrollIntoViewIfNeeded({ timeout });
+			await page.locator(needTarget(step, "scroll")).first().scrollIntoViewIfNeeded({ timeout });
 			break;
 		case "eval":
 			if (!step.expression) throw new Error("eval step needs expression");
@@ -178,6 +210,51 @@ export async function recordTest(input: RecordTestInput): Promise<RecordTestOutc
 	if (input.viewport) {
 		try { await page.setViewportSize(input.viewport); } catch { /* viewport not always settable over CDP */ }
 	}
+
+	let tracing = false;
+	try {
+		await context.tracing.start({ screenshots: true, snapshots: true });
+		tracing = true;
+	} catch {
+		try { await context.tracing.stop(); } catch { /* nothing to stop */ }
+		try {
+			await context.tracing.start({ screenshots: true, snapshots: true });
+			tracing = true;
+		} catch {
+			tracing = false;
+		}
+	}
+
+	try {
+		return await runRecordedSession({
+			input,
+			page,
+			fps,
+			id,
+			paths,
+			stopTrace: async () => {
+				if (!tracing) return;
+				tracing = false;
+				try { await context.tracing.stop({ path: paths.trace }); } catch { /* keep the webm even if the trace fails */ }
+			},
+		});
+	} finally {
+		if (tracing) {
+			tracing = false;
+			try { await context.tracing.stop({ path: paths.trace }); } catch { /* already stopped or never started */ }
+		}
+	}
+}
+
+async function runRecordedSession(opts: {
+	input: RecordTestInput;
+	page: Page;
+	fps: number;
+	id: string;
+	paths: ReturnType<typeof pathsForId>;
+	stopTrace: () => Promise<void>;
+}): Promise<RecordTestOutcome> {
+	const { input, page, fps, id, paths, stopTrace } = opts;
 	if (input.url) {
 		await page.goto(input.url, { timeout: 30_000, waitUntil: "load" });
 	}
@@ -252,7 +329,7 @@ export async function recordTest(input: RecordTestInput): Promise<RecordTestOutc
 	});
 
 	// ----- CDP screencast -----
-	const cdp = await context.newCDPSession(page);
+	const cdp = await page.context().newCDPSession(page);
 	let frames = 0;
 	let stopped = false;
 	cdp.on("Page.screencastFrame", async (ev: any) => {
@@ -278,6 +355,14 @@ export async function recordTest(input: RecordTestInput): Promise<RecordTestOutc
 		try { ffmpeg.stdin.end(); } catch {}
 		try { ffmpeg.kill(); } catch {}
 		throw new Error(`Failed to start screencast: ${(err as Error).message}`);
+	}
+
+	// Stamp aria-ref attributes so step.ref (`e12`) resolves on this page.
+	let snapshot: string | undefined;
+	try {
+		snapshot = await captureAriaSnapshot(page);
+	} catch (err) {
+		snapshot = `(snapshot failed: ${(err as Error).message})`;
 	}
 
 	// ----- Run the steps -----
@@ -330,6 +415,9 @@ export async function recordTest(input: RecordTestInput): Promise<RecordTestOutc
 		runFailure = `ffmpeg produced no video (exit=${ffmpegExitCode}, frames=${frames}). stderr tail: ${ffmpegStderr.slice(-500)}`;
 	}
 
+	await stopTrace();
+	const tracePath = existsSync(paths.trace) ? paths.trace : undefined;
+
 	const allStepsOk = stepResults.every((s) => s.ok);
 	const allAssertsOk = assertResults.every((a) => a.ok);
 	const passed = !runFailure && allStepsOk && allAssertsOk;
@@ -342,6 +430,8 @@ export async function recordTest(input: RecordTestInput): Promise<RecordTestOutc
 		recordedAt: new Date().toISOString(),
 		durationMs: Date.now() - start,
 		videoPath: paths.video,
+		tracePath,
+		snapshot,
 		video: { format: "webm", sizeBytes: videoBytes, fps },
 		steps: stepResults,
 		assertions: assertResults,

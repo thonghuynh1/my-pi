@@ -4,9 +4,10 @@
  * Layout (relative to the cwd pi is launched from):
  *
  *   ./.frontend-coach/records/
- *     2026-06-09_143022_send-button.webm   ← the actual screencast
- *     2026-06-09_143022_send-button.json   ← structured transcript
- *     2026-06-09_143022_send-button.md     ← human-readable report
+ *     2026-06-09_143022_send-button.webm        ← ffmpeg screencast
+ *     2026-06-09_143022_send-button.trace.zip   ← Playwright trace
+ *     2026-06-09_143022_send-button.json        ← structured transcript
+ *     2026-06-09_143022_send-button.md          ← human-readable report
  *
  * The `id` is the basename without extension, e.g.
  *   "2026-06-09_143022_send-button"
@@ -18,6 +19,7 @@ import { resolve, join, basename, extname } from "node:path";
 export interface StepRecord {
 	action: string;
 	selector?: string;
+	ref?: string;
 	value?: string;
 	key?: string;
 	url?: string;
@@ -60,6 +62,8 @@ export interface TestReport {
 	recordedAt: string;
 	durationMs: number;
 	videoPath: string;
+	tracePath?: string;
+	snapshot?: string;
 	video: { format: string; sizeBytes: number; fps: number };
 	steps: StepRecord[];
 	assertions: AssertionRecord[];
@@ -111,6 +115,7 @@ export function pathsForId(id: string) {
 	return {
 		dir,
 		video: join(dir, `${id}.webm`),
+		trace: join(dir, `${id}.trace.zip`),
 		json: join(dir, `${id}.json`),
 		md: join(dir, `${id}.md`),
 	};
@@ -178,6 +183,7 @@ export function renderMarkdown(r: TestReport): string {
 	if (r.url) lines.push(`- **URL**: ${r.url}`);
 	if (r.relatedChange) lines.push(`- **Change under test**: ${r.relatedChange}`);
 	lines.push(`- **Video**: \`${r.videoPath}\` (${(videoSize(r.videoPath) / 1024).toFixed(1)} KiB, ${r.video.fps} fps)`);
+	if (r.tracePath) lines.push(`- **Trace**: \`${r.tracePath}\` (${(videoSize(r.tracePath) / 1024).toFixed(1)} KiB)`);
 	if (r.failure) {
 		lines.push("");
 		lines.push(`> **Run failure:** ${r.failure}`);
@@ -204,6 +210,16 @@ export function renderMarkdown(r: TestReport): string {
 		if (!a.ok && a.value !== undefined) lines.push(`  - returned: \`${truncate(JSON.stringify(a.value), 200)}\``);
 	}
 	lines.push("");
+
+	if (r.snapshot) {
+		lines.push("## A11y snapshot");
+		lines.push("Target steps with `ref` (Playwright `e12` style). CSS `selector` is the fallback.");
+		lines.push("");
+		lines.push("```");
+		lines.push(truncate(r.snapshot, 12000));
+		lines.push("```");
+		lines.push("");
+	}
 
 	lines.push("## Console");
 	if (r.console.length === 0) {
@@ -238,23 +254,28 @@ function formatStep(s: StepRecord): string {
 		case "dblclick":
 		case "hover":
 		case "waitFor":
-			return s.selector ? `\`${s.selector}\`` : "";
+			return formatTarget(s);
 		case "type":
 		case "fill":
-			return `\`${s.selector ?? ""}\` ← ${JSON.stringify(s.value ?? "")}`;
+			return `${formatTarget(s)} ← ${JSON.stringify(s.value ?? "")}`;
 		case "press":
-			return `\`${s.key ?? ""}\`${s.selector ? ` on \`${s.selector}\`` : ""}`;
+			return `\`${s.key ?? ""}\`${s.ref || s.selector ? ` on ${formatTarget(s)}` : ""}`;
 		case "navigate":
 			return s.url ? `→ ${s.url}` : "";
 		case "wait":
 			return `${s.ms ?? 0}ms`;
 		case "scroll":
-			return s.selector ? `into view: \`${s.selector}\`` : "";
+			return s.ref || s.selector ? `into view: ${formatTarget(s)}` : "";
 		case "eval":
 			return `\`${truncate(s.expression ?? "", 100)}\``;
 		default:
 			return "";
 	}
+}
+
+function formatTarget(s: { ref?: string; selector?: string }): string {
+	if (s.ref) return `ref=${s.ref}`;
+	return s.selector ? `\`${s.selector}\`` : "";
 }
 
 function truncate(s: string, n: number): string {

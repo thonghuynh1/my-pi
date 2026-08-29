@@ -3,6 +3,7 @@
 	import { session, isTauriEnv, loadSample, openFile, loadFilePath } from "$lib/session.svelte.ts";
 	import { settings } from "$lib/settings.svelte.ts";
 	import { connectLive, disconnectLive, live } from "$lib/live/liveClient.svelte";
+	import { benchmarkAutomationTokenFromLocation, installAccordionAutomation } from "$lib/live/automation.svelte";
 	import { discovery, startDiscovery, stopDiscovery, DEMO_ID } from "$lib/live/discovery.svelte";
 	import { claudeDiscovery, startClaudeDiscovery, stopClaudeDiscovery } from "$lib/live/claudeDiscovery.svelte";
 	import { conductorState } from "$lib/live/conductor.svelte";
@@ -24,6 +25,7 @@
 	import Logo from "$lib/ui/Logo.svelte";
 
 	let selectedId = $state<string | null>(null);
+
 	let manualPort = $state(DEFAULT_PORT);
 	let activityOpen = $state(false);
 	let browserServed = $state(false);
@@ -186,6 +188,8 @@
 	}
 
 	onMount(() => {
+		const benchmarkToken = benchmarkAutomationTokenFromLocation(window.location);
+		if (benchmarkToken) installAccordionAutomation(benchmarkToken);
 		startDiscovery(onFocusRequest);
 		startConductorDiscovery();
 

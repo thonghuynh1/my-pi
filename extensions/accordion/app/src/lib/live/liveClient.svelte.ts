@@ -17,7 +17,7 @@ import { computeFoldOps, computeGroupOps, resolveUnfold, resolveRecall } from ".
 import { folding } from "./folding.svelte";
 import { activeRemoteRunner } from "./conductorClient.svelte";
 import { attachActiveConductor } from "./activeConductor";
-import { DEFAULT_PORT, PROTOCOL_VERSION, isServerMessage, type ServerMessage, type PlanMessage, type FoldOp, type GroupOp, type UnfoldResultMessage, type RecallResultMessage, type CompleteRequestMessage } from "./protocol";
+import { DEFAULT_PORT, PROTOCOL_VERSION, isServerMessage, type ServerMessage, type HelloMessage, type SyncMessage, type StreamMessage, type UnfoldRequestMessage, type RecallRequestMessage, type CompleteResultMessage, type PlanMessage, type FoldOp, type GroupOp, type UnfoldResultMessage, type RecallResultMessage, type CompleteRequestMessage } from "./protocol";
 import { ghostStart, ghostEnd, ghostClearAll } from "./ghostState.svelte";
 import type { CompletionRequest, CompletionResult } from "$conductors/contract";
 
@@ -197,6 +197,319 @@ async function sendCompletion(req: CompletionRequest): Promise<CompletionResult>
 	});
 }
 
+function parseLiveServerMessage(ev: { data: unknown }): ServerMessage | undefined {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(typeof ev.data === "string" ? ev.data : "");
+	} catch {
+		return;
+	}
+	if (!isServerMessage(parsed)) return; // ignore anything off-protocol
+	return parsed;
+}
+
+function sendJson(ws: WebSocket, payload: unknown): void {
+	try {
+		ws.send(JSON.stringify(payload));
+	} catch {
+		/* socket gone — the peer times out and continues */
+	}
+}
+
+function handleHello(msg: HelloMessage, ws: WebSocket): void {
+	if (msg.protocolVersion !== PROTOCOL_VERSION) {
+		// Refuse a version mismatch loudly rather than driving the session with a wire
+		// shape one side does not understand (in M2 that would silently corrupt the fold
+		// ops / digests applied to the model context).
+		live.status = "error";
+		live.detail = `protocol mismatch - extension v${msg.protocolVersion}, app v${PROTOCOL_VERSION}; update both to the same version`;
+		live.sessionId = null;
+		try { ws.close(); } catch { /* ignore */ }
+		return;
+	}
+	live.status = "connected";
+	live.sessionId = typeof msg.sessionId === "string" ? msg.sessionId : null;
+	session.error = "";
+	session.filePath = null;
+	// A live pi session is steerable, never a read-only recording. Reset here —
+	// alongside the authoritative store rebuild — so the READ-ONLY badge can never
+	// stick when attaching after viewing a Claude Code transcript, regardless of
+	// which caller reached connectLive.
+	session.readOnly = false;
+	// Safety (review Q5b): every new live attach starts DISARMED - folding is
+	// opt-in per session, never silently carried from a previously armed agent.
+	folding.enabled = true;
+	// Structural reset: clear all ghosts — no ghost survives a session reconnect.
+	ghostClearAll();
+	budgetLive = false;
+	session.store?.dispose(); // abort the outgoing store's conductor (in-flight host.complete) before discarding it
+	session.store = new AccordionStore({
+		meta: { format: "pi", title: msg.meta.title || "live pi session", cwd: msg.meta.cwd || "", model: msg.meta.model || "" },
+		blocks: [],
+		lineCount: 0,
+		skipped: 0,
+	});
+	// Expose the completion backend to conductors while this socket is live.
+	// Cleared on disconnect/close so `host.can("complete")` returns false when
+	// there is no active model link.
+	session.store.completer = sendCompletion;
+	attachActiveConductor(session.store);
+	if (typeof msg.meta.contextWindow === "number" && msg.meta.contextWindow > 0) {
+		session.store.setContextWindow(msg.meta.contextWindow);
+		session.store.setBudget(liveBudgetForContextWindow(msg.meta.contextWindow));
+		if (session.store.outputReserve === 0) session.store.outputReserve = defaultOutputReserve(msg.meta.contextWindow);
+		budgetLive = true;
+	}
+}
+
+function handleSync(msg: SyncMessage, ws: WebSocket): void {
+	if (!session.store) return;
+	if (msg.full) {
+		// structural reset — rebuild from scratch; clear all ghosts.
+		ghostClearAll();
+		const prevContextWindow = session.store.contextWindow;
+		const prevBudget = session.store.budget;
+		const prevProtect = session.store.protectTokens;
+		const prevOutputReserve = session.store.outputReserve;
+		const prevCalibration = session.store.calibration;
+		session.store.dispose(); // abort the outgoing store's conductor (in-flight host.complete) before discarding it
+		session.store = new AccordionStore({
+			meta: session.store.meta,
+			blocks: [],
+			lineCount: 0,
+			skipped: 0,
+		});
+		// Carry forward contextWindow, user-adjusted budget, and protect-tail across resets.
+		if (prevContextWindow !== null) session.store.setContextWindow(prevContextWindow);
+		session.store.setBudget(prevBudget);
+		session.store.setProtect(prevProtect);
+		session.store.outputReserve = prevOutputReserve;
+		session.store.calibration = prevCalibration;
+		// Re-attach the completer and selected conductor: a structural reset builds a
+		// brand-new store object, so the references from the hello path are gone. This
+		// must happen before appendBlocks, because appendBlocks immediately refolds and
+		// the plan reply is computed in this same message handler.
+		session.store.completer = sendCompletion;
+		attachActiveConductor(session.store);
+	}
+	// Update contextWindow from the sync (refreshed each context hook, and pushed
+	// immediately on a `/model` swap). Snap the budget to the window the FIRST time
+	// we learn it (before the user can adjust) AND whenever the window CHANGES — a
+	// changed window means a different model, so the old budget no longer fits.
+	const cw = msg.contextWindow;
+	let contextWindow: number | undefined;
+	let budget: number | undefined;
+	if (typeof cw === "number" && cw > 0) {
+		const prev = session.store.contextWindow;
+		contextWindow = cw;
+		if (session.store.outputReserve === 0) session.store.outputReserve = defaultOutputReserve(cw);
+		const windowChanged = prev !== null && prev !== cw;
+		if (!budgetLive || windowChanged) {
+			budget = liveBudgetForContextWindow(cw);
+			budgetLive = true;
+		}
+	}
+
+	const harness = msg.harness && typeof msg.harness === "object" ? msg.harness : undefined;
+	session.store.applySync({
+		harness,
+		blocks: msg.blocks.map(wireToBlock),
+		contextWindow,
+		budget,
+	});
+
+	if (harness) {
+		logHarnessBreakdown(harness);
+	}
+	// Committed blocks arrive through applySync, NEVER from ghost state.
+	// Invariant: a ghost is only removed, never converted to a block.
+	const plan = computePlan();
+	const reply: PlanMessage = { type: "plan", reqId: msg.reqId, ops: plan.ops, groups: plan.groups, ...(plan.steeringOff && { steeringOff: true }), ...(plan.budgetExceeded && { budgetExceeded: true }) };
+	sendJson(ws, reply);
+}
+
+function logHarnessBreakdown(harness: NonNullable<SyncMessage["harness"]>): void {
+	if (!session.store) return;
+	// Slice 0 debug: print the breakdown each turn so the user can read it
+	// in DevTools without knowing any Svelte state path. Remove once a real
+	// UI gauge exists.
+	const liveTokens = session.store.liveTokens;
+	const total = harness.totalTokens;
+	const sys = harness.systemPromptTokens;
+	const overhead = total !== null ? total - liveTokens : null;
+	const other = overhead !== null && sys !== null ? overhead - sys : null;
+	// Self-consistent (all chars/4 of the SAME payload) decomposition — lets us
+	// prove that the big "other" bucket is tokenizer DRIFT, not real harness.
+	const wire = harness.actualWireTokens ?? null; // chars/4 of whole body
+	const msgs = harness.messagesTokens ?? null; // chars/4 of payload.messages
+	const tools = harness.toolsTokens ?? null; // chars/4 of payload.tools (incl MCP)
+	const sysWire = harness.systemPayloadTokens ?? null; // chars/4 of payload.system
+	// framing = per-message JSON envelope overhead (role tags, tool_use wrappers,
+	// cache_control). Grows with message COUNT, not content size.
+	const framing = msgs !== null ? Math.max(0, msgs - liveTokens) : null;
+	// trueHarness = everything on the wire that is NOT the messages array.
+	// Self-consistent: both operands are chars/4. This is the ONLY number worth
+	// reserving as "overhead" — it should be small (~tools + sys + framing).
+	const trueHarness = wire !== null && msgs !== null ? wire - msgs : null;
+	// realOverhead = the ACTIONABLE number: real provider total minus Accordion's
+	// conversation estimate. This is what we reserve in effectiveCap. `wire` is
+	// chars/4 of the JSON body — inflated by scaffolding — so DON'T use it as the base.
+	const realOverhead = total !== null ? total - liveTokens : null;
+	// jsonScaffold = how much `wire` overcounts vs the real tokenizer (JSON syntax
+	// the provider never bills). Expect this to be large & meaningless for budgeting.
+	const jsonScaffold = total !== null && wire !== null ? wire - total : null;
+	console.log("[accordion harness]", { total, live: liveTokens, overhead, systemPrompt: sys, other });
+	console.log("[accordion harness/verified]", {
+		liveEst: liveTokens, // chars/4 of folded conversation (Accordion's number)
+		wire, // chars/4 of the whole provider payload
+		msgs, // chars/4 of payload.messages
+		tools, // chars/4 of payload.tools (incl MCP)  ← expect ~your 5k
+		sysWire, // chars/4 of payload.system
+		framing, // msgs - live: JSON envelope overhead (grows w/ msg count)
+		trueHarness, // wire - msgs: chars/4 harness (tools+sys+framing), self-consistent
+		realOverhead, // total - live: THE number to reserve in effectiveCap (~tools+sys)
+		jsonScaffold, // wire - total: JSON syntax overcount (ignore for budgeting)
+		piTotal: total, // real provider tokenizer count (system+tools+messages+output+cache)
+	});
+	// Calibration + the resulting fold cap (all in Accordion's estimate units). Watch
+	// `k` converge (~1.2–1.4 on Anthropic tool sessions) and `availableCapEst` become the
+	// real target the conductor folds toward — smaller than `budget` once tools/window bite.
+	const k = session.store.calibration;
+	const cw = session.store.contextWindow;
+	const harnessOverhead = session.store.harnessOverhead;
+	const reserve = session.store.outputReserve;
+	const availableCapEst =
+		cw != null ? Math.max(0, Math.min(session.store.budget, cw / k - harnessOverhead - reserve / k)) : session.store.budget;
+	console.log("[accordion harness/cap]", {
+		k: Number(k.toFixed(3)), // calibration: real tokens per estimate unit
+		harnessOverhead, // reserved system+tools+framing (estimate units)
+		outputReserve: reserve, // reserved for the reply (real tokens)
+		budget: session.store.budget, // user budget (estimate units)
+		contextWindow: cw, // real model window
+		availableCapEst, // what the conductor actually folds toward
+		projectedRealTotal: Math.round(k * (liveTokens + harnessOverhead) + reserve), // predicted real request
+	});
+	// Also expose the store globally for ad-hoc inspection.
+	(globalThis as { __accordion?: unknown }).__accordion = session.store;
+}
+
+function handleUnfoldRequest(msg: UnfoldRequestMessage, ws: WebSocket): void {
+	// The live agent asked (via the `unfold` tool) to restore folded blocks it saw
+	// tagged `{#<code> FOLDED}`. Resolve each code to its folded block(s) and hold
+	// them unfolded with provenance "agent" — so it shows in the activity log as
+	// agent-initiated and the human stays the source of truth (they can re-fold it).
+	// This is a STATE change only: the restored content reaches the agent at its NEXT
+	// context hook (the block drops out of the fold plan). Unfolding only ever shows
+	// the model MORE of its own original context, so there is no provider-safety risk.
+	const codes = Array.isArray(msg.codes) ? msg.codes : [];
+	// Only act while ARMED. Disarmed, the agent's real context is full (no tags were
+	// applied), so an unfold request is stale/meaningless — applying a sticky "agent"
+	// override then would silently leak a block from the budget on the next arm.
+	const { restored, missing } =
+		folding.enabled && session.store ? resolveUnfold(session.store, codes) : { restored: [], missing: codes };
+	// Tell an attached remote conductor that the agent pulled blocks back to full — it
+	// didn't initiate this, and may want to adapt (ADR 0007 host/event). Fire-and-forget.
+	// We send block ids (not fold codes) so the conductor can correlate against the
+	// ViewBlocks it received. A code may map to >1 block on a hash collision — include all.
+	if (restored.length) {
+		// `r.ids` carries the exact ids the resolver touched (group memberIds or
+		// per-block id, including all hash-collision matches). Dedupe across entries.
+		const ids = [...new Set(restored.flatMap((r) => r.ids))];
+		activeRemoteRunner()?.notifyEvent(
+			"agentUnfold",
+			ids,
+			`agent unfolded ${restored.length} block(s)`,
+		);
+	}
+	const reply: UnfoldResultMessage = { type: "unfoldResult", reqId: msg.reqId, restored, missing };
+	sendJson(ws, reply);
+}
+
+function handleRecallRequest(msg: RecallRequestMessage, ws: WebSocket): void {
+	// The live agent asked (via the `recall` tool, ADR 0011) for the ORIGINAL full
+	// content of folded blocks it saw tagged `{#<code> FOLDED}`. recall is an
+	// UNBLOCKABLE READ - the counterpart to the human's peek: it returns the content
+	// THIS turn and does NOT change fold state (no override, the block stays folded).
+	// Because it is a pure read, it is NOT gated by the armed/disarmed steering toggle:
+	// we resolve against the current store either way (resolveRecall never mutates, so
+	// disarmed there is simply nothing folded to recall, all codes report missing).
+	const codes = Array.isArray(msg.codes) ? msg.codes : [];
+	const query = typeof msg.query === "string" ? msg.query : undefined;
+	const { restored, missing } = session.store ? resolveRecall(session.store, codes, query) : { restored: [], missing: codes };
+	const reply: RecallResultMessage = { type: "recallResult", reqId: msg.reqId, restored, missing };
+	sendJson(ws, reply);
+}
+
+function handleStream(msg: StreamMessage): void {
+	// Ghost lifecycle — presentation only; ghosts NEVER enter session.store.blocks.
+	if (msg.phase === "start") {
+		ghostStart(msg.kind, msg.contentIndex);
+	} else if (msg.phase === "end") {
+		// Intentionally a NO-OP. A part finishing is NOT the resolution point: its
+		// committed block only arrives at `message_end` (commit is per-message, not
+		// per-part — ADR 0003 §3). If we cleared the ghost here, a non-final part
+		// (e.g. thinking before a long text) would show NOTHING at the live edge for
+		// the rest of the message — a visible blank. So the ghost persists until the
+		// `message_end` abort-sweep, which fires in the SAME tick as the committed-
+		// block sync → seamless hand-off, no gap. (`end` frames are still sent: they
+		// mark the part lifecycle and enable a future per-part commit if desired.)
+	} else if (msg.phase === "abort") {
+		if (msg.contentIndex < 0) {
+			// Sweep: clear all ghosts. The normal resolver (message_end/agent_end
+			// sweep) AND the abnormal one (stream error/aborted — no block is coming,
+			// so the ghost must vanish per invariant #3).
+			ghostClearAll();
+		} else {
+			// Targeted abort for a specific part.
+			ghostEnd(msg.contentIndex);
+		}
+	}
+}
+
+function handleCompleteResult(msg: CompleteResultMessage): void {
+	if (typeof msg.reqId !== "number") return;
+	// Out-of-band completion response from the extension (protocol v5). Look up the
+	// pending promise by reqId; if the entry is gone (aborted or stale), ignore silently.
+	const pending = pendingCompletions.get(msg.reqId);
+	if (pending) {
+		if (msg.ok) {
+			pending.resolve({
+				text: msg.text ?? "",
+				model: msg.model ?? "",
+				inputTokens: msg.inputTokens,
+				outputTokens: msg.outputTokens,
+			});
+		} else {
+			pending.reject(new Error(msg.error ?? "completion failed"));
+		}
+		// `pending.resolve/reject` already delete the entry via the `settle` wrapper
+		// in `sendCompletion`, so no explicit `pendingCompletions.delete` here.
+	}
+}
+
+function dispatchLiveServerMessage(msg: ServerMessage, ws: WebSocket): void {
+	switch (msg.type) {
+		case "hello":
+			handleHello(msg, ws);
+			return;
+		case "sync":
+			handleSync(msg, ws);
+			return;
+		case "unfoldRequest":
+			handleUnfoldRequest(msg, ws);
+			return;
+		case "recallRequest":
+			handleRecallRequest(msg, ws);
+			return;
+		case "stream":
+			handleStream(msg);
+			return;
+		case "completeResult":
+			handleCompleteResult(msg);
+			return;
+	}
+}
+
 export function connectLive(port: number = DEFAULT_PORT): void {
 	if (typeof window === "undefined" || typeof WebSocket === "undefined") return;
 	cancelPendingLoad(); // invalidate any pending file/CC load that would otherwise clobber the live store
@@ -218,281 +531,9 @@ export function connectLive(port: number = DEFAULT_PORT): void {
 	socket = ws;
 
 	ws.onmessage = (ev) => {
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(typeof ev.data === "string" ? ev.data : "");
-		} catch {
-			return;
-		}
-		if (!isServerMessage(parsed)) return; // ignore anything off-protocol
-		const msg: ServerMessage = parsed;
-		if (msg.type === "hello") {
-			if (msg.protocolVersion !== PROTOCOL_VERSION) {
-				// Refuse a version mismatch loudly rather than driving the session with a wire
-				// shape one side does not understand (in M2 that would silently corrupt the fold
-				// ops / digests applied to the model context).
-				live.status = "error";
-				live.detail = `protocol mismatch - extension v${msg.protocolVersion}, app v${PROTOCOL_VERSION}; update both to the same version`;
-				live.sessionId = null;
-				try { ws.close(); } catch { /* ignore */ }
-				return;
-			}
-			live.status = "connected";
-			live.sessionId = typeof msg.sessionId === "string" ? msg.sessionId : null;
-			session.error = "";
-			session.filePath = null;
-			// A live pi session is steerable, never a read-only recording. Reset here —
-			// alongside the authoritative store rebuild — so the READ-ONLY badge can never
-			// stick when attaching after viewing a Claude Code transcript, regardless of
-			// which caller reached connectLive.
-			session.readOnly = false;
-			// Safety (review Q5b): every new live attach starts DISARMED - folding is
-			// opt-in per session, never silently carried from a previously armed agent.
-			folding.enabled = true;
-			// Structural reset: clear all ghosts — no ghost survives a session reconnect.
-			ghostClearAll();
-			budgetLive = false;
-			session.store?.dispose(); // abort the outgoing store's conductor (in-flight host.complete) before discarding it
-			session.store = new AccordionStore({
-				meta: { format: "pi", title: msg.meta.title || "live pi session", cwd: msg.meta.cwd || "", model: msg.meta.model || "" },
-				blocks: [],
-				lineCount: 0,
-				skipped: 0,
-			});
-			// Expose the completion backend to conductors while this socket is live.
-			// Cleared on disconnect/close so `host.can("complete")` returns false when
-			// there is no active model link.
-			session.store.completer = sendCompletion;
-			attachActiveConductor(session.store);
-			if (typeof msg.meta.contextWindow === "number" && msg.meta.contextWindow > 0) {
-				session.store.setContextWindow(msg.meta.contextWindow);
-				session.store.setBudget(liveBudgetForContextWindow(msg.meta.contextWindow));
-				if (session.store.outputReserve === 0) session.store.outputReserve = defaultOutputReserve(msg.meta.contextWindow);
-				budgetLive = true;
-			}
-		} else if (msg.type === "sync") {
-			if (!session.store) return;
-			if (msg.full) {
-				// structural reset — rebuild from scratch; clear all ghosts.
-				ghostClearAll();
-				const prevContextWindow = session.store.contextWindow;
-				const prevBudget = session.store.budget;
-				const prevProtect = session.store.protectTokens;
-				const prevOutputReserve = session.store.outputReserve;
-				const prevCalibration = session.store.calibration;
-				session.store.dispose(); // abort the outgoing store's conductor (in-flight host.complete) before discarding it
-				session.store = new AccordionStore({
-					meta: session.store.meta,
-					blocks: [],
-					lineCount: 0,
-					skipped: 0,
-				});
-				// Carry forward contextWindow, user-adjusted budget, and protect-tail across resets.
-				if (prevContextWindow !== null) session.store.setContextWindow(prevContextWindow);
-				session.store.setBudget(prevBudget);
-				session.store.setProtect(prevProtect);
-				session.store.outputReserve = prevOutputReserve;
-				session.store.calibration = prevCalibration;
-				// Re-attach the completer and selected conductor: a structural reset builds a
-				// brand-new store object, so the references from the hello path are gone. This
-				// must happen before appendBlocks, because appendBlocks immediately refolds and
-				// the plan reply is computed in this same message handler.
-				session.store.completer = sendCompletion;
-				attachActiveConductor(session.store);
-			}
-			// Update contextWindow from the sync (refreshed each context hook, and pushed
-			// immediately on a `/model` swap). Snap the budget to the window the FIRST time
-			// we learn it (before the user can adjust) AND whenever the window CHANGES — a
-			// changed window means a different model, so the old budget no longer fits.
-			const cw = msg.contextWindow;
-			let contextWindow: number | undefined;
-			let budget: number | undefined;
-			if (typeof cw === "number" && cw > 0) {
-				const prev = session.store.contextWindow;
-				contextWindow = cw;
-				if (session.store.outputReserve === 0) session.store.outputReserve = defaultOutputReserve(cw);
-				const windowChanged = prev !== null && prev !== cw;
-				if (!budgetLive || windowChanged) {
-					budget = liveBudgetForContextWindow(cw);
-					budgetLive = true;
-				}
-			}
-
-			const harness = msg.harness && typeof msg.harness === "object" ? msg.harness : undefined;
-			session.store.applySync({
-				harness,
-				blocks: msg.blocks.map(wireToBlock),
-				contextWindow,
-				budget,
-			});
-
-			if (harness) {
-				// Slice 0 debug: print the breakdown each turn so the user can read it
-				// in DevTools without knowing any Svelte state path. Remove once a real
-				// UI gauge exists.
-				const live = session.store.liveTokens;
-				const total = harness.totalTokens;
-				const sys = harness.systemPromptTokens;
-				const overhead = total !== null ? total - live : null;
-				const other = overhead !== null && sys !== null ? overhead - sys : null;
-				// Self-consistent (all chars/4 of the SAME payload) decomposition — lets us
-				// prove that the big "other" bucket is tokenizer DRIFT, not real harness.
-				const wire = harness.actualWireTokens ?? null; // chars/4 of whole body
-				const msgs = harness.messagesTokens ?? null; // chars/4 of payload.messages
-				const tools = harness.toolsTokens ?? null; // chars/4 of payload.tools (incl MCP)
-				const sysWire = harness.systemPayloadTokens ?? null; // chars/4 of payload.system
-				// framing = per-message JSON envelope overhead (role tags, tool_use wrappers,
-				// cache_control). Grows with message COUNT, not content size.
-				const framing = msgs !== null ? Math.max(0, msgs - live) : null;
-				// trueHarness = everything on the wire that is NOT the messages array.
-				// Self-consistent: both operands are chars/4. This is the ONLY number worth
-				// reserving as "overhead" — it should be small (~tools + sys + framing).
-				const trueHarness = wire !== null && msgs !== null ? wire - msgs : null;
-				// realOverhead = the ACTIONABLE number: real provider total minus Accordion's
-				// conversation estimate. This is what we reserve in effectiveCap. `wire` is
-				// chars/4 of the JSON body — inflated by scaffolding — so DON'T use it as the base.
-				const realOverhead = total !== null ? total - live : null;
-				// jsonScaffold = how much `wire` overcounts vs the real tokenizer (JSON syntax
-				// the provider never bills). Expect this to be large & meaningless for budgeting.
-				const jsonScaffold = total !== null && wire !== null ? wire - total : null;
-				console.log("[accordion harness]", { total, live, overhead, systemPrompt: sys, other });
-				console.log("[accordion harness/verified]", {
-					liveEst: live, // chars/4 of folded conversation (Accordion's number)
-					wire, // chars/4 of the whole provider payload
-					msgs, // chars/4 of payload.messages
-					tools, // chars/4 of payload.tools (incl MCP)  ← expect ~your 5k
-					sysWire, // chars/4 of payload.system
-					framing, // msgs - live: JSON envelope overhead (grows w/ msg count)
-					trueHarness, // wire - msgs: chars/4 harness (tools+sys+framing), self-consistent
-					realOverhead, // total - live: THE number to reserve in effectiveCap (~tools+sys)
-					jsonScaffold, // wire - total: JSON syntax overcount (ignore for budgeting)
-					piTotal: total, // real provider tokenizer count (system+tools+messages+output+cache)
-				});
-				// Calibration + the resulting fold cap (all in Accordion's estimate units). Watch
-				// `k` converge (~1.2–1.4 on Anthropic tool sessions) and `availableCapEst` become the
-				// real target the conductor folds toward — smaller than `budget` once tools/window bite.
-				const k = session.store.calibration;
-				const cw = session.store.contextWindow;
-				const harnessOverhead = session.store.harnessOverhead;
-				const reserve = session.store.outputReserve;
-				const availableCapEst =
-					cw != null ? Math.max(0, Math.min(session.store.budget, cw / k - harnessOverhead - reserve / k)) : session.store.budget;
-				console.log("[accordion harness/cap]", {
-					k: Number(k.toFixed(3)), // calibration: real tokens per estimate unit
-					harnessOverhead, // reserved system+tools+framing (estimate units)
-					outputReserve: reserve, // reserved for the reply (real tokens)
-					budget: session.store.budget, // user budget (estimate units)
-					contextWindow: cw, // real model window
-					availableCapEst, // what the conductor actually folds toward
-					projectedRealTotal: Math.round(k * (live + harnessOverhead) + reserve), // predicted real request
-				});
-				// Also expose the store globally for ad-hoc inspection.
-				(globalThis as { __accordion?: unknown }).__accordion = session.store;
-			}
-			// Committed blocks arrive through applySync, NEVER from ghost state.
-			// Invariant: a ghost is only removed, never converted to a block.
-			const plan = computePlan();
-			const reply: PlanMessage = { type: "plan", reqId: msg.reqId, ops: plan.ops, groups: plan.groups, ...(plan.steeringOff && { steeringOff: true }), ...(plan.budgetExceeded && { budgetExceeded: true }) };
-			try {
-				ws.send(JSON.stringify(reply));
-			} catch {
-				/* socket gone — extension will time out and pass through */
-			}
-		} else if (msg.type === "unfoldRequest") {
-			// The live agent asked (via the `unfold` tool) to restore folded blocks it saw
-			// tagged `{#<code> FOLDED}`. Resolve each code to its folded block(s) and hold
-			// them unfolded with provenance "agent" — so it shows in the activity log as
-			// agent-initiated and the human stays the source of truth (they can re-fold it).
-			// This is a STATE change only: the restored content reaches the agent at its NEXT
-			// context hook (the block drops out of the fold plan). Unfolding only ever shows
-			// the model MORE of its own original context, so there is no provider-safety risk.
-			const codes = Array.isArray(msg.codes) ? msg.codes : [];
-			// Only act while ARMED. Disarmed, the agent's real context is full (no tags were
-			// applied), so an unfold request is stale/meaningless — applying a sticky "agent"
-			// override then would silently leak a block from the budget on the next arm.
-			const { restored, missing } =
-				folding.enabled && session.store ? resolveUnfold(session.store, codes) : { restored: [], missing: codes };
-			// Tell an attached remote conductor that the agent pulled blocks back to full — it
-			// didn't initiate this, and may want to adapt (ADR 0007 host/event). Fire-and-forget.
-			// We send block ids (not fold codes) so the conductor can correlate against the
-			// ViewBlocks it received. A code may map to >1 block on a hash collision — include all.
-			if (restored.length) {
-				// `r.ids` carries the exact ids the resolver touched (group memberIds or
-				// per-block id, including all hash-collision matches). Dedupe across entries.
-				const ids = [...new Set(restored.flatMap((r) => r.ids))];
-				activeRemoteRunner()?.notifyEvent(
-					"agentUnfold",
-					ids,
-					`agent unfolded ${restored.length} block(s)`,
-				);
-			}
-			const reply: UnfoldResultMessage = { type: "unfoldResult", reqId: msg.reqId, restored, missing };
-			try {
-				ws.send(JSON.stringify(reply));
-			} catch {
-				/* socket gone — the tool will time out and tell the agent to retry */
-			}
-		} else if (msg.type === "recallRequest") {
-			// The live agent asked (via the `recall` tool, ADR 0011) for the ORIGINAL full
-			// content of folded blocks it saw tagged `{#<code> FOLDED}`. recall is an
-			// UNBLOCKABLE READ - the counterpart to the human's peek: it returns the content
-			// THIS turn and does NOT change fold state (no override, the block stays folded).
-			// Because it is a pure read, it is NOT gated by the armed/disarmed steering toggle:
-			// we resolve against the current store either way (resolveRecall never mutates, so
-			// disarmed there is simply nothing folded to recall, all codes report missing).
-			const codes = Array.isArray(msg.codes) ? msg.codes : [];
-			const query = typeof msg.query === "string" ? msg.query : undefined;
-			const { restored, missing } = session.store ? resolveRecall(session.store, codes, query) : { restored: [], missing: codes };
-			const reply: RecallResultMessage = { type: "recallResult", reqId: msg.reqId, restored, missing };
-			try {
-				ws.send(JSON.stringify(reply));
-			} catch {
-				/* socket gone - the tool will time out and tell the agent to retry */
-			}
-		} else if (msg.type === "stream") {
-			// Ghost lifecycle — presentation only; ghosts NEVER enter session.store.blocks.
-			if (msg.phase === "start") {
-				ghostStart(msg.kind, msg.contentIndex);
-			} else if (msg.phase === "end") {
-				// Intentionally a NO-OP. A part finishing is NOT the resolution point: its
-				// committed block only arrives at `message_end` (commit is per-message, not
-				// per-part — ADR 0003 §3). If we cleared the ghost here, a non-final part
-				// (e.g. thinking before a long text) would show NOTHING at the live edge for
-				// the rest of the message — a visible blank. So the ghost persists until the
-				// `message_end` abort-sweep, which fires in the SAME tick as the committed-
-				// block sync → seamless hand-off, no gap. (`end` frames are still sent: they
-				// mark the part lifecycle and enable a future per-part commit if desired.)
-			} else if (msg.phase === "abort") {
-				if (msg.contentIndex < 0) {
-					// Sweep: clear all ghosts. The normal resolver (message_end/agent_end
-					// sweep) AND the abnormal one (stream error/aborted — no block is coming,
-					// so the ghost must vanish per invariant #3).
-					ghostClearAll();
-				} else {
-					// Targeted abort for a specific part.
-					ghostEnd(msg.contentIndex);
-				}
-			}
-		} else if (msg.type === "completeResult") {
-			if (typeof msg.reqId !== "number") return;
-			// Out-of-band completion response from the extension (protocol v5). Look up the
-			// pending promise by reqId; if the entry is gone (aborted or stale), ignore silently.
-			const pending = pendingCompletions.get(msg.reqId);
-			if (pending) {
-				if (msg.ok) {
-					pending.resolve({
-						text: msg.text ?? "",
-						model: msg.model ?? "",
-						inputTokens: msg.inputTokens,
-						outputTokens: msg.outputTokens,
-					});
-				} else {
-					pending.reject(new Error(msg.error ?? "completion failed"));
-				}
-				// `pending.resolve/reject` already delete the entry via the `settle` wrapper
-				// in `sendCompletion`, so no explicit `pendingCompletions.delete` here.
-			}
-		}
+		const msg = parseLiveServerMessage(ev);
+		if (!msg) return;
+		dispatchLiveServerMessage(msg, ws);
 	};
 
 	ws.onerror = () => {

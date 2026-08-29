@@ -20,6 +20,13 @@ import { computeFoldOps, computeGroupOps, resolveUnfold, resolveRecall } from ".
 import {
 	PROTOCOL_VERSION,
 	isServerMessage,
+	type ServerMessage,
+	type HelloMessage,
+	type SyncMessage,
+	type StreamMessage,
+	type UnfoldRequestMessage,
+	type RecallRequestMessage,
+	type CompleteResultMessage,
 	type PlanMessage,
 	type FoldOp,
 	type GroupOp,
@@ -200,6 +207,225 @@ export function removeSlot(sessionId: string): void {
 }
 
 /**
+ * Per-socket bag for slot-scoped protocol handlers. Lives only in this file —
+ * do not share with liveClient (that module owns its own maps and helpers).
+ */
+type SlotSocket = {
+	slot: SessionSlot;
+	ws: WebSocket;
+	pending: Map<
+		number,
+		{
+			resolve: (r: CompletionResult) => void;
+			reject: (e: Error) => void;
+			timer: ReturnType<typeof setTimeout>;
+		}
+	>;
+	sendCompletion: (req: CompletionRequest) => Promise<CompletionResult>;
+	budgetLive: boolean;
+};
+
+function parseSlotServerMessage(ev: { data: unknown }): ServerMessage | undefined {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(typeof ev.data === "string" ? ev.data : "");
+	} catch {
+		return;
+	}
+	if (!isServerMessage(parsed)) return;
+	return parsed;
+}
+
+function handleHello(msg: HelloMessage, sock: SlotSocket): void {
+	const { slot, ws } = sock;
+	if (msg.protocolVersion !== PROTOCOL_VERSION) {
+		slot.status = "error";
+		try {
+			ws.close();
+		} catch {
+			/* ignore */
+		}
+		return;
+	}
+	slot.status = "live";
+	slot.ghosts.length = 0;
+	// Update the slot's entry labels from the authoritative hello meta.
+	slot.entry = {
+		...slot.entry,
+		title: msg.meta.title || slot.entry.title,
+		cwd: msg.meta.cwd || slot.entry.cwd,
+		model: msg.meta.model || slot.entry.model,
+		contextWindow: msg.meta.contextWindow ?? slot.entry.contextWindow,
+	};
+	sock.budgetLive = false;
+	slot.store.dispose();
+	slot.store = new AccordionStore({
+		meta: {
+			format: "pi",
+			title: msg.meta.title || "live pi session",
+			cwd: msg.meta.cwd || "",
+			model: msg.meta.model || "",
+		},
+		blocks: [],
+		lineCount: 0,
+		skipped: 0,
+	});
+	// Expose the per-slot completion relay so conductors can call host.complete().
+	// Also attach the selected conductor synchronously; the broker may compute a
+	// fold plan before the route-level Svelte effect gets a turn.
+	slot.store.completer = sock.sendCompletion;
+	attachActiveConductor(slot.store);
+	if (typeof msg.meta.contextWindow === "number" && msg.meta.contextWindow > 0) {
+		slot.store.setContextWindow(msg.meta.contextWindow);
+		slot.store.setBudget(Math.min(msg.meta.contextWindow, 100_000));
+		sock.budgetLive = true;
+	}
+}
+
+function handleSync(msg: SyncMessage, sock: SlotSocket): void {
+	const { slot, ws } = sock;
+	if (msg.full) {
+		slot.ghosts.length = 0;
+		const prevMeta = slot.store.meta;
+		const prevContextWindow = slot.store.contextWindow;
+		const prevBudget = slot.store.budget;
+		const prevProtect = slot.store.protectTokens;
+		slot.store.dispose();
+		slot.store = new AccordionStore({
+			meta: prevMeta,
+			blocks: [],
+			lineCount: 0,
+			skipped: 0,
+		});
+		if (prevContextWindow !== null) slot.store.setContextWindow(prevContextWindow);
+		slot.store.setBudget(prevBudget);
+		slot.store.setProtect(prevProtect);
+		slot.store.completer = sock.sendCompletion;
+		attachActiveConductor(slot.store);
+	}
+	const cw = msg.contextWindow;
+	let contextWindow: number | undefined;
+	let budget: number | undefined;
+	if (typeof cw === "number" && cw > 0) {
+		const prev = slot.store.contextWindow;
+		contextWindow = cw;
+		const windowChanged = prev !== null && prev !== cw;
+		if (!sock.budgetLive || windowChanged) {
+			budget = Math.min(cw, 100_000);
+			sock.budgetLive = true;
+		}
+	}
+	const harness = msg.harness && typeof msg.harness === "object" ? msg.harness : undefined;
+	slot.store.applySync({
+		harness,
+		blocks: msg.blocks.map(wireToBlock),
+		contextWindow,
+		budget,
+	});
+	const plan: { ops: FoldOp[]; groups: GroupOp[]; steeringOff?: boolean; budgetExceeded?: boolean } = slot.folding.enabled
+		? { ops: computeFoldOps(slot.store), groups: computeGroupOps(slot.store), budgetExceeded: slot.store.fullTokens * slot.store.calibration > slot.store.budget }
+		: { ops: [], groups: [], steeringOff: true };
+	const reply: PlanMessage = {
+		type: "plan",
+		reqId: msg.reqId,
+		ops: plan.ops,
+		groups: plan.groups,
+		...(plan.steeringOff && { steeringOff: true }),
+		...(plan.budgetExceeded && { budgetExceeded: true }),
+	};
+	trySend(ws, reply);
+}
+
+function handleUnfoldRequest(msg: UnfoldRequestMessage, sock: SlotSocket): void {
+	const { slot, ws } = sock;
+	const codes = Array.isArray(msg.codes) ? msg.codes : [];
+	const { restored, missing } = slot.folding.enabled
+		? resolveUnfold(slot.store, codes)
+		: { restored: [], missing: codes };
+	const reply: UnfoldResultMessage = {
+		type: "unfoldResult",
+		reqId: msg.reqId,
+		restored,
+		missing,
+	};
+	trySend(ws, reply);
+}
+
+function handleRecallRequest(msg: RecallRequestMessage, sock: SlotSocket): void {
+	const { slot, ws } = sock;
+	const codes = Array.isArray(msg.codes) ? msg.codes : [];
+	const query = typeof msg.query === "string" ? msg.query : undefined;
+	const { restored, missing } = resolveRecall(slot.store, codes, query);
+	const reply: RecallResultMessage = {
+		type: "recallResult",
+		reqId: msg.reqId,
+		restored,
+		missing,
+	};
+	trySend(ws, reply);
+}
+
+function handleCompleteResult(msg: CompleteResultMessage, sock: SlotSocket): void {
+	if (typeof msg.reqId !== "number") return;
+	const p = sock.pending.get(msg.reqId);
+	if (p) {
+		if (msg.ok) {
+			p.resolve({
+				text: msg.text ?? "",
+				model: msg.model ?? "",
+				inputTokens: msg.inputTokens,
+				outputTokens: msg.outputTokens,
+			});
+		} else {
+			p.reject(new Error(msg.error ?? "completion failed"));
+		}
+	}
+}
+
+function handleStream(msg: StreamMessage, sock: SlotSocket): void {
+	const { slot } = sock;
+	if (msg.phase === "start") {
+		const idx = slot.ghosts.findIndex((g) => g.contentIndex === msg.contentIndex);
+		if (idx >= 0) {
+			slot.ghosts[idx] = { contentIndex: msg.contentIndex, kind: msg.kind };
+		} else {
+			slot.ghosts.push({ contentIndex: msg.contentIndex, kind: msg.kind });
+		}
+	} else if (msg.phase === "abort") {
+		if (msg.contentIndex < 0) {
+			slot.ghosts.length = 0;
+		} else {
+			const idx = slot.ghosts.findIndex((g) => g.contentIndex === msg.contentIndex);
+			if (idx >= 0) slot.ghosts.splice(idx, 1);
+		}
+	}
+	// phase === "end" is intentionally a no-op (ADR 0003 §3: committed blocks arrive at message_end).
+}
+
+function dispatchSlotServerMessage(msg: ServerMessage, sock: SlotSocket): void {
+	switch (msg.type) {
+		case "hello":
+			handleHello(msg, sock);
+			return;
+		case "sync":
+			handleSync(msg, sock);
+			return;
+		case "unfoldRequest":
+			handleUnfoldRequest(msg, sock);
+			return;
+		case "recallRequest":
+			handleRecallRequest(msg, sock);
+			return;
+		case "completeResult":
+			handleCompleteResult(msg, sock);
+			return;
+		case "stream":
+			handleStream(msg, sock);
+			return;
+	}
+}
+
+/**
  * Open a proxied WebSocket for the given slot and wire it to the Accordion protocol.
  *
  * Each slot gets its own isolated connection lifecycle. The slot's store, status, and
@@ -242,7 +468,6 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 		}
 	>();
 	let completionReqId = 0;
-	let budgetLive = false;
 
 	function drainPending(reason: string): void {
 		for (const { reject, timer } of pending.values()) {
@@ -299,166 +524,18 @@ export function connectSlot(slot: SessionSlot, wsUrl: string): void {
 		});
 	}
 
-	ws.onmessage = (ev) => {
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(typeof ev.data === "string" ? ev.data : "");
-		} catch {
-			return;
-		}
-		if (!isServerMessage(parsed)) return;
-		const msg = parsed;
+	const sock: SlotSocket = {
+		slot,
+		ws,
+		pending,
+		sendCompletion,
+		budgetLive: false,
+	};
 
-		if (msg.type === "hello") {
-			if (msg.protocolVersion !== PROTOCOL_VERSION) {
-				slot.status = "error";
-				try {
-					ws.close();
-				} catch {
-					/* ignore */
-				}
-				return;
-			}
-			slot.status = "live";
-			slot.ghosts.length = 0;
-			// Update the slot's entry labels from the authoritative hello meta.
-			slot.entry = {
-				...slot.entry,
-				title: msg.meta.title || slot.entry.title,
-				cwd: msg.meta.cwd || slot.entry.cwd,
-				model: msg.meta.model || slot.entry.model,
-				contextWindow: msg.meta.contextWindow ?? slot.entry.contextWindow,
-			};
-			budgetLive = false;
-			slot.store.dispose();
-			slot.store = new AccordionStore({
-				meta: {
-					format: "pi",
-					title: msg.meta.title || "live pi session",
-					cwd: msg.meta.cwd || "",
-					model: msg.meta.model || "",
-				},
-				blocks: [],
-				lineCount: 0,
-				skipped: 0,
-			});
-			// Expose the per-slot completion relay so conductors can call host.complete().
-			// Also attach the selected conductor synchronously; the broker may compute a
-			// fold plan before the route-level Svelte effect gets a turn.
-			slot.store.completer = sendCompletion;
-			attachActiveConductor(slot.store);
-			if (typeof msg.meta.contextWindow === "number" && msg.meta.contextWindow > 0) {
-				slot.store.setContextWindow(msg.meta.contextWindow);
-				slot.store.setBudget(Math.min(msg.meta.contextWindow, 100_000));
-				budgetLive = true;
-			}
-		} else if (msg.type === "sync") {
-			if (msg.full) {
-				slot.ghosts.length = 0;
-				const prevMeta = slot.store.meta;
-				const prevContextWindow = slot.store.contextWindow;
-				const prevBudget = slot.store.budget;
-				const prevProtect = slot.store.protectTokens;
-				slot.store.dispose();
-				slot.store = new AccordionStore({
-					meta: prevMeta,
-					blocks: [],
-					lineCount: 0,
-					skipped: 0,
-				});
-				if (prevContextWindow !== null) slot.store.setContextWindow(prevContextWindow);
-				slot.store.setBudget(prevBudget);
-				slot.store.setProtect(prevProtect);
-				slot.store.completer = sendCompletion;
-				attachActiveConductor(slot.store);
-			}
-			const cw = msg.contextWindow;
-			let contextWindow: number | undefined;
-			let budget: number | undefined;
-			if (typeof cw === "number" && cw > 0) {
-				const prev = slot.store.contextWindow;
-				contextWindow = cw;
-				const windowChanged = prev !== null && prev !== cw;
-				if (!budgetLive || windowChanged) {
-					budget = Math.min(cw, 100_000);
-					budgetLive = true;
-				}
-			}
-			const harness = msg.harness && typeof msg.harness === "object" ? msg.harness : undefined;
-			slot.store.applySync({
-				harness,
-				blocks: msg.blocks.map(wireToBlock),
-				contextWindow,
-				budget,
-			});
-			const plan: { ops: FoldOp[]; groups: GroupOp[]; steeringOff?: boolean; budgetExceeded?: boolean } = slot.folding.enabled
-				? { ops: computeFoldOps(slot.store), groups: computeGroupOps(slot.store), budgetExceeded: slot.store.fullTokens * slot.store.calibration > slot.store.budget }
-				: { ops: [], groups: [], steeringOff: true };
-			const reply: PlanMessage = {
-				type: "plan",
-				reqId: msg.reqId,
-				ops: plan.ops,
-				groups: plan.groups,
-				...(plan.steeringOff && { steeringOff: true }),
-				...(plan.budgetExceeded && { budgetExceeded: true }),
-			};
-			trySend(ws, reply);
-		} else if (msg.type === "unfoldRequest") {
-			const codes = Array.isArray(msg.codes) ? msg.codes : [];
-			const { restored, missing } = slot.folding.enabled
-				? resolveUnfold(slot.store, codes)
-				: { restored: [], missing: codes };
-			const reply: UnfoldResultMessage = {
-				type: "unfoldResult",
-				reqId: msg.reqId,
-				restored,
-				missing,
-			};
-			trySend(ws, reply);
-		} else if (msg.type === "recallRequest") {
-			const codes = Array.isArray(msg.codes) ? msg.codes : [];
-			const query = typeof msg.query === "string" ? msg.query : undefined;
-			const { restored, missing } = resolveRecall(slot.store, codes, query);
-			const reply: RecallResultMessage = {
-				type: "recallResult",
-				reqId: msg.reqId,
-				restored,
-				missing,
-			};
-			trySend(ws, reply);
-		} else if (msg.type === "completeResult") {
-			if (typeof msg.reqId !== "number") return;
-			const p = pending.get(msg.reqId);
-			if (p) {
-				if (msg.ok) {
-					p.resolve({
-						text: msg.text ?? "",
-						model: msg.model ?? "",
-						inputTokens: msg.inputTokens,
-						outputTokens: msg.outputTokens,
-					});
-				} else {
-					p.reject(new Error(msg.error ?? "completion failed"));
-				}
-			}
-		} else if (msg.type === "stream") {
-			if (msg.phase === "start") {
-				const idx = slot.ghosts.findIndex((g) => g.contentIndex === msg.contentIndex);
-				if (idx >= 0) {
-					slot.ghosts[idx] = { contentIndex: msg.contentIndex, kind: msg.kind };
-				} else {
-					slot.ghosts.push({ contentIndex: msg.contentIndex, kind: msg.kind });
-				}
-			} else if (msg.phase === "abort") {
-				if (msg.contentIndex < 0) {
-					slot.ghosts.length = 0;
-				} else {
-					const idx = slot.ghosts.findIndex((g) => g.contentIndex === msg.contentIndex);
-					if (idx >= 0) slot.ghosts.splice(idx, 1);
-				}
-			}
-			// phase === "end" is intentionally a no-op (ADR 0003 §3: committed blocks arrive at message_end).
-		}
+	ws.onmessage = (ev) => {
+		const msg = parseSlotServerMessage(ev);
+		if (!msg) return;
+		dispatchSlotServerMessage(msg, sock);
 	};
 
 	ws.onerror = () => {

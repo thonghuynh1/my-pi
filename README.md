@@ -3,6 +3,7 @@
 Personal Pi package that bundles:
 
 - `pi-mcp-adapter`
+- `@narumitw/pi-file-context` (`/file-context` in-TUI file browser; Tab inserts `@path`)
 - `/poteto-me` prompt template
 - `engineering-skills` helper/footer extension
 - `usage-footer.ts` footer/status extension showing model and context usage

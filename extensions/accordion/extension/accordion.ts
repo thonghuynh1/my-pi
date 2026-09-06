@@ -452,8 +452,13 @@ export default function accordionLive(pi: ExtensionAPI): void {
 	}
 
 	// ── registry file: advertise this session for the app to discover ───────────
+	/** Opaque nonce from ACCORDION_BENCHMARK_NONCE — empty string when absent. */
+	const benchmarkNonce: string = typeof process.env.ACCORDION_BENCHMARK_NONCE === "string"
+		? process.env.ACCORDION_BENCHMARK_NONCE.trim()
+		: "";
+
 	function buildEntry(): SessionEntry {
-		return {
+		const entry: SessionEntry = {
 			registryProtocol: REGISTRY_PROTOCOL,
 			protocolVersion: PROTOCOL_VERSION,
 			sessionId,
@@ -467,6 +472,8 @@ export default function accordionLive(pi: ExtensionAPI): void {
 			startedAt,
 			heartbeatAt: Date.now(),
 		};
+		if (benchmarkNonce) entry.benchmarkNonce = benchmarkNonce;
+		return entry;
 	}
 
 	/** Atomic write (temp + rename) so the app never reads a half-written file. */

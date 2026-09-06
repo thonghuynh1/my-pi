@@ -772,6 +772,39 @@ describe("frozen-prefix stability (flip-flop fix)", () => {
 		}
 	});
 
+	it("compacts a fully frozen prefix when over budget even if the context window still has room", () => {
+		// Repro: ~/.accordion/diagnostics/s-34348-1788182857031.context.jsonl
+		// Small rapid turns keep the prompt-cache prefix matching, so frozenFromIndex
+		// covers every block while live tokens sit at 12× budget and well under the
+		// 1.1M window. Emergency must still fire; otherwise the conductor emits empty
+		// plans forever.
+		const content = Array.from({ length: 16 }, (_, i) =>
+			vb(
+				`t:${i}`,
+				i % 2 === 0 ? "user" : "text",
+				i,
+				5_000,
+				i % 2 === 0 ? 5_000 : 100,
+				{ text: i % 2 === 0 ? `user ${i}` : `assistant ${i}` },
+			),
+		);
+		const tail = vb("tail", "user", 16, 5_000, 5_000, { protected: true, text: "continue" });
+		const blocks = [...content, tail];
+		const liveTokens = blocks.reduce((sum, block) => sum + block.tokens, 0);
+		const view = makeView(blocks, 70_000, liveTokens, {
+			frozenFromIndex: blocks.length,
+			contextWindow: 1_100_000,
+		});
+
+		const result = new ProductionMyCustomizeConductor().conduct(view);
+		expect(result.commands.length, "must emit a compacting plan, not empty").toBeGreaterThan(0);
+		expect(result.commands.some((command) => command.kind === "group" && command.lifecycle === "rollover")).toBe(true);
+		expect(result.commands.some((command) =>
+			(command.kind === "fold" || command.kind === "replace") && command.breakFrozen === true,
+		)).toBe(false);
+		expect(projected(view, result.commands)).toBeLessThanOrEqual(70_000);
+	});
+
 	it("hard-cap emergency still uses breakFrozen when context window overflows", () => {
 		const blocks = [
 			vb("frozen:0", "tool_result", 0, 80_000, 100, { toolName: "bash", text: "big output" }),

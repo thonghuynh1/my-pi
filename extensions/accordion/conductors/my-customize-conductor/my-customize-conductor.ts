@@ -581,6 +581,30 @@ export class MyCustomizeConductor implements Conductor {
 			}
 		}
 
+		// Fully frozen + over budget: ordinary rollover is clamped to frozenFromIndex
+		// and produces nothing. A rollover group is the host-legal cache break (ADR 0004);
+		// per-block breakFrozen stays reserved for real window overflow.
+		const frozenStall = view.frozenFromIndex >= view.protectedFromIndex;
+		if (view.contextWindow !== null && view.liveTokens > cap && frozenStall) {
+			const deficit = view.liveTokens - cap + 1;
+			const budgetRollover = this.planRollover(view, 0, callById, cap, deficit);
+			if (budgetRollover.commands.length > 0) {
+				this.rolloverCount++;
+				this.tokensSavedByRollover += budgetRollover.saving;
+				this.lastEstimatedGroupSaving = budgetRollover.groupSaving;
+				const plan = [...this.replayPriorCommands(view, commandIds(budgetRollover.commands)), ...budgetRollover.commands];
+				this.lastPlan = plan;
+				this.dirty = false;
+				this.lastCap = cap;
+				this.lastHeadBlockCount = headBlockCount;
+				this.lastFrozenFromIndex = view.frozenFromIndex;
+				return this.finishConduct(plan, preGroupTokens, preGroupTarget, true, preGroupMembers(commandIds(plan)), {
+					newPreGroupTokens,
+					rolloverBlockedReason: "none",
+				});
+			}
+		}
+
 		// DEC-002: nothing material changed — return stable plan with updated pre-group membership.
 		// (Hard-cap cases are handled above; this catches cap-change or dirty-only scenarios.)
 		if (!this.dirty && previousViewKey === viewKey && this.lastPlan && cap <= this.lastCap && view.frozenFromIndex === this.lastFrozenFromIndex) {

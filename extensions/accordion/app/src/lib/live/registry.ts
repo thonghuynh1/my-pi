@@ -71,6 +71,14 @@ export interface SessionEntry {
 	startedAt: number;
 	/** Epoch ms of the last heartbeat refresh — the staleness/liveness signal. */
 	heartbeatAt: number;
+	/**
+	 * Optional opaque nonce injected via the ACCORDION_BENCHMARK_NONCE environment
+	 * variable.  When present the benchmark harness uses this to identify its
+	 * session unambiguously across the Windows cmd-wrapper/node child-PID split,
+	 * where process.pid (node) ≠ Popen PID (cmd.exe wrapper).  Absent for all
+	 * normal (non-benchmark) sessions.
+	 */
+	benchmarkNonce?: string;
 }
 
 /** A one-shot request from `/accordion` to foreground the app on a session. */

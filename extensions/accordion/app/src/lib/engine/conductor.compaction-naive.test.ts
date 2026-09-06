@@ -2201,7 +2201,12 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		expect(plan.commands[0].digest).toMatch(/^group ·/);
 	});
 
-	it("early rollover skips frozen-prefix blocks to preserve cache", () => {
+	it("fully frozen prefix over budget emits a rollover group, not breakFrozen folds", () => {
+		// This fixture is the small-turn stall: frozenFromIndex has overtaken every
+		// foldable block (frozenFromIndex === protectedFromIndex) while liveTokens sit
+		// over budget and under the context window. Ordinary early rollover would clamp
+		// to frozenFromIndex and emit nothing. ADR 0004 lets a lifecycle:"rollover"
+		// group cross the cached prefix; per-block breakFrozen stays window-only.
 		const blocks = [
 			chunkedBlock("pg0", 0, 6_000),
 			chunkedBlock("pg1", 1, 6_000),
@@ -2212,10 +2217,38 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		view.frozenFromIndex = 2;
 
 		const plan = new MyCustomizeConductor().conduct(view);
+		const groups = plan.commands.filter((cmd): cmd is Extract<typeof cmd, { kind: "group" }> => cmd.kind === "group");
 
-		// Frozen-prefix blocks must NOT be grouped — that would break prompt cache.
-		// The conductor should emit no commands since all candidates are frozen.
-		expect(plan.commands.filter((cmd) => cmd.kind === "group")).toHaveLength(0);
+		expect(groups).toHaveLength(1);
+		expect(groups[0].lifecycle).toBe("rollover");
+		expect(groups[0].ids).toEqual(["pg0", "pg1"]);
+		expect(plan.commands.some((cmd) =>
+			(cmd.kind === "fold" || cmd.kind === "replace") && cmd.breakFrozen === true,
+		)).toBe(false);
+		expect(plan.commands.filter((cmd) => cmd.kind === "restore")).toHaveLength(0);
+	});
+
+	it("early rollover skips a partial frozen prefix to preserve cache", () => {
+		// Unfrozen material still exists before the tail, so this is not a stall.
+		// Early rollover must consume only that suffix and leave the cached prefix alone.
+		const blocks = [
+			chunkedBlock("frozen0", 0, 6_000),
+			chunkedBlock("frozen1", 1, 6_000),
+			chunkedBlock("pg0", 2, 6_000),
+			chunkedBlock("pg1", 3, 6_000),
+			chunkedBlock("tail", 4, 100, { kind: "user", protected: true }),
+		];
+		const view = rolloverView(blocks, 200_000);
+		view.liveTokens = 110_000;
+		view.frozenFromIndex = 2;
+
+		const plan = new MyCustomizeConductor().conduct(view);
+		const groupedIds = plan.commands.flatMap((cmd) => cmd.kind === "group" ? cmd.ids : []);
+
+		expect(groupedIds).toContain("pg0");
+		expect(groupedIds).toContain("pg1");
+		expect(groupedIds).not.toContain("frozen0");
+		expect(groupedIds).not.toContain("frozen1");
 		expect(plan.commands.filter((cmd) => cmd.kind === "restore")).toHaveLength(0);
 	});
 

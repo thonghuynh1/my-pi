@@ -12,7 +12,8 @@ your browser ─── ws://localhost:7777 ───► pi
 # Workflow 2 (autonomous test + video)
 pi ── playwright/CDP ──► Edge (--remote-debugging-port=9222)
                   │
-                  └── Page.startScreencast ── ffmpeg ──► .frontend-coach/records/*.webm
+                  ├── peek: browser_coach_snapshot / browser_coach_act  (no video)
+                  └── record: Page.startScreencast ── ffmpeg ──► .frontend-coach/records/*.webm
 ```
 
 ## Install
@@ -87,14 +88,49 @@ Launch a controlled Edge window. This is a separate profile under `./.frontend-c
 - Override the CDP port with `FRONTEND_COACH_CDP_PORT=9333` (default `9222`).
 - Log into your app once in that Edge window — the session cookie sticks for next runs.
 
+### Peek the live tab, then record
+
+Playwright CLI remains the preferred *external* navigator. Inside coach, peek is the interactive surface on the `/coach-launch-edge` CDP Edge tab. Do not guess refs from JSX: snapshot, act, snapshot, then record.
+
+| Tool | Purpose |
+|---|---|
+| `browser_coach_snapshot({ selector?, ref? })` | Playwright a11y snapshot of the current tab (refs like `e12`). No screencast, no webm. Optional `selector`/`ref` snapshots a subtree. |
+| `browser_coach_act({ steps, snapshotAfterEach? })` | Run a short step list (max 12) via the same portal-actions path as record (`click`/`fill`/`press`/`waitFor`/`scroll`/`setInputFiles`). Returns a fresh snapshot. Still no video. |
+| `browser_record_test({ ... })` | The widget recorder: webm + json + md + trace.zip. Copy refs from peek and **omit `url`**. |
+
+```jsonc
+browser_coach_snapshot()
+browser_coach_act({
+  "steps": [
+    { "action": "click", "ref": "e12" },
+    { "action": "fill", "ref": "e5", "value": "hello" }
+  ]
+})
+browser_record_test({
+  "name": "Send button shows spinner while submitting",
+  "relatedChange": "Web/src/Chat/SendButton.tsx — add <Spinner/> while isPending",
+  "steps": [
+    { "action": "fill",  "ref": "e5", "value": "hello" },
+    { "action": "click", "ref": "e12" },
+    { "action": "wait",  "ms": 200 }
+  ],
+  "assertions": [
+    { "description": "button shows spinner",     "expression": "document.querySelector('button#send .spinner') !== null" },
+    { "description": "button is disabled",       "expression": "document.querySelector('button#send').disabled === true" }
+  ]
+})
+```
+
+Passing `url` on `browser_record_test` navigates and invalidates peek refs. Widget auto-steps from `browser_record_for_widget` still use CSS `mountSelector`.
+
 ### The agent calls `browser_record_test`
 
-New tool the LLM can invoke:
+After peeking (or when you already have stable CSS locators), the LLM records a prove:
 
 ```jsonc
 browser_record_test({
   "name": "Send button shows spinner while submitting",
-  "url": "https://localhost:5050/chat",         // optional, defaults to current tab
+  "url": "https://localhost:5050/chat",         // optional; omit after peek so refs stay valid
   "relatedChange": "Web/src/Chat/SendButton.tsx — add <Spinner/> while isPending",
   "steps": [
     { "action": "fill",  "selector": "textarea[name=message]", "value": "hello" },
@@ -119,7 +155,7 @@ Each run writes files to `./.frontend-coach/records/`:
 2026-06-09_143022_send-button.md          ← human-readable report
 ```
 
-Steps can target a Playwright a11y snapshot ref (`e12` style) or a CSS selector. `ref` wins when both are set. The tool result includes the snapshot so the next call can copy refs. Omit `url` on that follow-up; a navigation invalidates refs. Widget auto-steps from `browser_record_for_widget` still use CSS `mountSelector`.
+Peek (`browser_coach_snapshot` / `browser_coach_act`) returns the same snapshot without writing those files. Copy refs from peek into `browser_record_test` and omit `url`. Widget auto-steps from `browser_record_for_widget` still use CSS `mountSelector`.
 
 ### How failures auto-fix
 
@@ -230,6 +266,7 @@ frontend-coach/
 ├── index.ts     ← pi extension entry (HTTP+WS server, tool/command wiring)
 ├── edge.ts      ← locate, launch, attach to Microsoft Edge via CDP
 ├── recorder.ts  ← drive page + pipe Page.screencastFrame into ffmpeg → webm; Playwright snapshot/ref + trace.zip
+├── peek.ts      ← cheap snapshot/act on the CDP tab (no ffmpeg); used by browser_coach_snapshot / browser_coach_act
 ├── portal-actions.ts ← Radix overlay pierce + RHF-safe fill / setInputFiles
 ├── records.ts   ← on-disk record format (id, paths, markdown rendering)
 ├── widgets.ts   ← MyOffice + MyBusiness widget catalog resolver (workflow 3)

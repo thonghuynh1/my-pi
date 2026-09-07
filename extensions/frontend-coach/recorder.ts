@@ -12,8 +12,9 @@
  * existing CDP session from /coach-launch-edge; this file does not
  * launch a Playwright browser server.
  *
- * No "share this tab" prompt is ever shown — CDP gives us silent
- * access to the tab the user (or /coach-launch-edge) opened.
+ * Snapshot/ref helpers (`attachCoachPage`, `runStep`, `captureAriaSnapshot`)
+ * are also used by peek.ts for cheap explore-without-video. Recording itself
+ * still owns ffmpeg + trace.zip.
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -129,13 +130,42 @@ function needTarget(step: Step, action: string): string {
 	return target;
 }
 
-async function captureAriaSnapshot(page: Page): Promise<string> {
+/** Playwright AI aria snapshot. Optional `ref`/`selector` snapshots that subtree. */
+export async function captureAriaSnapshot(
+	page: Page,
+	target?: Pick<Step, "ref" | "selector">,
+): Promise<string> {
+	const sel = target ? stepTarget(target) : undefined;
+	if (sel) {
+		const loc = await stepLocator(page, sel);
+		return await loc.ariaSnapshot({ mode: "ai" });
+	}
 	return await page.ariaSnapshot({ mode: "ai" });
+}
+
+/** Attach to the /coach-launch-edge CDP tab (or create one). Keeps Alt+P installed. */
+export async function attachCoachPage(opts?: {
+	viewport?: { width: number; height: number };
+}): Promise<{ page: Page; context: import("playwright-core").BrowserContext }> {
+	const browser = await ensureBrowser();
+	let page = findAppPage(browser);
+	let context: import("playwright-core").BrowserContext;
+	if (page) {
+		context = page.context();
+	} else {
+		context = browser.contexts()[0] ?? (await browser.newContext());
+		page = await context.newPage();
+	}
+	await ensurePickerInstalled(context, page);
+	if (opts?.viewport) {
+		try { await page.setViewportSize(opts.viewport); } catch { /* viewport not always settable over CDP */ }
+	}
+	return { page, context };
 }
 
 // ---------- Step driver ----------
 
-async function runStep(page: Page, step: Step): Promise<void> {
+export async function runStep(page: Page, step: Step): Promise<void> {
 	const timeout = 10_000;
 	const force = step.force === true;
 	switch (step.action) {
@@ -235,24 +265,10 @@ export async function recordTest(input: RecordTestInput): Promise<RecordTestOutc
 	const id = makeRecordId(input.name);
 	const paths = pathsForId(id);
 
-	const browser = await ensureBrowser();
-	let page = findAppPage(browser);
-	let context: import("playwright-core").BrowserContext;
-	if (page) {
-		context = page.context();
-	} else {
-		context = browser.contexts()[0] ?? (await browser.newContext());
-		page = await context.newPage();
-	}
-
 	// Make sure the Alt+P picker survives whatever navigations the steps do.
 	// Without this, page.goto() wipes window.__piCoach and Alt+P stops working
 	// after the first browser_record_test run.
-	await ensurePickerInstalled(context, page);
-
-	if (input.viewport) {
-		try { await page.setViewportSize(input.viewport); } catch { /* viewport not always settable over CDP */ }
-	}
+	const { page, context } = await attachCoachPage({ viewport: input.viewport });
 
 	let tracing = false;
 	try {

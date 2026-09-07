@@ -476,6 +476,22 @@ test("frontend-coach browser_record_test resolves agent-visible from package def
 	assert.deepEqual(result.warnings, []);
 });
 
+test("frontend-coach peek tools resolve agent-visible from package defaults", () => {
+	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
+	const { settings } = parseCapabilityVisibilitySettings(raw);
+	for (const toolName of ["browser_coach_snapshot", "browser_coach_act"] as const) {
+		const result = resolveToolVisibility({
+			extensionId: "frontend-coach",
+			toolName,
+			managed: true,
+			defaultVisibility: "agent-visible",
+			configuredOverride: settings.capabilityVisibility?.["frontend-coach"]?.tools?.[toolName],
+		});
+		assert.equal(result.visibility, "agent-visible", toolName);
+		assert.deepEqual(result.warnings, []);
+	}
+});
+
 test("frontend-coach coach-launch-edge command is enabled by default", () => {
 	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
 	const { settings } = parseCapabilityVisibilitySettings(raw);

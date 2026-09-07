@@ -12,8 +12,10 @@
  *  3. Press Alt+P to arm picker, click an element, type an instruction.
  *  4. pi receives a user message and starts editing.
  *
- * The LLM can call browser_highlight / browser_inspect / browser_eval to talk
- * back to the page.
+ * The LLM can call browser_coach_snapshot / browser_coach_act to peek the
+ * controlled Edge tab (no video), browser_record_test to record, and
+ * browser_highlight / browser_inspect / browser_eval to talk back to the
+ * click-to-edit page.
  *
  * Commands:
  *   /coach-status       show current state and port
@@ -42,6 +44,12 @@ import {
 	stopEdge,
 } from "./edge.ts";
 import { recordTest, type RecordTestInput, type Step as RecorderStep, type Assertion as RecorderAssertion } from "./recorder.ts";
+import {
+	coachAct,
+	coachSnapshot,
+	renderPeekActText,
+	renderPeekSnapshotText,
+} from "./peek.ts";
 import { listRecords, loadRecord, pathsForId, recordsDir } from "./records.ts";
 import {
 	catalogStats,
@@ -341,11 +349,9 @@ export default async function (pi: ExtensionAPI) {
 		},
 	});
 
-	// ------- browser_record_test: autonomous, recorded UI test -------
-	// The agent calls this AFTER finishing a frontend change. It drives the
-	// already-open Edge tab via CDP (no permission prompts), captures a webm
-	// of the interaction, and writes a structured report. Assertion failures
-	// surface as isError=true so the agent can iterate on the fix.
+	// Peek (browser_coach_snapshot / browser_coach_act) then record
+	// (browser_record_test). Peek has no ffmpeg/webm; record stays the
+	// widget recorder. Assertion failures on record surface as isError.
 	const StepSchema = Type.Object({
 		action: Type.Union([
 			Type.Literal("click"), Type.Literal("dblclick"),
@@ -356,7 +362,7 @@ export default async function (pi: ExtensionAPI) {
 			Type.Literal("eval"), Type.Literal("setInputFiles"),
 		], { description: "What to do at this step. Use fill/type/setInputFiles for React Hook Form — never eval native value setters." }),
 		selector: Type.Optional(Type.String({ description: "CSS selector fallback (click/dblclick/type/fill/hover/waitFor/scroll/setInputFiles/optional for press). Ignored when ref is set. Locators prefer an open role=dialog portal." })),
-		ref: Type.Optional(Type.String({ description: "Playwright a11y snapshot ref (e.g. e12). Preferred over selector. Copy from the snapshot returned by a previous or current browser_record_test." })),
+		ref: Type.Optional(Type.String({ description: "Playwright a11y snapshot ref (e.g. e12). Preferred over selector. Copy from browser_coach_snapshot, browser_coach_act, or browser_record_test." })),
 		value: Type.Optional(Type.String({ description: "Text for type/fill, or a filesystem path for setInputFiles." })),
 		key: Type.Optional(Type.String({ description: "Key name for press (e.g. 'Enter', 'Tab', 'Control+S')." })),
 		url: Type.Optional(Type.String({ description: "URL for navigate." })),
@@ -373,17 +379,81 @@ export default async function (pi: ExtensionAPI) {
 		expression: Type.String({ description: "JS expression evaluated in the page; truthy = pass. Example: document.querySelector('#send[disabled]') !== null" }),
 	});
 	managed.registerTool({
+		name: "browser_coach_snapshot",
+		defaultVisibility: "agent-visible",
+		label: "Peek page snapshot",
+		description:
+			"Take a Playwright a11y snapshot of the current /coach-launch-edge tab (refs like e12). No screencast, no webm, " +
+			"no trace. Use this to explore page structure before browser_record_test. Copy refs into a later " +
+			"browser_coach_act or browser_record_test and omit url so refs stay valid. Optional selector/ref snapshots a subtree. " +
+			"Requires /coach-launch-edge first. Playwright CLI remains the preferred external navigator; this is the in-coach peek.",
+		parameters: Type.Object({
+			selector: Type.Optional(Type.String({ description: "CSS selector for a subtree snapshot. Ignored when ref is set." })),
+			ref: Type.Optional(Type.String({ description: "Aria snapshot ref (e.g. e12) for a subtree snapshot." })),
+		}),
+		async execute(_id: string, params: { selector?: string; ref?: string }) {
+			try {
+				const outcome = await coachSnapshot(params);
+				return {
+					content: [{ type: "text", text: renderPeekSnapshotText(outcome) }],
+					details: outcome,
+					isError: !outcome.ok,
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `browser_coach_snapshot failed: ${(err as Error).message}` }],
+					details: { error: (err as Error).message },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	managed.registerTool({
+		name: "browser_coach_act",
+		defaultVisibility: "agent-visible",
+		label: "Peek page act",
+		description:
+			"Run a short list of UI actions on the current /coach-launch-edge tab and return a fresh a11y snapshot. " +
+			"No screencast, no webm, no ffmpeg. Steps use the same portal-actions path as browser_record_test " +
+			"(click/fill/press/waitFor/scroll/setInputFiles, Radix dialog locators). At most 12 steps. " +
+			"Copy refs from the snapshot into a subsequent browser_record_test and omit url. Do not use this as the " +
+			"widget recorder — that is still browser_record_test. Requires /coach-launch-edge first.",
+		parameters: Type.Object({
+			steps: Type.Array(StepSchema, { description: "Short sequence of UI actions (max 12). Same schema as browser_record_test." }),
+			snapshotAfterEach: Type.Optional(Type.Boolean({ description: "Return a snapshot after every step (default: one snapshot after the list)." })),
+			stopOnStepFailure: Type.Optional(Type.Boolean({ description: "Stop on the first failure (default true)." })),
+		}),
+		async execute(_id: string, params: { steps: RecorderStep[]; snapshotAfterEach?: boolean; stopOnStepFailure?: boolean }) {
+			try {
+				const outcome = await coachAct(params);
+				return {
+					content: [{ type: "text", text: renderPeekActText(outcome) }],
+					details: outcome,
+					isError: !outcome.passed,
+				};
+			} catch (err) {
+				return {
+					content: [{ type: "text", text: `browser_coach_act failed: ${(err as Error).message}` }],
+					details: { error: (err as Error).message },
+					isError: true,
+				};
+			}
+		},
+	});
+
+	managed.registerTool({
 		name: "browser_record_test",
 		defaultVisibility: "agent-visible",
 		label: "Record browser test",
 		description:
 			"Run an autonomous UI test in the controlled Edge tab (no user prompts) and save a .webm screen recording, " +
-			"a Playwright .trace.zip, and a structured report under ./.frontend-coach/records/. Target steps with a11y " +
-			"snapshot refs (e.g. e12) from the report snapshot; CSS selector is the fallback. fill/type use Playwright " +
-			"events that update React Hook Form (including inside a Radix Dialog portal). Attach files with setInputFiles " +
-			"on the real input[type=file] (hidden is OK). Do not set values via eval / HTMLInputElement.prototype.value — " +
-			"RHF will stay invalid and submit stays disabled. If any step or assertion fails, the tool returns isError=true. " +
-			"Requires /coach-launch-edge first.",
+			"a Playwright .trace.zip, and a structured report under ./.frontend-coach/records/. Peek first with " +
+			"browser_coach_snapshot / browser_coach_act, then record with those a11y refs (e12); omit url so refs stay valid. " +
+			"CSS selector is the fallback. fill/type use Playwright events that update React Hook Form (including inside a " +
+			"Radix Dialog portal). Attach files with setInputFiles on the real input[type=file] (hidden is OK). Do not set " +
+			"values via eval / HTMLInputElement.prototype.value — RHF will stay invalid and submit stays disabled. If any " +
+			"step or assertion fails, the tool returns isError=true. Requires /coach-launch-edge first.",
 		parameters: Type.Object({
 			name: Type.String({ description: "Short title for the recording (used in filename and report)." }),
 			url: Type.Optional(Type.String({ description: "Navigate to this URL before recording. Omit to use the current tab." })),

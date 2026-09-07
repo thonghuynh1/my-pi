@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -137,6 +137,8 @@ let prevCwd = "";
 let recordTest: typeof import("./recorder.ts").recordTest;
 let ariaRefSelector: typeof import("./recorder.ts").ariaRefSelector;
 let stepTarget: typeof import("./recorder.ts").stepTarget;
+let coachSnapshot: typeof import("./peek.ts").coachSnapshot;
+let coachAct: typeof import("./peek.ts").coachAct;
 
 before(async () => {
 	if (!existsSync(CHROME)) throw new Error(`Chrome not found at ${CHROME}`);
@@ -182,6 +184,9 @@ before(async () => {
 	recordTest = rec.recordTest;
 	ariaRefSelector = rec.ariaRefSelector;
 	stepTarget = rec.stepTarget;
+	const peek = await import("./peek.ts");
+	coachSnapshot = peek.coachSnapshot;
+	coachAct = peek.coachAct;
 });
 
 after(async () => {
@@ -235,6 +240,39 @@ test("browser_record_test clicks via a11y snapshot ref and writes trace.zip besi
 	assert.ok(clicked.report.videoPath.endsWith(".webm"));
 	assert.ok(existsSync(clicked.report.videoPath), "webm missing");
 	assert.equal(join(clicked.report.videoPath.replace(/\.webm$/, ".trace.zip")), clicked.report.tracePath);
+});
+
+test("peek then browser_record_test: refs stay valid, peek writes no webm", async () => {
+	const url = `http://127.0.0.1:${httpPort}/`;
+	const recordsDir = join(workDir, ".frontend-coach", "records");
+	const webms = () => existsSync(recordsDir)
+		? readdirSync(recordsDir).filter((f) => f.endsWith(".webm"))
+		: [];
+	const beforePeek = webms();
+
+	const nav = await coachAct({ steps: [{ action: "navigate", url }] });
+	assert.equal(nav.passed, true, nav.failure);
+	const snap = await coachSnapshot();
+	assert.equal(snap.ok, true, snap.error);
+	const refMatch = snap.snapshot.match(/button "Save" \[ref=([^\]]+)\]/);
+	assert.ok(refMatch, `Save button ref missing from peek snapshot:\n${snap.snapshot}`);
+	const ref = refMatch![1]!;
+
+	const clicked = await coachAct({ steps: [{ action: "click", ref }] });
+	assert.equal(clicked.passed, true, clicked.failure ?? JSON.stringify(clicked.steps, null, 2));
+	assert.deepEqual(webms(), beforePeek, "peek must not write a webm");
+
+	const recorded = await recordTest({
+		name: "record after peek via ref",
+		steps: [{ action: "click", ref, selector: "#does-not-exist" }],
+		assertions: [
+			{ description: "still saved after peek+record", expression: "document.getElementById('out')?.textContent === 'saved'" },
+		],
+	});
+	assert.equal(recorded.report.passed, true, recorded.report.failure ?? JSON.stringify(recorded.report.steps, null, 2));
+	assert.ok(recorded.report.videoPath.endsWith(".webm"));
+	assert.ok(existsSync(recorded.report.videoPath), "browser_record_test must still write webm");
+	assert.ok(recorded.report.tracePath && existsSync(recorded.report.tracePath));
 });
 
 test("browser_record_test still accepts CSS selector fallback", async () => {

@@ -1,13 +1,29 @@
 ---
 name: frontend-coach-record
-description: "Use when recording a frontend-coach browser test, targeting page elements, or choosing between a11y refs and CSS selectors. Covers browser_record_test refs (e12 style), CSS fallback, Radix Dialog + React Hook Form fills, setInputFiles, /coach-launch-edge, and the trace.zip next to the ffmpeg webm."
+description: "Use when recording a frontend-coach browser test, peeking the live Edge tab, targeting page elements, or choosing between a11y refs and CSS selectors. Covers browser_coach_snapshot / browser_coach_act (no video), browser_record_test refs (e12 style), CSS fallback, Radix Dialog + React Hook Form fills, setInputFiles, /coach-launch-edge, and the trace.zip next to the ffmpeg webm."
 ---
 
-Drive the Edge tab already launched by `/coach-launch-edge`. Do not start a Playwright browser server. Do not add Playwright MCP `browser_*` tools. The existing coach tools are the whole agent API. Playwright CLI remains the preferred way to *navigate* a headed session; `browser_record_test` is the widget recorder (Edge CDP, webm+json+md).
+Drive the Edge tab already launched by `/coach-launch-edge`. Do not start a Playwright browser server. Do not add Playwright MCP `browser_*` tools. The existing coach tools are the whole agent API. Playwright CLI remains the preferred way to *navigate* a headed session from outside coach. Inside coach, peek (`browser_coach_snapshot` / `browser_coach_act`) is the interactive surface on that CDP Edge tab. `browser_record_test` remains the widget recorder (webm+json+md+trace).
+
+## Peek first, then record
+
+Do not guess selectors from JSX. The cheap loop is snapshot → act → snapshot on the live tab, then a recorded prove:
+
+1. `browser_coach_snapshot` — Playwright a11y snapshot of the current tab. Refs look like `[ref=e12]`. No screencast, no webm.
+2. `browser_coach_act` — a short step list (`click` / `fill` / `press` / `waitFor` / `scroll` / `setInputFiles`, same portal-actions as record). Returns a fresh snapshot. Still no video. Optional `snapshotAfterEach: true` snapshots after every step.
+3. `browser_record_test` — copy refs from peek, **omit `url`** so the current tab (and refs) stay valid. This is the prove/recorder.
+
+```
+browser_coach_snapshot()
+browser_coach_act({ "steps": [{ "action": "click", "ref": "e12" }] })
+browser_record_test({ "name": "prove click", "steps": [{ "action": "click", "ref": "e12" }], "assertions": [...] })
+```
+
+Passing `url` on `browser_record_test` navigates and invalidates refs. Peek does not take a top-level `url`; navigate only with an act `navigate` step if you must. Cap act at 12 steps — longer flows belong on `browser_record_test`.
 
 ## Target by snapshot ref, CSS as fallback
 
-`browser_record_test` stamps a Playwright AI aria snapshot before it runs steps. Interactive nodes look like `[ref=e12]`. Pass that ref on the step:
+Interactive nodes look like `[ref=e12]`. Pass that ref on the step:
 
 ```
 { "action": "click", "ref": "e12" }
@@ -16,19 +32,19 @@ Drive the Edge tab already launched by `/coach-launch-edge`. Do not start a Play
 
 CSS `selector` still works when you already have a stable locator (widget `mountSelector`, `data-testid`). If both are set, `ref` wins. `coach_resolve_widget` / `browser_record_for_widget` auto-steps keep using CSS. Locators prefer the match inside an open `role=dialog` (Radix portal).
 
-Refs are for this page load. Passing `url` navigates and invalidates them. After you have a snapshot, call `browser_record_test` again with those refs and omit `url` so you keep the current tab. Refs look like `e12` on the top-level page and `f1e2` inside an iframe.
+Refs are for this page load. Refs look like `e12` on the top-level page and `f1e2` inside an iframe. Optional `selector` / `ref` on `browser_coach_snapshot` snapshots a subtree.
 
 ## React Hook Form + Radix Dialog (create / create-with-document)
 
 `page.fill` / `locator.fill` update React Hook Form. `Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set` + `dispatchEvent` does **not** — the DOM can look filled while RHF stays invalid and submit stays disabled.
 
-Do not use `eval` to fill fields or to fake a file with `DataTransfer`. The recorder already:
+Do not use `eval` to fill fields or to fake a file with `DataTransfer`. Peek and the recorder already:
 
-1. Fills through Playwright (force-fill when the Radix backdrop intercepts pointer events).
-2. Clicks by disabling overlay `pointer-events` at the hit point, then clicking for real.
-3. Attaches files with `locator.setInputFiles` on the real `input[type=file]`, even if it is visually hidden.
+1. Fill through Playwright (force-fill when the Radix backdrop intercepts pointer events).
+2. Click by disabling overlay `pointer-events` at the hit point, then clicking for real.
+3. Attach files with `locator.setInputFiles` on the real `input[type=file]`, even if it is visually hidden.
 
-Create-with-document script:
+Create-with-document script (peek to confirm, then record):
 
 ```
 { "action": "click", "selector": "<New / Create trigger>" }
@@ -42,7 +58,7 @@ Then assert the documented success signal (new row, count bump, toast). Prefer `
 
 Optional `force: true` on a step skips the first unforced attempt when you already know the overlay will intercept.
 
-## What a run writes
+## What a record run writes
 
 Same id, under `./.frontend-coach/records/`:
 
@@ -50,7 +66,7 @@ Same id, under `./.frontend-coach/records/`:
 - `{id}.trace.zip` Playwright trace of the same session
 - `{id}.json` / `{id}.md` report, including the a11y snapshot
 
-On failure the tool returns `isError: true`. Fix the app, record again.
+Peek writes none of these. On record failure the tool returns `isError: true`. Fix the app, record again.
 
 ## Keep using
 
@@ -58,3 +74,4 @@ On failure the tool returns `isError: true`. Fix the app, record again.
 - Isolated profile under `.frontend-coach/edge-profile/`
 - playwright-core over CDP 9222
 - `/coach-launch-edge` as the daemon
+- Widget resolve (`coach_resolve_widget` / `browser_record_for_widget`) unchanged

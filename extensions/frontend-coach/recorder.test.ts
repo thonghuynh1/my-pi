@@ -28,6 +28,75 @@ document.getElementById("save").onclick = () => {
 </script>
 `;
 
+/** Radix-like portal: overlay sits above the dialog and intercepts pointer events. */
+const DIALOG_FIXTURE = `<!doctype html>
+<meta charset="utf-8">
+<title>create-with-document fixture</title>
+<style>
+  [data-radix-dialog-overlay] {
+    position: fixed; inset: 0; background: rgba(0,0,0,.4);
+    z-index: 100; pointer-events: auto;
+  }
+  [role="dialog"] {
+    position: fixed; left: 50%; top: 40%; transform: translate(-50%,-50%);
+    z-index: 50; background: #fff; padding: 24px; min-width: 280px;
+  }
+  input[type="file"] { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
+</style>
+<main>
+  <h1>Activities</h1>
+  <ul id="activities"><li data-activity>Existing activity</li></ul>
+  <p>Count: <span id="count">1</span></p>
+  <button id="new" type="button">New activity</button>
+</main>
+<div id="portal" hidden>
+  <div data-radix-dialog-overlay></div>
+  <div role="dialog" aria-modal="true">
+    <h2>Create activity</h2>
+    <form id="form">
+      <label>Title <input id="title" name="title" required></label>
+      <label>Attach <input id="file" name="file" type="file"></label>
+      <button id="submit" type="submit" disabled>Create</button>
+    </form>
+  </div>
+</div>
+<script>
+(function () {
+  const state = { title: "", file: null };
+  const title = document.getElementById("title");
+  const file = document.getElementById("file");
+  const submit = document.getElementById("submit");
+  const portal = document.getElementById("portal");
+  function sync() {
+    submit.disabled = !(state.title.trim() && state.file);
+  }
+  // Playwright fill uses CDP insertText (trusted InputEvent). Native
+  // HTMLInputElement.prototype.value.set + new Event("input") is untrusted
+  // and not an InputEvent — RHF does not commit that, so submit stays disabled.
+  title.addEventListener("input", (e) => {
+    if (!e.isTrusted && !(e instanceof InputEvent)) return;
+    state.title = title.value;
+    sync();
+  });
+  file.addEventListener("change", () => {
+    state.file = file.files && file.files[0] ? file.files[0] : null;
+    sync();
+  });
+  document.getElementById("new").onclick = () => { portal.hidden = false; };
+  document.getElementById("form").onsubmit = (e) => {
+    e.preventDefault();
+    if (submit.disabled) return;
+    const li = document.createElement("li");
+    li.setAttribute("data-activity", "");
+    li.textContent = state.title + " (" + state.file.name + ")";
+    document.getElementById("activities").appendChild(li);
+    document.getElementById("count").textContent = String(document.querySelectorAll("[data-activity]").length);
+    portal.hidden = true;
+  };
+})();
+</script>
+`;
+
 function freePort(): Promise<number> {
 	return new Promise((resolve, reject) => {
 		const server = createServer();
@@ -82,9 +151,11 @@ before(async () => {
 	prevCwd = process.cwd();
 	process.chdir(workDir);
 
-	httpServer = createServer((_req, res) => {
+	httpServer = createServer((req, res) => {
+		const path = (req.url ?? "/").split("?")[0];
+		const html = path === "/create-dialog" ? DIALOG_FIXTURE : FIXTURE;
 		res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-		res.end(FIXTURE);
+		res.end(html);
 	});
 	await new Promise<void>((resolve) => httpServer!.listen(httpPort, "127.0.0.1", resolve));
 
@@ -179,4 +250,50 @@ test("browser_record_test still accepts CSS selector fallback", async () => {
 	assert.equal(clicked.report.passed, true, clicked.report.failure ?? JSON.stringify(clicked.report.steps, null, 2));
 	const md = readFileSync(clicked.report.videoPath.replace(/\.webm$/, ".md"), "utf8");
 	assert.match(md, /A11y snapshot/);
+});
+
+test("create-with-document: fill+setInputFiles through Radix overlay completes create", async () => {
+	const url = `http://127.0.0.1:${httpPort}/create-dialog`;
+	const nativeSetter =
+		"(() => { const el = document.querySelector('#title'); " +
+		"Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'from-eval'); " +
+		"el.dispatchEvent(new Event('input', { bubbles: true })); " +
+		"return { value: el.value, disabled: document.querySelector('#submit').disabled }; })()";
+
+	const run = await recordTest({
+		name: "create with document through radix dialog",
+		url,
+		steps: [
+			{ action: "click", selector: "#new" },
+			{ action: "waitFor", selector: "[role=dialog]", ms: 4000 },
+			{ action: "eval", expression: nativeSetter },
+		],
+		assertions: [
+			{ description: "native prototype setter does not enable submit", expression: "document.querySelector('#submit')?.disabled === true" },
+			{ description: "one activity still listed", expression: "document.querySelectorAll('[data-activity]').length === 1" },
+		],
+	});
+	assert.equal(run.report.passed, true, run.report.failure ?? JSON.stringify(run.report, null, 2));
+
+	const created = await recordTest({
+		name: "create with document playwright fill",
+		steps: [
+			{ action: "fill", selector: "#title", value: "Coach create" },
+			{ action: "setInputFiles", selector: "#file", fileName: "note.txt", fileContent: "hello coach", mimeType: "text/plain" },
+			{ action: "click", selector: "#submit" },
+			{ action: "wait", ms: 200 },
+		],
+		assertions: [
+			{ description: "new activity appears", expression: "document.querySelectorAll('[data-activity]').length === 2" },
+			{ description: "created row has title and filename", expression: "/Coach create \\(note\\.txt\\)/.test(document.getElementById('activities')?.textContent ?? '')" },
+			{ description: "count badge is 2", expression: "document.getElementById('count')?.textContent === '2'" },
+		],
+	});
+	assert.equal(
+		created.report.passed,
+		true,
+		created.report.failure ?? JSON.stringify({ steps: created.report.steps, assertions: created.report.assertions }, null, 2),
+	);
+	assert.equal(created.report.steps.some((s) => s.action === "setInputFiles" && s.ok), true);
+	assert.equal(created.report.steps.some((s) => s.action === "eval"), false);
 });

@@ -30,6 +30,14 @@ import {
 	type TestReport,
 } from "./records.ts";
 import type { Page } from "playwright-core";
+import {
+	clickThroughPortal,
+	filePayloadFromStep,
+	fillThroughPortal,
+	isPointerInterceptError,
+	setInputFilesThroughPortal,
+	stepLocator,
+} from "./portal-actions.ts";
 
 // Lazy ESM require for ffmpeg-static so a missing install gives a
 // helpful runtime error instead of breaking extension load.
@@ -54,7 +62,8 @@ async function resolveFfmpegBinary(): Promise<string> {
 
 export type StepAction =
 	| "click" | "dblclick" | "type" | "fill" | "press" | "hover"
-	| "wait" | "waitFor" | "navigate" | "scroll" | "eval";
+	| "wait" | "waitFor" | "navigate" | "scroll" | "eval"
+	| "setInputFiles";
 
 export interface Step {
 	action: StepAction;
@@ -66,6 +75,14 @@ export interface Step {
 	url?: string;
 	ms?: number;
 	expression?: string;
+	/** Skip actionability / pierce overlays immediately (Radix Dialog backdrop). */
+	force?: boolean;
+	/** Filesystem paths for setInputFiles (alternative to `value`). */
+	files?: string[];
+	/** Inline upload for setInputFiles when there is no path on disk. */
+	fileName?: string;
+	fileContent?: string;
+	mimeType?: string;
 }
 
 export interface Assertion {
@@ -120,27 +137,46 @@ async function captureAriaSnapshot(page: Page): Promise<string> {
 
 async function runStep(page: Page, step: Step): Promise<void> {
 	const timeout = 10_000;
+	const force = step.force === true;
 	switch (step.action) {
 		case "click":
-			await page.click(needTarget(step, "click"), { timeout });
+			await clickThroughPortal(page, await stepLocator(page, needTarget(step, "click")), { timeout, force });
 			break;
 		case "dblclick":
-			await page.dblclick(needTarget(step, "dblclick"), { timeout });
+			await clickThroughPortal(page, await stepLocator(page, needTarget(step, "dblclick")), {
+				timeout, force, kind: "dblclick",
+			});
 			break;
 		case "type":
 		case "fill":
-			await page.fill(needTarget(step, step.action), step.value ?? "", { timeout });
+			await fillThroughPortal(
+				await stepLocator(page, needTarget(step, step.action)),
+				step.value ?? "",
+				{ timeout, force },
+			);
 			break;
 		case "press":
 			if (!step.key) throw new Error("press step needs key");
 			{
 				const target = stepTarget(step);
-				if (target) await page.press(target, step.key, { timeout });
-				else await page.keyboard.press(step.key);
+				if (target) {
+					const loc = await stepLocator(page, target);
+					try {
+						await loc.press(step.key, { timeout });
+					} catch (err) {
+						if (!force && !isPointerInterceptError(err)) throw err;
+						await clickThroughPortal(page, loc, { timeout, force: true });
+						await page.keyboard.press(step.key);
+					}
+				} else {
+					await page.keyboard.press(step.key);
+				}
 			}
 			break;
 		case "hover":
-			await page.hover(needTarget(step, "hover"), { timeout });
+			await clickThroughPortal(page, await stepLocator(page, needTarget(step, "hover")), {
+				timeout, force, kind: "hover",
+			});
 			break;
 		case "wait":
 			await page.waitForTimeout(Math.max(0, step.ms ?? 0));
@@ -153,7 +189,14 @@ async function runStep(page: Page, step: Step): Promise<void> {
 			await page.goto(step.url, { timeout: 30_000, waitUntil: "load" });
 			break;
 		case "scroll":
-			await page.locator(needTarget(step, "scroll")).first().scrollIntoViewIfNeeded({ timeout });
+			await (await stepLocator(page, needTarget(step, "scroll"))).scrollIntoViewIfNeeded({ timeout });
+			break;
+		case "setInputFiles":
+			await setInputFilesThroughPortal(
+				page,
+				await stepLocator(page, needTarget(step, "setInputFiles"), { allowHidden: true }),
+				filePayloadFromStep(step),
+			);
 			break;
 		case "eval":
 			if (!step.expression) throw new Error("eval step needs expression");

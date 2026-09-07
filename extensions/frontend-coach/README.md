@@ -108,7 +108,7 @@ browser_record_test({
 })
 ```
 
-Supported step actions: `click`, `dblclick`, `type`/`fill`, `press`, `hover`, `wait` (`ms`), `waitFor` (selector or ref + optional `ms` timeout), `navigate` (`url`), `scroll` (selector or ref, scrolls into view), `eval` (`expression`). Target with `ref` (Playwright a11y snapshot, e.g. `e12`) or CSS `selector`.
+Supported step actions: `click`, `dblclick`, `type`/`fill`, `press`, `hover`, `wait` (`ms`), `waitFor` (selector or ref + optional `ms` timeout), `navigate` (`url`), `scroll` (selector or ref, scrolls into view), `setInputFiles` (real file input, hidden is fine), `eval` (`expression`). Target with `ref` (Playwright a11y snapshot, e.g. `e12`) or CSS `selector`. Locators prefer an open `role=dialog` portal (Radix). `fill`/`type` use Playwright events so React Hook Form state updates; `setInputFiles` uses Playwright `locator.setInputFiles`. Do **not** set field values via `eval` + `HTMLInputElement.prototype.value` — RHF stays invalid and submit stays disabled. If a Radix overlay intercepts pointer events, the recorder pierces it and retries with `force` rather than falling back to eval.
 
 Each run writes files to `./.frontend-coach/records/`:
 
@@ -216,6 +216,7 @@ Config env vars (only needed outside the default layout):
 - **CDP port** for workflow 2 defaults to `9222`. Override with `FRONTEND_COACH_CDP_PORT=9333`.
 - **Edge path** auto-detected on Windows (Program Files / Program Files (x86) / LocalAppData) and macOS. Override with `FRONTEND_COACH_EDGE_PATH=C:\path\to\msedge.exe`.
 - **ffmpeg** is bundled via `ffmpeg-static`. Override with `FRONTEND_COACH_FFMPEG=C:\path\to\ffmpeg.exe` if you prefer a system ffmpeg.
+- **React Hook Form + Radix Dialog**: `fill` / `type` / `setInputFiles` go through Playwright, which updates RHF and the real `<input type=file>` pipeline. `eval` native value setters and `DataTransfer` dispatches do not. Overlays that intercept pointer events are pierced automatically.
 - **No "share this tab" prompt**: workflow 2 uses CDP, not `getDisplayMedia`, so it's silent.
 - **Bound to `127.0.0.1`** — nothing exposed to your LAN.
 - **Source-map hints** (workflow 1): if your build adds `data-source="file:line"` (e.g. via `@locator/runtime` or `vite-plugin-react-click-to-component`), the picker forwards it as `sourceFile` so pi jumps straight to the right file.
@@ -229,6 +230,7 @@ frontend-coach/
 ├── index.ts     ← pi extension entry (HTTP+WS server, tool/command wiring)
 ├── edge.ts      ← locate, launch, attach to Microsoft Edge via CDP
 ├── recorder.ts  ← drive page + pipe Page.screencastFrame into ffmpeg → webm; Playwright snapshot/ref + trace.zip
+├── portal-actions.ts ← Radix overlay pierce + RHF-safe fill / setInputFiles
 ├── records.ts   ← on-disk record format (id, paths, markdown rendering)
 ├── widgets.ts   ← MyOffice + MyBusiness widget catalog resolver (workflow 3)
 ├── picker.js    ← injected into your page (workflow 1 only)

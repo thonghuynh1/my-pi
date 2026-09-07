@@ -120,6 +120,8 @@ test("peekAct enforces budget before touching the page", async () => {
 		/at most 12 steps/,
 	);
 });
+
+test("renderPeek text tells agents to omit url and skip video", () => {
 	const snap = renderPeekSnapshotText({
 		url: "http://localhost/app",
 		snapshot: "- button \"Save\" [ref=e12]",
@@ -172,6 +174,14 @@ function recordsWebms(): string[] {
 	if (!existsSync(dir)) return [];
 	return readdirSync(dir).filter((f) => f.endsWith(".webm"));
 }
+
+test("peek snapshot selector scopes to a subtree", { skip: !hasChrome }, async () => {
+	await page!.setContent(FIXTURE);
+	const outcome = await peekSnapshot(page!, { selector: "#save" });
+	assert.equal(outcome.ok, true, outcome.error);
+	assert.match(outcome.snapshot, /button "Save"/);
+	assert.match(outcome.snapshot, /\[ref=/i);
+});
 
 test("peek snapshot returns a11y refs without writing webm", { skip: !hasChrome }, async () => {
 	await page!.setContent(FIXTURE);

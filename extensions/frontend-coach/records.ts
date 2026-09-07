@@ -25,6 +25,11 @@ export interface StepRecord {
 	url?: string;
 	ms?: number;
 	expression?: string;
+	force?: boolean;
+	files?: string[];
+	fileName?: string;
+	fileContent?: string;
+	mimeType?: string;
 	ok: boolean;
 	error?: string;
 	atMs: number;
@@ -258,6 +263,8 @@ function formatStep(s: StepRecord): string {
 		case "type":
 		case "fill":
 			return `${formatTarget(s)} ← ${JSON.stringify(s.value ?? "")}`;
+		case "setInputFiles":
+			return `${formatTarget(s)} ← ${JSON.stringify(s.files ?? s.fileName ?? s.value ?? "")}`;
 		case "press":
 			return `\`${s.key ?? ""}\`${s.ref || s.selector ? ` on ${formatTarget(s)}` : ""}`;
 		case "navigate":

@@ -353,15 +353,20 @@ export default async function (pi: ExtensionAPI) {
 			Type.Literal("press"), Type.Literal("hover"),
 			Type.Literal("wait"), Type.Literal("waitFor"),
 			Type.Literal("navigate"), Type.Literal("scroll"),
-			Type.Literal("eval"),
-		], { description: "What to do at this step." }),
-		selector: Type.Optional(Type.String({ description: "CSS selector fallback (click/dblclick/type/fill/hover/waitFor/scroll/optional for press). Ignored when ref is set." })),
+			Type.Literal("eval"), Type.Literal("setInputFiles"),
+		], { description: "What to do at this step. Use fill/type/setInputFiles for React Hook Form — never eval native value setters." }),
+		selector: Type.Optional(Type.String({ description: "CSS selector fallback (click/dblclick/type/fill/hover/waitFor/scroll/setInputFiles/optional for press). Ignored when ref is set. Locators prefer an open role=dialog portal." })),
 		ref: Type.Optional(Type.String({ description: "Playwright a11y snapshot ref (e.g. e12). Preferred over selector. Copy from the snapshot returned by a previous or current browser_record_test." })),
-		value: Type.Optional(Type.String({ description: "Text for type/fill." })),
+		value: Type.Optional(Type.String({ description: "Text for type/fill, or a filesystem path for setInputFiles." })),
 		key: Type.Optional(Type.String({ description: "Key name for press (e.g. 'Enter', 'Tab', 'Control+S')." })),
 		url: Type.Optional(Type.String({ description: "URL for navigate." })),
 		ms: Type.Optional(Type.Number({ description: "Milliseconds for wait, or timeout override for waitFor." })),
-		expression: Type.Optional(Type.String({ description: "JS expression for eval (no statements)." })),
+		expression: Type.Optional(Type.String({ description: "JS expression for eval (no statements). Do not use eval to set input values or attach files — that skips React Hook Form. Use fill / type / setInputFiles." })),
+		force: Type.Optional(Type.Boolean({ description: "Pierce overlays immediately (Radix Dialog backdrop). Default: retry with force only if pointer events are intercepted." })),
+		files: Type.Optional(Type.Array(Type.String(), { description: "Filesystem paths for setInputFiles (alternative to value)." })),
+		fileName: Type.Optional(Type.String({ description: "Inline filename for setInputFiles when using fileContent (hidden input[type=file] is fine)." })),
+		fileContent: Type.Optional(Type.String({ description: "Inline file bytes as text for setInputFiles. Prefer this over DataTransfer eval." })),
+		mimeType: Type.Optional(Type.String({ description: "MIME type for inline setInputFiles (default application/octet-stream)." })),
 	});
 	const AssertionSchema = Type.Object({
 		description: Type.String({ description: "Human-readable description, shown in the report." }),
@@ -374,9 +379,11 @@ export default async function (pi: ExtensionAPI) {
 		description:
 			"Run an autonomous UI test in the controlled Edge tab (no user prompts) and save a .webm screen recording, " +
 			"a Playwright .trace.zip, and a structured report under ./.frontend-coach/records/. Target steps with a11y " +
-			"snapshot refs (e.g. e12) from the report snapshot; CSS selector is the fallback. Use this after implementing " +
-			"a frontend change to prove it works. If any step or assertion fails, the tool returns isError=true with a " +
-			"transcript. Fix the code and call it again. Requires /coach-launch-edge to have been run first.",
+			"snapshot refs (e.g. e12) from the report snapshot; CSS selector is the fallback. fill/type use Playwright " +
+			"events that update React Hook Form (including inside a Radix Dialog portal). Attach files with setInputFiles " +
+			"on the real input[type=file] (hidden is OK). Do not set values via eval / HTMLInputElement.prototype.value — " +
+			"RHF will stay invalid and submit stays disabled. If any step or assertion fails, the tool returns isError=true. " +
+			"Requires /coach-launch-edge first.",
 		parameters: Type.Object({
 			name: Type.String({ description: "Short title for the recording (used in filename and report)." }),
 			url: Type.Optional(Type.String({ description: "Navigate to this URL before recording. Omit to use the current tab." })),
@@ -404,7 +411,7 @@ export default async function (pi: ExtensionAPI) {
 				const failedAsserts = report.assertions.filter((a) => !a.ok);
 				if (failedSteps.length) {
 					lines.push("failed steps:");
-					for (const s of failedSteps) lines.push(`  - ${s.action} ${s.ref ? `ref=${s.ref}` : (s.selector ?? s.url ?? s.expression ?? "")} → ${s.error}`);
+					for (const s of failedSteps) lines.push(`  - ${s.action} ${s.ref ? `ref=${s.ref}` : (s.selector ?? s.fileName ?? s.url ?? s.expression ?? "")} → ${s.error}`);
 				}
 				if (failedAsserts.length) {
 					lines.push("failed assertions:");
@@ -647,7 +654,7 @@ export default async function (pi: ExtensionAPI) {
 					(report.tracePath ? `\ntrace : ${report.tracePath}` : "");
 				const failBits: string[] = [];
 				if (report.failure) failBits.push(`fail  : ${report.failure}`);
-				for (const s of report.steps.filter((x) => !x.ok)) failBits.push(`  step ${s.action} ${s.ref ? `ref=${s.ref}` : (s.selector ?? s.url ?? s.expression ?? "")} \u2192 ${s.error}`);
+				for (const s of report.steps.filter((x) => !x.ok)) failBits.push(`  step ${s.action} ${s.ref ? `ref=${s.ref}` : (s.selector ?? s.fileName ?? s.url ?? s.expression ?? "")} \u2192 ${s.error}`);
 				for (const a of report.assertions.filter((x) => !x.ok)) failBits.push(`  assert FAIL: ${a.description}${a.error ? ` (${a.error})` : ""}`);
 				let text = failBits.length ? `${head}\n${failBits.join("\n")}` : head;
 				if (report.snapshot) {

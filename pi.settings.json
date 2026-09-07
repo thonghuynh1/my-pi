@@ -59,6 +59,18 @@
       "tools": {
         "aiknow_search": "agent-visible"
       }
+    },
+    "background-jobs": {
+      "tools": {
+        "bg_run": "agent-visible",
+        "bg_status": "agent-visible",
+        "bg_list": "agent-visible",
+        "bg_kill": "agent-visible",
+        "bg_input": "agent-visible"
+      },
+      "commands": {
+        "jobs": "enabled"
+      }
     }
   }
 }

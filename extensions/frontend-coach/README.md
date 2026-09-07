@@ -252,7 +252,7 @@ Config env vars (only needed outside the default layout):
 - **CDP port** for workflow 2 defaults to `9222`. Override with `FRONTEND_COACH_CDP_PORT=9333`.
 - **Edge path** auto-detected on Windows (Program Files / Program Files (x86) / LocalAppData) and macOS. Override with `FRONTEND_COACH_EDGE_PATH=C:\path\to\msedge.exe`.
 - **ffmpeg** is bundled via `ffmpeg-static`. Override with `FRONTEND_COACH_FFMPEG=C:\path\to\ffmpeg.exe` if you prefer a system ffmpeg.
-- **React Hook Form + Radix Dialog**: `fill` / `type` / `setInputFiles` go through Playwright, which updates RHF and the real `<input type=file>` pipeline. `eval` native value setters and `DataTransfer` dispatches do not. Overlays that intercept pointer events are pierced automatically.
+- **React Hook Form + Radix Dialog**: `fill` / `type` / `setInputFiles` go through Playwright, which updates RHF and the real `<input type=file>` pipeline. `eval` native value setters and `DataTransfer` dispatches do not. Overlays that intercept pointer events are pierced automatically. Reproduce with `npm run demo` (`demo-rhf-dialog/`, http://127.0.0.1:5173) and `npm test`.
 - **No "share this tab" prompt**: workflow 2 uses CDP, not `getDisplayMedia`, so it's silent.
 - **Bound to `127.0.0.1`** — nothing exposed to your LAN.
 - **Source-map hints** (workflow 1): if your build adds `data-source="file:line"` (e.g. via `@locator/runtime` or `vite-plugin-react-click-to-component`), the picker forwards it as `sourceFile` so pi jumps straight to the right file.
@@ -271,5 +271,6 @@ frontend-coach/
 ├── records.ts   ← on-disk record format (id, paths, markdown rendering)
 ├── widgets.ts   ← MyOffice + MyBusiness widget catalog resolver (workflow 3)
 ├── picker.js    ← injected into your page (workflow 1 only)
+├── demo-rhf-dialog/  ← Vite + RHF + Radix fixture; `npm run demo` then see its README
 └── skills/frontend-coach-record/SKILL.md  ← how to use snapshot refs without a fat MCP schema
 ```

@@ -1,0 +1,28 @@
+{
+  "name": "demo-rhf-dialog",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Vite + React Hook Form + Radix Dialog fixture for frontend-coach peek/act prove.",
+  "scripts": {
+    "dev": "vite --port 5173 --strictPort --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --port 5173 --strictPort --host 127.0.0.1",
+    "test": "tsx --test prove.test.ts"
+  },
+  "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-hook-form": "^7.54.2"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "playwright-core": "^1.61.0",
+    "tsx": "^4.19.3",
+    "typescript": "~5.7.3",
+    "vite": "^6.0.11"
+  }
+}

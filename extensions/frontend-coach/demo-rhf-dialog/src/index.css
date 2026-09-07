@@ -1,0 +1,152 @@
+:root {
+	font-family: "Segoe UI", system-ui, sans-serif;
+	line-height: 1.4;
+	color: #111;
+	background: #f4f4f5;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+}
+
+#root {
+	min-height: 100vh;
+}
+
+.page {
+	max-width: 40rem;
+	margin: 0 auto;
+	padding: 2rem 1.25rem 4rem;
+}
+
+h1,
+h2 {
+	margin: 0 0 0.75rem;
+}
+
+.lede {
+	color: #444;
+	margin: 0 0 1.25rem;
+}
+
+.toolbar {
+	display: flex;
+	gap: 0.75rem;
+	margin-bottom: 1.25rem;
+}
+
+button {
+	font: inherit;
+	cursor: pointer;
+	border-radius: 6px;
+	border: 1px solid #bbb;
+	background: #fff;
+	padding: 0.4rem 0.8rem;
+}
+
+button[type="submit"] {
+	background: #111;
+	color: #fff;
+	border-color: #111;
+}
+
+button:disabled {
+	cursor: not-allowed;
+	opacity: 0.45;
+}
+
+button.broken {
+	border-color: #b45309;
+	color: #92400e;
+	background: #fff7ed;
+}
+
+.activities {
+	list-style: none;
+	padding: 0;
+	margin: 0 0 1rem;
+}
+
+.activities li {
+	background: #fff;
+	border: 1px solid #ddd;
+	border-radius: 6px;
+	padding: 0.6rem 0.8rem;
+	margin-bottom: 0.4rem;
+}
+
+.count {
+	font-weight: 600;
+}
+
+form {
+	display: grid;
+	gap: 0.85rem;
+}
+
+label.field {
+	display: grid;
+	gap: 0.3rem;
+}
+
+input[type="text"] {
+	font: inherit;
+	padding: 0.4rem 0.5rem;
+	border: 1px solid #ccc;
+	border-radius: 4px;
+}
+
+/* Hidden file input — same as production create-with-document. */
+input[type="file"] {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	opacity: 0;
+	overflow: hidden;
+}
+
+.file-row {
+	display: flex;
+	align-items: center;
+	gap: 0.6rem;
+}
+
+/* Failure mode: overlay sits above the dialog and intercepts clicks. */
+[data-radix-dialog-overlay] {
+	position: fixed;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.4);
+	z-index: 100;
+	pointer-events: auto;
+}
+
+[data-radix-dialog-content] {
+	position: fixed;
+	left: 50%;
+	top: 40%;
+	transform: translate(-50%, -50%);
+	z-index: 50;
+	background: #fff;
+	padding: 1.25rem 1.4rem 1.4rem;
+	min-width: 18rem;
+	max-width: calc(100vw - 2rem);
+	border-radius: 8px;
+	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
+}
+
+.dialog-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	margin-top: 0.25rem;
+}
+
+.hint {
+	font-size: 0.85rem;
+	color: #555;
+	margin: 0;
+}

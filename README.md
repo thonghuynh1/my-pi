@@ -156,13 +156,7 @@ Example `models.json`:
 
 Model resolution order for custom agents is `params.model`, then `models.json`, then markdown frontmatter, then the inherited session model.
 
-Enable session-level subagent workflow instructions:
-
-```text
-/subagent
-```
-
-After that, future prompts in the session tell the main agent when and how to use `explore`, `shell`, and `custom` subagents automatically. Manage it with:
+Subagent workflow mode is on by default. Future prompts in the session tell the main agent when and how to use `explore`, `shell`, and `custom` subagents automatically. Manage it with:
 
 ```text
 /subagent status

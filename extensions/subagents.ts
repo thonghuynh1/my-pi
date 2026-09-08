@@ -1646,29 +1646,27 @@ async function runSubagent(
 
 export const piExtension = { id: "subagents" };
 
+/** Startup default for subagent workflow mode. On unless PI_SUBAGENT_MODE is 0/false/no/off. */
+export function isSubagentModeDefaultEnabled(envValue: string | undefined = process.env.PI_SUBAGENT_MODE): boolean {
+	return !/^(0|false|no|off)$/i.test(envValue ?? "");
+}
+
 export default function (pi: ExtensionAPI) {
-	// Allow non-interactive runs (e.g. ralph-loop spawning pi) to start with
-	// subagent workflow mode already enabled, so the model is steered to use the
+	// Subagent workflow mode is ON by default so the model is steered to use the
 	// `subagent` tool without anyone typing `/subagent on`.
 	//
-	// Two supported mechanisms:
-	//   1. CLI flag `--subagents` (the documented pi.registerFlag mechanism) —
-	//      spawn with `pi --subagents ...`.
-	//   2. Env var `PI_SUBAGENT_MODE=1` — convenient for process spawners that
-	//      already pass an env map.
+	// Opt out:
+	//   - `/subagent off` (session-level; persisted in the session)
+	//   - env `PI_SUBAGENT_MODE=0` (also false/no/off)
+	//
+	// `--subagents` and `PI_SUBAGENT_MODE=1` remain accepted for compatibility.
 	pi.registerFlag("subagents", {
-		description: "Start with subagent workflow mode enabled (explore/shell fan-out)",
+		description: "Start with subagent workflow mode enabled (on by default)",
 		type: "boolean",
-		default: false,
+		default: true,
 	});
-	const subagentModeEnvDefault = /^(1|true|yes|on)$/i.test(
-		process.env.PI_SUBAGENT_MODE ?? "",
-	);
-	// Resolves the startup default from CLI flag (preferred) or env var. getFlag
-	// is only reliable once flags are parsed, so callers use this at session_start.
-	const resolveSubagentModeDefault = (): boolean =>
-		pi.getFlag("subagents") === true || subagentModeEnvDefault;
-	let subagentModeEnabled = subagentModeEnvDefault;
+	const resolveSubagentModeDefault = (): boolean => isSubagentModeDefaultEnabled();
+	let subagentModeEnabled = resolveSubagentModeDefault();
 	const activeSubagents = new Map<string, RunningSubagentStatus>();
 	let tuiRef: { requestRender: () => void } | undefined;
 	let spinnerTimer: ReturnType<typeof setInterval> | undefined;
@@ -2013,9 +2011,9 @@ export default function (pi: ExtensionAPI) {
 		};
 	});
 
-	// Initial registration. Defaults OFF unless PI_SUBAGENT_MODE enables it, in
-	// which case the prompting metadata is included from startup.
-	managed.registerTool({ ...buildSubagentToolDef(subagentModeEnvDefault), defaultVisibility: "agent-visible" as const });
+	// Initial registration. Defaults ON unless PI_SUBAGENT_MODE disables it, so
+	// prompting metadata is included from startup.
+	managed.registerTool({ ...buildSubagentToolDef(subagentModeEnabled), defaultVisibility: "agent-visible" as const });
 
 	managed.registerCommand("subagent", {
 		description: "Enable, disable, or show session-level subagent workflow instructions",

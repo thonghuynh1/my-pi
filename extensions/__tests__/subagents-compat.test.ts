@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { buildEvidencePacketPrompt, formatPacketResultForParent, projectPacketResult, resolveEvidencePacket } from "../lib/subagent-runtime.ts";
-import { appendRetainedToolOutput, extractToolResultText } from "../subagents.ts";
+import { appendRetainedToolOutput, extractToolResultText, isSubagentModeDefaultEnabled } from "../subagents.ts";
 
 const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "subagents.ts"), "utf8");
 
@@ -170,4 +170,17 @@ test("tool result extraction keeps textual content and ignores other parts", () 
 		],
 	}), "first finding\nsecond finding");
 	assert.equal(extractToolResultText({ content: [{ type: "image", data: "ignored" }] }), "");
+});
+
+test("subagent workflow mode is on by default", () => {
+	assert.equal(isSubagentModeDefaultEnabled(undefined), true);
+	assert.equal(isSubagentModeDefaultEnabled(""), true);
+	assert.equal(isSubagentModeDefaultEnabled("1"), true);
+	assert.equal(isSubagentModeDefaultEnabled("true"), true);
+	assert.equal(isSubagentModeDefaultEnabled("on"), true);
+	assert.equal(isSubagentModeDefaultEnabled("0"), false);
+	assert.equal(isSubagentModeDefaultEnabled("false"), false);
+	assert.equal(isSubagentModeDefaultEnabled("off"), false);
+	assert.equal(isSubagentModeDefaultEnabled("no"), false);
+	assert.match(source, /registerFlag\("subagents", \{[\s\S]*?default:\s*true/);
 });

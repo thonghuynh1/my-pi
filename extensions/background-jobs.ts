@@ -219,7 +219,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
     return {
       systemPrompt:
         event.systemPrompt +
-        `\n\n=== Background Jobs Protocol ===\nWhen running long-running processes (tests, benchmarks, evaluations, watchers, servers):\n- Use \`bg_run\` to execute in the background so the user can continue chatting.\n- CRITICAL: NEVER call \`sleep\` in \`bash\` (e.g. \`sleep 180\`) or loop polling to wait for a background job. Running \`sleep\` freezes the terminal session and blocks you from receiving reactive completion notifications.\n- When you launch a job or see via \`bg_status\` that it is still running, simply inform the user and END YOUR TURN immediately.\n- You will be automatically woken up with a follow-up notification as soon as the background job finishes.\n`,
+        `\n\n=== Background Jobs Protocol ===\nLong-running commands (tests, benchmarks, evaluations, watchers, servers) run via \`bg_run\`, never inline in \`bash\`.\n\nHARD RULES — follow exactly, no exceptions:\n1. NEVER call \`sleep\`/\`timeout\`/\`Start-Sleep\` in bash to wait for a background job.\n2. NEVER call \`bg_status\` or \`bg_list\` in a loop, or "just to check up" on a running job. Checking once and then waiting is still polling — it is prohibited.\n3. The instant \`bg_run\` returns, or \`bg_status\`/\`bg_list\` shows a job as "running": tell the user it is running in the background, then END YOUR TURN immediately. Do not call any other tool afterward in that same turn.\n4. Do not re-check, retry, or wait for completion yourself. The harness delivers a follow-up message to you automatically the instant the job's completion event is published — you cannot discover completion sooner by checking, and you must not try.\n5. Only call \`bg_status\`/\`bg_list\` again after that follow-up notification arrives, or if the user explicitly asks for a fresh status update.\n`,
     };
   });
 
@@ -279,7 +279,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
   managed.registerTool({
     name: "bg_run",
     label: "Run Background Command",
-    description: "Run a shell command asynchronously in the background. Returns immediately with a job ID so you can keep chatting while it runs. IMPORTANT: Do NOT use 'sleep' or loop waiting for this job; you will receive an automatic follow-up message when it finishes. End your turn immediately after running.",
+    description: "Run a shell command asynchronously in the background. Returns immediately with a job ID so you can keep chatting while it runs. After this call returns: inform the user and END YOUR TURN. Do NOT call bg_status/bg_list right after to check progress, do NOT call sleep, and do NOT loop waiting. The harness wakes you with a follow-up message the instant the job finishes — you cannot and must not try to discover completion yourself.",
     parameters: BgRunParams,
     defaultVisibility: "agent-visible",
     async execute(_toolCallId: string, params: BgRunInput, _signal: AbortSignal, _onUpdate: unknown, ctx: ExtensionContext) {
@@ -418,7 +418,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
   managed.registerTool({
     name: "bg_status",
     label: "Check Background Job Status",
-    description: "Check the status, runtime, and recent output of a background job. If it is still running, inform the user and END YOUR TURN. Do NOT call 'sleep' or loop waiting for it; you will be notified automatically when it finishes.",
+    description: "Check the status, runtime, and recent output of a background job. Call this only when the user asks for an update, or in direct response to the automatic completion follow-up message — never in a loop or 'just to check up' on a running job. If the result shows status 'running': inform the user and END YOUR TURN immediately. Do NOT call bg_status/bg_list again in this turn, and do NOT call sleep. The harness notifies you automatically the instant the job finishes.",
     parameters: BgStatusParams,
     defaultVisibility: "agent-visible",
     async execute(_toolCallId: string, params: BgStatusInput) {
@@ -459,7 +459,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
   managed.registerTool({
     name: "bg_list",
     label: "List Background Jobs",
-    description: "List all background jobs and their current statuses.",
+    description: "List all background jobs and their current statuses. Do NOT use this to poll for completion of a running job. If a job shows 'running': inform the user and END YOUR TURN immediately instead of checking again. The harness delivers a follow-up message automatically the instant a job finishes.",
     parameters: BgListParams,
     defaultVisibility: "agent-visible",
     async execute(_toolCallId: string, params: BgListInput) {

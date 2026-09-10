@@ -248,7 +248,8 @@ test("before_agent_start injects background jobs protocol", () => {
 
   const result = beforeAgentStart({ systemPrompt: "Base prompt" });
   assert.ok(result.systemPrompt.includes("=== Background Jobs Protocol ==="));
-  assert.ok(result.systemPrompt.includes("NEVER call `sleep` in `bash`"));
+  assert.ok(result.systemPrompt.includes("NEVER call `sleep`/`timeout`/`Start-Sleep` in bash"));
+  assert.ok(result.systemPrompt.includes("NEVER call `bg_status` or `bg_list` in a loop"));
 });
 
 test("tool_call intercepts and blocks sleep commands while jobs are running", async () => {

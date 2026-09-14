@@ -1,6 +1,7 @@
 node_modules/
 *.log
 .DS_Store
+.env
 
 # frontend-coach: controlled Edge profile + recorded test artifacts.
 # These live wherever pi was launched from; this entry just covers the

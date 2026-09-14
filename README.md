@@ -4,7 +4,6 @@ Personal Pi package that bundles:
 
 - `pi-mcp-adapter`
 - `@narumitw/pi-file-context` (`/file-context` in-TUI file browser; Tab inserts `@path`)
-- `/poteto-me` prompt template
 - `engineering-skills` helper/footer extension
 - `usage-footer.ts` footer/status extension showing model and context usage
 - `subagents.ts` in-process subagent tool with `explore`, `shell`, and `custom` modes
@@ -103,6 +102,8 @@ npm run build
 ```
 
 ## Use
+
+`/poteto-me` is a global Pi prompt (`~/.pi/agent/prompts/poteto-me.md`), not part of this package:
 
 ```text
 /poteto-me fix this bug test-first

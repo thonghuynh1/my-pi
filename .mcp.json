@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest", "--browser", "msedge"]
+    },
+    "playwright-recorder": {
+      "command": "node",
+      "args": ["scripts/playwright-record-mcp.mjs"]
+    }
+  }
+}

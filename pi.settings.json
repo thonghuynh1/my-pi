@@ -1,23 +1,5 @@
 {
   "capabilityVisibility": {
-    "frontend-coach": {
-      "tools": {
-        "browser_highlight": "agent-visible",
-        "browser_inspect": "agent-visible",
-        "browser_coach_snapshot": "agent-visible",
-        "browser_coach_act": "agent-visible",
-        "browser_record_test": "agent-visible",
-        "coach_resolve_widget": "agent-visible",
-        "coach_list_widgets": "agent-visible",
-        "browser_record_for_widget": "agent-visible",
-        "browser_eval": "agent-hidden"
-      },
-      "commands": {
-        "coach-launch-edge": "enabled",
-        "coach-stop-edge": "enabled"
-      }
-    },
-
     "subagents": {
       "tools": {
         "subagent": "agent-visible"

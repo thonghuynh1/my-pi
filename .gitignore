@@ -3,10 +3,8 @@ node_modules/
 .DS_Store
 .env
 
-# frontend-coach: controlled Edge profile + recorded test artifacts.
-# These live wherever pi was launched from; this entry just covers the
-# common case of launching from the repo root.
-.frontend-coach/
+# Playwright MCP and recorder artifacts.
+.playwright-mcp/
 
 .ralph-loop/
 .audit/

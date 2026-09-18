@@ -169,14 +169,6 @@ function getModelLine(pi: ExtensionAPI, ctx: ExtensionContext): string {
   return `model ${model.provider}/${model.id} (${thinkingLevel})`;
 }
 
-function getCoachLine(): string {
-  const s = (globalThis as { __frontendCoach?: { clients?: number; label?: string } })
-    .__frontendCoach;
-  if (!s) return "";
-  const label = s.label ? String(s.label) : s.clients ? `${s.clients} browser${s.clients === 1 ? "" : "s"}` : "waiting";
-  return `coach ${label}`;
-}
-
 function getSubagentLine(): string {
   const s = (globalThis as { __subagent?: { enabled?: boolean; active?: number; label?: string } })
     .__subagent;
@@ -200,14 +192,13 @@ function installUsageFooter(pi: ExtensionAPI, ctx: ExtensionContext): void {
     render(width: number): string[] {
       const model = getModelLine(pi, ctx);
       const totals = getTokenTotals(ctx);
-      const coach = getCoachLine();
       const subagent = getSubagentLine();
 
       const line1 = padRight(getContextLine(ctx), model, width);
-      const line2Left = `in ${compactNumber(totals.input)} · out ${compactNumber(totals.output)} · cache ${compactNumber(totals.cache)}`;
-      const line2 = coach
-        ? padRight(line2Left, coach, width)
-        : truncateToWidth(line2Left, width);
+      const line2 = truncateToWidth(
+        `in ${compactNumber(totals.input)} · out ${compactNumber(totals.output)} · cache ${compactNumber(totals.cache)}`,
+        width,
+      );
       const line3Left = totals.subCost > 0
         ? `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)} (${formatMoney(totals.parentCost)} + ${formatMoney(totals.subCost)} sub)`
         : `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)}`;
@@ -219,17 +210,13 @@ function installUsageFooter(pi: ExtensionAPI, ctx: ExtensionContext): void {
       const leftPart = line1.slice(0, modelStart);
       const rightPart = line1.slice(modelStart);
 
-      const coachStart = coach ? Math.max(0, line2.length - coach.length) : line2.length;
-      const line2Left2 = line2.slice(0, coachStart);
-      const line2Right = line2.slice(coachStart);
-
       const subagentStart = subagent ? Math.max(0, line3.length - subagent.length) : line3.length;
       const line3Left2 = line3.slice(0, subagentStart);
       const line3Right = line3.slice(subagentStart);
 
       return [
         theme.fg("warning", leftPart) + theme.fg("accent", rightPart),
-        theme.fg("warning", line2Left2) + theme.fg("accent", line2Right),
+        theme.fg("warning", line2),
         theme.fg("warning", line3Left2) + theme.fg("accent", line3Right),
       ];
     },

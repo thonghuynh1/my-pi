@@ -101,21 +101,73 @@ npm install
 npm run build
 ```
 
-## Use
+## Configure Playwright MCP
 
-`/poteto-me` is a global Pi prompt (`~/.pi/agent/prompts/poteto-me.md`), not part of this package:
+Playwright MCP is now the browser automation path for Claude, Codex, Cursor,
+Antigravity, and Pi. Every configuration launches Microsoft Edge via
+`--browser msedge`. The project-level shared config is checked in at
+`.mcp.json`:
 
-```text
-/poteto-me fix this bug test-first
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest", "--browser", "msedge"]
+    }
+  }
+}
 ```
 
-This loads `skill-pstack` with `name=poteto-mode` from the `engineering-skills` MCP server, then follows its routing instructions.
+The same server has also been added to the local user configs:
 
-The package also adds a footer/status entry with the active model and context usage. Refresh manually with:
+- Claude: `C:/Users/Admin/.claude.json`
+- Codex: `C:/Users/Admin/.codex/config.toml`
+- Cursor: `C:/Users/Admin/.cursor/mcp.json`
+- Antigravity: `C:/Users/Admin/.gemini/config/mcp_config.json`
+- Shared MCP/Pi: `C:/Users/Admin/.config/mcp/mcp.json`
 
-```text
-/usage-footer
+Pi loads MCP through the already-registered `pi-mcp-adapter` extension. Its
+Pi-specific override at `C:/Users/Admin/.pi/agent/mcp.json` promotes Playwright
+MCP tools directly into Pi; the shared config remains proxy-compatible for
+other hosts. Restart each client after changing its config. In Pi, use `/mcp`
+or `/mcp reconnect playwright` to verify the server.
+
+### Save a video recording
+
+Playwright MCP does not expose video recording. For a small standalone Edge
+recording, use the helper in `scripts/playwright-record.mjs`:
+
+```bash
+npm run playwright:record -- https://example.com --duration 30
 ```
+
+Use `--duration 0` to record until `Ctrl+C`. Videos are saved as WebM files
+under `./.playwright-mcp/videos/`:
+
+```bash
+npm run playwright:record -- https://localhost:5050 --duration 0
+```
+
+This launches a separate headed Edge context with Playwright's native
+`recordVideo` support; it does not attach to the browser session owned by the
+MCP server.
+
+### Agent-facing recording tool
+
+The same recorder is exposed as a second MCP server named
+`playwright-recorder`, with the `record_video` tool. After restarting the
+clients, an agent can call it with a URL and duration, for example:
+
+```json
+{
+  "url": "https://example.com",
+  "duration": 30
+}
+```
+
+It returns the saved `.webm` path. The tool requires a bounded duration from
+1 to 3600 seconds and launches a separate headed Edge context.
 
 ## Subagents
 
@@ -195,3 +247,4 @@ Then clone/build `hackathon-grill-me` on that PC and run:
 ```text
 /engineering-skills-mcp-setup <path-to-hackathon-grill-me>
 ```
+

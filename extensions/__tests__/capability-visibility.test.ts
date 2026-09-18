@@ -14,8 +14,6 @@ import {
 	type CapabilityVisibilityWarning,
 	type ManagedExtensionPiApi,
 } from "../lib/capability-visibility.ts";
-import { piExtension } from "../frontend-coach/index.ts";
-
 import { piExtension as subagentsExtension } from "../subagents.ts";
 import { piExtension as lavishAxiExtension } from "../lavish-axi.ts";
 import { piExtension as engineeringSkillsExtension } from "../engineering-skills.ts";
@@ -30,27 +28,27 @@ function warningCodes(warnings: ReadonlyArray<CapabilityVisibilityWarning>): str
 test("global override precedence", () => {
 	const packageDefaults = parseCapabilityVisibilitySettings({
 		capabilityVisibility: {
-			"frontend-coach": {
+			"example-ext": {
 				tools: {
-					browser_eval: "agent-hidden",
+					example_tool: "agent-hidden",
 				},
 			},
 		},
 	}).settings;
 	const projectSettings = parseCapabilityVisibilitySettings({
 		capabilityVisibility: {
-			"frontend-coach": {
+			"example-ext": {
 				tools: {
-					browser_eval: "agent-visible",
+					example_tool: "agent-visible",
 				},
 			},
 		},
 	}).settings;
 	const globalSettings = parseCapabilityVisibilitySettings({
 		capabilityVisibility: {
-			"frontend-coach": {
+			"example-ext": {
 				tools: {
-					browser_eval: "agent-hidden",
+					example_tool: "agent-hidden",
 				},
 			},
 		},
@@ -59,7 +57,7 @@ test("global override precedence", () => {
 	const merged = mergeCapabilityVisibility(packageDefaults, projectSettings, globalSettings);
 
 	assert.equal(
-		merged.capabilityVisibility?.["frontend-coach"]?.tools?.browser_eval,
+		merged.capabilityVisibility?.["example-ext"]?.tools?.example_tool,
 		"agent-hidden",
 	);
 });
@@ -294,15 +292,6 @@ test("pi.settings.json is valid capability visibility JSON", () => {
 	);
 });
 
-test("frontend-coach browser_eval package default is agent-hidden", () => {
-	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
-	const { settings } = parseCapabilityVisibilitySettings(raw);
-	assert.equal(
-		settings.capabilityVisibility?.["frontend-coach"]?.tools?.browser_eval,
-		"agent-hidden",
-	);
-});
-
 test("no Pi built-in tool defaults in pi.settings.json", () => {
 	const builtins = new Set(["bash", "read", "edit", "write", "grep", "find", "ls"]);
 	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
@@ -373,8 +362,8 @@ test("managed disabled command is not registered", () => {
 test("managed unlisted command is registered by default", () => {
 	const pi = createFakePi();
 	const managed = createManagedExtension(pi, { id: "cv-test-unlisted-cmd" });
-	managed.registerCommand("coach-status", { handler: async () => {} });
-	assert.ok(pi.commands.has("coach-status"), "unlisted command must be registered as enabled");
+	managed.registerCommand("example-status", { handler: async () => {} });
+	assert.ok(pi.commands.has("example-status"), "unlisted command must be registered as enabled");
 });
 
 test("duplicate managed extension ID throws", () => {
@@ -440,84 +429,6 @@ test("direct pi registration is unaffected by managed helper", () => {
 	pi.registerCommand("direct-cmd", { handler: async () => {} });
 	assert.ok(pi.tools.has("direct_tool"), "direct tool registration must succeed without managed wrapper");
 	assert.ok(pi.commands.has("direct-cmd"), "direct command registration must succeed without managed wrapper");
-});
-
-// ── Frontend-coach tracer migration tests (issue 04) ─────────────────────────
-
-test("frontend-coach piExtension.id is 'frontend-coach'", () => {
-	assert.equal(piExtension.id, "frontend-coach");
-});
-
-test("frontend-coach browser_eval resolves agent-hidden from package defaults", () => {
-	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
-	const { settings } = parseCapabilityVisibilitySettings(raw);
-	const result = resolveToolVisibility({
-		extensionId: "frontend-coach",
-		toolName: "browser_eval",
-		managed: true,
-		defaultVisibility: "agent-hidden",
-		configuredOverride: settings.capabilityVisibility?.["frontend-coach"]?.tools?.browser_eval,
-	});
-	assert.equal(result.visibility, "agent-hidden");
-	assert.deepEqual(result.warnings, []);
-});
-
-test("frontend-coach browser_record_test resolves agent-visible from package defaults", () => {
-	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
-	const { settings } = parseCapabilityVisibilitySettings(raw);
-	const result = resolveToolVisibility({
-		extensionId: "frontend-coach",
-		toolName: "browser_record_test",
-		managed: true,
-		defaultVisibility: "agent-visible",
-		configuredOverride: settings.capabilityVisibility?.["frontend-coach"]?.tools?.browser_record_test,
-	});
-	assert.equal(result.visibility, "agent-visible");
-	assert.deepEqual(result.warnings, []);
-});
-
-test("frontend-coach peek tools resolve agent-visible from package defaults", () => {
-	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
-	const { settings } = parseCapabilityVisibilitySettings(raw);
-	for (const toolName of ["browser_coach_snapshot", "browser_coach_act"] as const) {
-		const result = resolveToolVisibility({
-			extensionId: "frontend-coach",
-			toolName,
-			managed: true,
-			defaultVisibility: "agent-visible",
-			configuredOverride: settings.capabilityVisibility?.["frontend-coach"]?.tools?.[toolName],
-		});
-		assert.equal(result.visibility, "agent-visible", toolName);
-		assert.deepEqual(result.warnings, []);
-	}
-});
-
-test("frontend-coach coach-launch-edge command is enabled by default", () => {
-	const raw = JSON.parse(readFileSync(path.join(repoRoot, "pi.settings.json"), "utf8"));
-	const { settings } = parseCapabilityVisibilitySettings(raw);
-	assert.equal(
-		settings.capabilityVisibility?.["frontend-coach"]?.commands?.["coach-launch-edge"],
-		"enabled",
-	);
-});
-
-test("frontend-coach unsafe override attempt for browser_eval without allowUnsafeOverride warns and keeps hidden", () => {
-	const parsed = parseCapabilityVisibilitySettings({
-		capabilityVisibility: {
-			"frontend-coach": {
-				tools: { browser_eval: "agent-visible" },
-			},
-		},
-	});
-	const result = resolveToolVisibility({
-		extensionId: "frontend-coach",
-		toolName: "browser_eval",
-		managed: true,
-		defaultVisibility: "agent-hidden",
-		configuredOverride: parsed.settings.capabilityVisibility?.["frontend-coach"]?.tools?.browser_eval,
-	});
-	assert.equal(result.visibility, "agent-hidden");
-	assert.deepEqual(warningCodes(result.warnings), ["unsafe-override-rejected"]);
 });
 
 // ── Issue 05: remaining active extensions migration tests ─────────────────

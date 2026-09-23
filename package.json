@@ -23,7 +23,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@narumitw/pi-file-context": "^0.54.2",
     "@ogulcancelik/pi-herdr": "^0.2.5",
-    "pi-mcp-adapter": "^2.9.0",
+    "pi-mcp-adapter": "^2.34.0",
     "playwright-core": "^1.61.0",
     "ws": "^8.21.0",
     "zod": "^4.4.3"

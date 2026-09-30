@@ -16,7 +16,6 @@ import {
 } from "../lib/capability-visibility.ts";
 import { piExtension as subagentsExtension } from "../subagents.ts";
 import { piExtension as lavishAxiExtension } from "../lavish-axi.ts";
-import { piExtension as engineeringSkillsExtension } from "../engineering-skills.ts";
 import { piExtension as usageFooterExtension } from "../usage-footer.ts";
 import { piExtension as herdrAgentReportExtension } from "../herdr-agent-report.ts";
 import { piExtension as toolPanelExtension } from "../tool-panel.ts";
@@ -436,7 +435,6 @@ test("direct pi registration is unaffected by managed helper", () => {
 test("all remaining active extensions have stable piExtension.id values", () => {
 	assert.equal(subagentsExtension.id, "subagents");
 	assert.equal(lavishAxiExtension.id, "lavish-axi");
-	assert.equal(engineeringSkillsExtension.id, "engineering-skills");
 	assert.equal(usageFooterExtension.id, "usage-footer");
 	assert.equal(herdrAgentReportExtension.id, "herdr-agent-report");
 	assert.equal(toolPanelExtension.id, "tool-panel");

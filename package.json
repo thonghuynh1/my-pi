@@ -1,7 +1,7 @@
 {
   "name": "my-pi",
   "version": "1.0.0",
-  "description": "Personal Pi package: engineering-skills helpers, Accordion, and prompt templates (uses Pi built-in MCP).",
+  "description": "Personal Pi package: Accordion and prompt templates (uses Pi built-in MCP).",
   "type": "module",
   "keywords": [
     "pi-package",

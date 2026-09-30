@@ -15,12 +15,6 @@
         "lavish": "enabled"
       }
     },
-    "engineering-skills": {
-      "commands": {
-        "engineering-skill": "enabled",
-        "engineering-skills-mcp-setup": "enabled"
-      }
-    },
     "usage-footer": {
       "commands": {
         "usage-footer": "enabled"

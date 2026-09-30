@@ -4,7 +4,6 @@ Personal Pi package that bundles:
 
 - Pi built-in MCP configuration (no `pi-mcp-adapter`; uses `builtin:mcp`)
 - `@narumitw/pi-file-context` (`/file-context` in-TUI file browser; Tab inserts `@path`)
-- `engineering-skills` helper/footer extension
 - `usage-footer.ts` footer/status extension showing model and context usage
 - `subagents.ts` in-process subagent tool with `explore`, `shell`, and `custom` modes
 
@@ -67,40 +66,6 @@ This starts the broker on a loopback port, prints the dashboard URL, and writes 
 
 In normal use, `/accordion` starts the broker automatically, adds the current Pi session to the watched list, and opens the dashboard in your browser.
 
-## Configure engineering-skills MCP
-
-If your engineering-skills MCP repo is at the default local path:
-
-```text
-F:/MyWork/PrecioHackathon/hackathon-grill-me
-```
-
-run in Pi:
-
-```text
-/engineering-skills-mcp-setup
-```
-
-Or pass a repo path:
-
-```text
-/engineering-skills-mcp-setup D:/path/to/hackathon-grill-me
-```
-
-The command writes Pi global MCP config to:
-
-```text
-~/.pi/agent/mcp.json
-```
-
-It expects the MCP server to already be built:
-
-```bash
-cd F:/MyWork/PrecioHackathon/hackathon-grill-me
-npm install
-npm run build
-```
-
 ## MCP (Pi built-in)
 
 This package no longer ships `pi-mcp-adapter`. Pi's built-in MCP (`builtin:mcp`)
@@ -111,8 +76,8 @@ reads:
 | **Global (preferred)** | `~/.pi/agent/mcp.json` |
 | Project (optional) | `.pi/mcp.json` (trusted projects only) |
 
-Use the **global** file for personal servers (engineering-skills, playwright,
-cua, azure-devops, …). Project `.pi/mcp.json` is optional; when present, entries
+Use the **global** file for personal servers (playwright, cua, azure-devops, …).
+Project `.pi/mcp.json` is optional; when present, entries
 with the same name **replace** the global ones. This repo does not require a
 project MCP file — servers live in the global agent config.
 
@@ -270,9 +235,4 @@ The `postinstall` script runs automatically and handles:
 1. `npm run accordion:install`
 2. `npm run accordion:build` (if not already built)
 
-Then clone/build `hackathon-grill-me` on that PC and run:
-
-```text
-/engineering-skills-mcp-setup <path-to-hackathon-grill-me>
-```
 

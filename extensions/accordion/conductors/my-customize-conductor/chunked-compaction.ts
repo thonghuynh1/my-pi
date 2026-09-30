@@ -295,7 +295,7 @@ export function buildMcpRetrievalIndex(
 	for (const block of members) {
 		if (!isMcpResult(block)) continue;
 		const call = block.callId ? callById.get(block.callId) : undefined;
-		const identity = canonicalMcpIdentity(call?.text);
+		const identity = canonicalMcpIdentity(call?.text, call?.toolName ?? block.toolName);
 		if (!identity) continue;
 		const memberCode = foldCode(block.id);
 		entries.push(

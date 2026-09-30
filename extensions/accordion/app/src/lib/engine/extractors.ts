@@ -105,8 +105,9 @@ export function buildMcpIndex(blocks: readonly ExtractableBlock[]): McpIndexEntr
 		if (block.kind !== "tool_call" || !toolName || FILE_TOOLS.has(toolName) || !block.recallCode) continue;
 
 		let identity: string | undefined;
-		if (toolName === "mcp") {
-			identity = firstLine(block.retrievalIdentity).slice(0, 120);
+		if (toolName === "mcp" || toolName.startsWith("mcp__")) {
+			identity = firstLine(block.retrievalIdentity).slice(0, 120)
+				|| firstLine(toolName.replace(/^mcp__/i, "").replace(/__/g, "/")).slice(0, 120);
 		} else if (toolName === "subagent") {
 			const task = firstLine(stringArgument(parseArguments(block.text), "task")).slice(0, 40);
 			if (task) identity = `subagent/${task}`;

@@ -2,7 +2,7 @@
 
 Personal Pi package that bundles:
 
-- `pi-mcp-adapter`
+- Pi built-in MCP configuration (no `pi-mcp-adapter`; uses `builtin:mcp`)
 - `@narumitw/pi-file-context` (`/file-context` in-TUI file browser; Tab inserts `@path`)
 - `engineering-skills` helper/footer extension
 - `usage-footer.ts` footer/status extension showing model and context usage
@@ -87,10 +87,10 @@ Or pass a repo path:
 /engineering-skills-mcp-setup D:/path/to/hackathon-grill-me
 ```
 
-The command writes global MCP config to:
+The command writes Pi global MCP config to:
 
 ```text
-~/.config/mcp/mcp.json
+~/.pi/agent/mcp.json
 ```
 
 It expects the MCP server to already be built:
@@ -101,37 +101,65 @@ npm install
 npm run build
 ```
 
+## MCP (Pi built-in)
+
+This package no longer ships `pi-mcp-adapter`. Pi's built-in MCP (`builtin:mcp`)
+reads:
+
+| Scope | Path |
+|-------|------|
+| **Global (preferred)** | `~/.pi/agent/mcp.json` |
+| Project (optional) | `.pi/mcp.json` (trusted projects only) |
+
+Use the **global** file for personal servers (engineering-skills, playwright,
+cua, azure-devops, …). Project `.pi/mcp.json` is optional; when present, entries
+with the same name **replace** the global ones. This repo does not require a
+project MCP file — servers live in the global agent config.
+
+Pi does **not** read `~/.config/mcp/mcp.json` or project-root `.mcp.json`.
+Keep project `.mcp.json` only if other hosts (Cursor/Claude/Codex) need it.
+
+Tools are named `mcp__<server>__<tool>`. Manage servers with:
+
+```bash
+pi mcp list
+pi mcp add <name> -- <command> [args...]          # writes ~/.pi/agent/mcp.json
+pi mcp add -l <name> -- <command> [args...]       # writes .pi/mcp.json
+pi mcp remove <name>
+```
+
+Exposure: `direct`, `codemode`, `deferred`, `hidden`, plus per-tool
+`toolExposure`. See Pi's `docs/mcp.md`.
+
+**Important:** an extension that registers `/mcp` (such as `pi-mcp-adapter`)
+replaces built-in MCP. Keep that package uninstalled for this setup.
+
 ## Configure Playwright MCP
 
-Playwright MCP is now the browser automation path for Claude, Codex, Cursor,
-Antigravity, and Pi. Every configuration launches Microsoft Edge via
-`--browser msedge`. The project-level shared config is checked in at
-`.mcp.json`:
+Playwright + the local recorder are configured **globally** in
+`~/.pi/agent/mcp.json` (Edge via `--browser msedge`). The recorder uses an
+absolute path into this repo:
 
 ```json
 {
-  "mcpServers": {
-    "playwright": {
-      "command": "npx",
-      "args": ["-y", "@playwright/mcp@latest", "--browser", "msedge"]
-    }
+  "playwright": {
+    "command": "npx",
+    "args": ["-y", "@playwright/mcp@latest", "--browser", "msedge"],
+    "exposure": "direct"
+  },
+  "playwright-recorder": {
+    "command": "node",
+    "args": ["C:/my-pi/scripts/playwright-record-mcp.mjs"],
+    "exposure": "direct"
   }
 }
 ```
 
-The same server has also been added to the local user configs:
+Cross-host copy (optional): project `.mcp.json` for Claude/Cursor/Codex — those
+hosts do not read Pi's `mcp.json` files.
 
-- Claude: `C:/Users/Admin/.claude.json`
-- Codex: `C:/Users/Admin/.codex/config.toml`
-- Cursor: `C:/Users/Admin/.cursor/mcp.json`
-- Antigravity: `C:/Users/Admin/.gemini/config/mcp_config.json`
-- Shared MCP/Pi: `C:/Users/Admin/.config/mcp/mcp.json`
-
-Pi loads MCP through the already-registered `pi-mcp-adapter` extension. Its
-Pi-specific override at `C:/Users/Admin/.pi/agent/mcp.json` promotes Playwright
-MCP tools directly into Pi; the shared config remains proxy-compatible for
-other hosts. Restart each client after changing its config. In Pi, use `/mcp`
-or `/mcp reconnect playwright` to verify the server.
+After changing MCP config, run `/reload` (or a new session). Verify with `/mcp`
+or `pi mcp list`.
 
 ### Save a video recording
 

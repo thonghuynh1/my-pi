@@ -37,9 +37,23 @@ const POTETO_MODE_BEACON_LINES = [
 	'- For skill-pstack(name=...): full leaf visible → use; folded exact match → recall most recent; absent → call skill-pstack(name=...).',
 ];
 
-/** An MCP tool result: a `tool_result` whose tool is the `mcp` gateway (case-insensitive). */
+/** True for the legacy adapter proxy (`mcp`) or Pi built-in tools (`mcp__server__tool`). */
+export function isMcpToolName(toolName: string | undefined): boolean {
+	const name = (toolName ?? "").trim().toLowerCase();
+	return name === "mcp" || name.startsWith("mcp__");
+}
+
+/** Parse `mcp__<server>__<tool>` into server + tool. */
+export function parseMcpToolName(toolName: string | undefined): { server: string; tool: string } | undefined {
+	const name = (toolName ?? "").trim();
+	const match = /^mcp__(.+?)__(.+)$/i.exec(name);
+	if (!match) return undefined;
+	return { server: match[1], tool: match[2] };
+}
+
+/** An MCP tool result: adapter proxy `mcp` or Pi built-in `mcp__server__tool`. */
 export function isMcpResult(b: ViewBlock): boolean {
-	return b.kind === "tool_result" && (b.toolName ?? "").trim().toLowerCase() === "mcp";
+	return b.kind === "tool_result" && isMcpToolName(b.toolName);
 }
 
 /** Estimated token cost of a summary body once the host tags and frames it (chars/4 + overhead). */
@@ -52,7 +66,7 @@ export function estSummaryTokens(summary: string): number {
  * `tool_call` block (matched by `callId`), or undefined when it can't be recovered.
  */
 export function mcpSummary(result: ViewBlock, call: ViewBlock | undefined, opts: SummaryOptions = {}): string {
-	const parsed = parseOuterCall(call?.text);
+	const parsed = mergeNativeMcpCall(parseOuterCall(call?.text), result.toolName ?? call?.toolName);
 	const pstack = pstackIdentity(parsed);
 	if (pstack) {
 		return appendPotetoBeacon(
@@ -384,16 +398,38 @@ export type CanonicalMcpIdentity = {
 	displayLabel: string;
 };
 
+/** Merge server/tool from a Pi `mcp__server__tool` name into parsed call args. */
+function mergeNativeMcpCall(call: McpCall, toolName: string | undefined): McpCall {
+	const fromName = parseMcpToolName(toolName);
+	if (!fromName) return call;
+	return {
+		...call,
+		server: str(call.server) ?? fromName.server,
+		tool: str(call.tool) ?? fromName.tool,
+	};
+}
+
 /**
- * Derive a canonical MCP identity from a `tool_call` block's text. Returns `undefined`
- * when the call text can't be parsed or doesn't have a recognisable tool name.
+ * Derive a canonical MCP identity from a `tool_call` block. Supports:
+ * - legacy adapter proxy: call text has `{ server, tool, args }`
+ * - Pi built-in: `toolName` is `mcp__server__tool` and call text is the args object
+ * Returns `undefined` when no recognisable tool name is present.
  */
-export function canonicalMcpIdentity(callText: string | undefined): CanonicalMcpIdentity | undefined {
-	const call = parseOuterCall(callText);
+export function canonicalMcpIdentity(
+	callText: string | undefined,
+	toolName?: string,
+): CanonicalMcpIdentity | undefined {
+	const call = mergeNativeMcpCall(parseOuterCall(callText), toolName);
 	const server = str(call.server) ?? str(call.connect) ?? "mcp";
 	const tool = str(call.tool);
 	if (!tool) return undefined;
-	const args = parseNestedArgs(call.args);
+	// For native tools, outer JSON is the args object itself (no nested `args` key).
+	const fromName = parseMcpToolName(toolName);
+	const args = fromName && call.args === undefined
+		? Object.fromEntries(
+			Object.entries(call).filter(([key]) => key !== "server" && key !== "tool" && key !== "connect"),
+		) as McpCall
+		: parseNestedArgs(call.args);
 	const fingerprint = argFingerprint(args);
 	const safeDisplay = safeArgDisplay(args);
 	const displayLabel = safeDisplay ? `${server}/${tool}(${safeDisplay})` : `${server}/${tool}`;

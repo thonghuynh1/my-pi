@@ -893,4 +893,16 @@ describe("canonicalMcpIdentity", () => {
 		const idDifferent = canonicalMcpIdentity(callDifferent);
 		expect(id!.fingerprint).not.toBe(idDifferent!.fingerprint);
 	});
+
+	it("canonical MCP identity supports Pi built-in mcp__server__tool names", () => {
+		const args = JSON.stringify({ name: "poteto-mode", version: 1 });
+		const id = canonicalMcpIdentity(args, "mcp__engineering-skills__skill-pstack");
+		expect(id).not.toBeUndefined();
+		expect(id!.server).toBe("engineering-skills");
+		expect(id!.tool).toBe("skill-pstack");
+		expect(id!.displayLabel).toContain("name=\"poteto-mode\"");
+		expect(id!.fingerprint).toBe(
+			canonicalMcpIdentity(JSON.stringify({ version: 1, name: "poteto-mode" }), "mcp__engineering-skills__skill-pstack")!.fingerprint,
+		);
+	});
 });

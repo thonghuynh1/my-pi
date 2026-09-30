@@ -78,7 +78,7 @@ function isAccumulationBoundary(block: ViewBlock): boolean {
 function isRolloverGroupBoundary(block: ViewBlock): boolean {
 	if (block.held || block.protected || block.grouped) return true;
 	const tool = (block.toolName ?? "").trim().toLowerCase();
-	return tool === "mcp" || tool === "recall" || pstackIdentityFromDigest(block.text) !== undefined;
+	return tool === "mcp" || tool.startsWith("mcp__") || tool === "recall" || pstackIdentityFromDigest(block.text) !== undefined;
 }
 
 function commandIds(commands: readonly Command[]): Set<string> {
@@ -205,8 +205,9 @@ export class MyCustomizeConductor implements Conductor {
 			}
 		}
 		const digestBlocks = blocks.map((block) => {
-			const mcpIdentity = block.kind === "tool_call" && block.toolName?.trim().toLowerCase() === "mcp"
-				? canonicalMcpIdentity(block.text)
+			const toolName = block.toolName?.trim().toLowerCase() ?? "";
+			const mcpIdentity = block.kind === "tool_call" && (toolName === "mcp" || toolName.startsWith("mcp__"))
+				? canonicalMcpIdentity(block.text, block.toolName)
 				: undefined;
 			const mcpServer = mcpIdentity?.server.replace(/\s+/g, " ").trim().slice(0, 40);
 			const mcpTool = mcpIdentity?.tool.replace(/\s+/g, " ").trim().slice(0, 40);

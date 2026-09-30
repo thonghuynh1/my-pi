@@ -15,7 +15,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, appendFileSync, writeFileSync, readFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
@@ -106,36 +106,25 @@ function appendToLog(filePath: string, text: string): void {
 interface ShellConfig {
   shell: string;
   args: string[];
+  /** Human-readable label for logs / status. */
+  label: string;
 }
 
 /**
- * Resolves the appropriate shell, prioritizing Git Bash on Windows to match Pi's native behavior.
+ * Resolve the shell used to run background commands.
+ *
+ * On Windows this deliberately matches `run_tests` / `pi.exec`: `cmd /c`.
+ * Spawning Git Bash (or Pi's built-in bash tool) can fail with `spawn EPERM`
+ * under corporate process-spawn policy even when bash.exe works from a
+ * nested Node child. `cmd.exe` is the path that remains reliable.
  */
-function resolveShell(): ShellConfig {
+export function resolveShell(): ShellConfig {
   if (platform() === "win32") {
-    const programFiles = process.env.ProgramFiles || "C:\\Program Files";
-    const gitBash = join(programFiles, "Git", "bin", "bash.exe");
-    if (existsSync(gitBash)) {
-      return { shell: gitBash, args: ["-c"] };
-    }
-    const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
-    const gitBashX86 = join(programFilesX86, "Git", "bin", "bash.exe");
-    if (existsSync(gitBashX86)) {
-      return { shell: gitBashX86, args: ["-c"] };
-    }
-    try {
-      const whereResult = spawnSync("where", ["bash.exe"], { encoding: "utf8", windowsHide: true });
-      if (whereResult.status === 0 && whereResult.stdout) {
-        const firstMatch = whereResult.stdout.trim().split(/\r?\n/)[0];
-        if (firstMatch && existsSync(firstMatch)) {
-          return { shell: firstMatch, args: ["-c"] };
-        }
-      }
-    } catch {}
-    return { shell: process.env.COMSPEC || "cmd.exe", args: ["/d", "/s", "/c"] };
+    const comspec = process.env.COMSPEC || "cmd.exe";
+    return { shell: comspec, args: ["/d", "/s", "/c"], label: "cmd" };
   }
-  if (existsSync("/bin/bash")) return { shell: "/bin/bash", args: ["-c"] };
-  return { shell: "/bin/sh", args: ["-c"] };
+  if (existsSync("/bin/bash")) return { shell: "/bin/bash", args: ["-c"], label: "bash" };
+  return { shell: "/bin/sh", args: ["-c"], label: "sh" };
 }
 
 /**
@@ -279,7 +268,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
   managed.registerTool({
     name: "bg_run",
     label: "Run Background Command",
-    description: "Run a shell command asynchronously in the background. Returns immediately with a job ID so you can keep chatting while it runs. After this call returns: inform the user and END YOUR TURN. Do NOT call bg_status/bg_list right after to check progress, do NOT call sleep, and do NOT loop waiting. The harness wakes you with a follow-up message the instant the job finishes — you cannot and must not try to discover completion yourself.",
+    description: "Run a shell command asynchronously in the background. Returns immediately with a job ID so you can keep chatting while it runs. On Windows this uses cmd.exe (like run_tests), not Git Bash — bash-only syntax may fail; prefer node/npm/cmd/powershell. After this call returns: inform the user and END YOUR TURN. Do NOT call bg_status/bg_list right after to check progress, do NOT call sleep, and do NOT loop waiting. The harness wakes you with a follow-up message the instant the job finishes — you cannot and must not try to discover completion yourself.",
     parameters: BgRunParams,
     defaultVisibility: "agent-visible",
     async execute(_toolCallId: string, params: BgRunInput, _signal: AbortSignal, _onUpdate: unknown, ctx: ExtensionContext) {
@@ -294,15 +283,50 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
       initLogFile(logFilePath, `[Started background job ${id} at ${new Date().toISOString()}]\nCommand: ${params.command}\nCwd: ${cwd}\n\n`);
 
       const isWin = platform() === "win32";
-      const { shell, args } = resolveShell();
+      const { shell, args, label: shellLabel } = resolveShell();
 
-      const child = spawn(shell, [...args, params.command], {
-        cwd,
-        env: { ...process.env, PI_BACKGROUND_JOB: id },
-        detached: !isWin,
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-      });
+      let child: ChildProcess;
+      try {
+        // Windows: spawn the command string with shell:true so COMSPEC (cmd.exe)
+        // parses quotes the same way a user terminal does. Passing
+        // spawn(cmd, ["/c", command], { shell:false }) breaks nested quotes
+        // (e.g. node -e "console.log('x')"). Avoid Git Bash — it often fails
+        // with spawn EPERM under corporate policy from the Pi agent process.
+        // Unix: bash/sh -c with shell:false (same as before).
+        child = isWin
+          ? spawn(params.command, {
+              cwd,
+              env: { ...process.env, PI_BACKGROUND_JOB: id },
+              shell: true,
+              windowsHide: true,
+              stdio: ["pipe", "pipe", "pipe"],
+            })
+          : spawn(shell, [...args, params.command], {
+              cwd,
+              env: { ...process.env, PI_BACKGROUND_JOB: id },
+              detached: true,
+              shell: false,
+              stdio: ["pipe", "pipe", "pipe"],
+            });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        appendToLog(logFilePath, `\n[Process spawn error: ${message}]\n`);
+        return {
+          content: [{
+            type: "text",
+            text: [
+              `Failed to start background job ${id}.`,
+              `Shell: ${shellLabel} (${shell})`,
+              `Command: \`${params.command}\``,
+              `Error: ${message}`,
+              isWin
+                ? "On Windows bg_run uses cmd.exe (shell:true), same family as run_tests — not Git Bash."
+                : "",
+            ].filter(Boolean).join("\n"),
+          }],
+          details: { jobId: id, status: "failed", error: message },
+        };
+      }
 
       const job: BackgroundJob = {
         id,
@@ -318,6 +342,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
       };
 
       jobs.set(id, job);
+      appendToLog(logFilePath, `Shell: ${shellLabel} (${shell})\n\n`);
 
       const appendData = (chunk: Buffer) => {
         const text = chunk.toString("utf8");
@@ -392,6 +417,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
 
       const msg = [
         `⚡ Background job started: ${id} (PID ${child.pid ?? "unknown"})`,
+        `Shell: ${shellLabel}`,
         `Command: \`${params.command}\``,
         `Working directory: \`${cwd}\``,
         `Log file: \`${logFilePath}\``,

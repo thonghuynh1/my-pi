@@ -1,7 +1,7 @@
 {
   "name": "my-pi",
   "version": "1.0.0",
-  "description": "Personal Pi package: MCP adapter, engineering-skills helpers, and prompt templates.",
+  "description": "Personal Pi package: engineering-skills helpers, Accordion, and prompt templates (uses Pi built-in MCP).",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -23,7 +23,6 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@narumitw/pi-file-context": "^0.54.2",
     "@ogulcancelik/pi-herdr": "^0.2.5",
-    "pi-mcp-adapter": "^2.9.0",
     "playwright-core": "^1.61.0",
     "ws": "^8.21.0",
     "zod": "^4.4.3"
@@ -41,7 +40,6 @@
   },
   "pi": {
     "extensions": [
-      "./node_modules/pi-mcp-adapter/index.ts",
       "./node_modules/@ogulcancelik/pi-herdr/index.ts",
       "./node_modules/@narumitw/pi-file-context/dist/index.ts",
       "./extensions"

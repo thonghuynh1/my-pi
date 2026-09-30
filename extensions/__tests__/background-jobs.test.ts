@@ -209,7 +209,7 @@ test("/jobs command handles list, tail, and clear", async () => {
   assert.ok(notifications.some((n) => n.includes("Cleared 1 finished background jobs")));
 });
 
-test("bg_run executes bash commands with unix paths", async () => {
+test("bg_run executes shell-native echo via cmd/sh (matches run_tests path)", async () => {
   const pi = createMockPi();
   backgroundJobsExtension(pi);
 
@@ -217,16 +217,22 @@ test("bg_run executes bash commands with unix paths", async () => {
   const bgRun = pi.tools.get("bg_run");
   const bgStatus = pi.tools.get("bg_status");
 
+  // Windows bg_run uses cmd.exe /c — avoid bash-only syntax like $BASH_VERSION.
+  const command = process.platform === "win32"
+    ? "echo bg-shell-ok"
+    : "echo bg-shell-ok && pwd";
+
   const runResult = await bgRun.execute(
     "call-7",
-    { command: "echo $BASH_VERSION && pwd" },
+    { command },
     new AbortController().signal,
     () => {},
     ctx,
   );
 
+  assert.equal(runResult.details.status, "running", `Expected running start, got: ${JSON.stringify(runResult)}`);
   const jobId = runResult.details.jobId;
-  await new Promise((r) => setTimeout(r, 600));
+  await new Promise((r) => setTimeout(r, 800));
 
   const statusResult = await bgStatus.execute(
     "call-8",
@@ -237,6 +243,7 @@ test("bg_run executes bash commands with unix paths", async () => {
   );
 
   assert.ok(statusResult.content[0].text.includes("COMPLETED"), `Expected COMPLETED but got: ${statusResult.content[0].text}`);
+  assert.ok(statusResult.content[0].text.includes("bg-shell-ok"), `Expected output, got: ${statusResult.content[0].text}`);
 });
 
 test("before_agent_start injects background jobs protocol", () => {

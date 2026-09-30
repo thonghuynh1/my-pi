@@ -10,7 +10,8 @@ import {
 
 const SERVER_NAME = "engineering-skills";
 const STATUS_KEY = "engineering-skills";
-const GLOBAL_MCP_CONFIG = join(homedir(), ".config", "mcp", "mcp.json");
+/** Pi built-in MCP reads global servers from ~/.pi/agent/mcp.json */
+const GLOBAL_MCP_CONFIG = join(homedir(), ".pi", "agent", "mcp.json");
 
 interface McpConfigFile {
   mcpServers?: Record<string, unknown>;
@@ -30,8 +31,6 @@ function readJsonFile(path: string): McpConfigFile {
 function findEngineeringSkillsConfig(): { path: string; configured: boolean } {
   const candidates = [
     GLOBAL_MCP_CONFIG,
-    join(homedir(), ".pi", "agent", "mcp.json"),
-    resolve(process.cwd(), ".mcp.json"),
     resolve(process.cwd(), ".pi", "mcp.json"),
   ];
 
@@ -71,7 +70,7 @@ function writeGlobalEngineeringSkillsConfig(repoPath: string): string {
   mcpServers[SERVER_NAME] = {
     command: "node",
     args: [distIndex.replace(/\\/g, "/")],
-    lifecycle: "lazy",
+    exposure: "direct",
   };
 
   config.mcpServers = mcpServers;
@@ -113,7 +112,7 @@ export default function engineeringSkills(pi: ExtensionAPI) {
       const configPath = writeGlobalEngineeringSkillsConfig(repoPath);
       updateStatus(ctx);
       ctx.ui.notify(`Configured ${SERVER_NAME} MCP in ${configPath}`, "info");
-      ctx.ui.notify("Reloading Pi so pi-mcp-adapter sees the config...", "info");
+      ctx.ui.notify("Reloading Pi so built-in MCP picks up the config...", "info");
       await ctx.reload();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

@@ -108,54 +108,58 @@ reads:
 
 | Scope | Path |
 |-------|------|
-| Global | `~/.pi/agent/mcp.json` |
-| Project | `.pi/mcp.json` (trusted projects only) |
+| **Global (preferred)** | `~/.pi/agent/mcp.json` |
+| Project (optional) | `.pi/mcp.json` (trusted projects only) |
 
-Project entries replace global entries with the same name. Tools are named
-`mcp__<server>__<tool>`. Use `/mcp` in a session, or from a shell:
+Use the **global** file for personal servers (engineering-skills, playwright,
+cua, azure-devops, …). Project `.pi/mcp.json` is optional; when present, entries
+with the same name **replace** the global ones. This repo does not require a
+project MCP file — servers live in the global agent config.
+
+Pi does **not** read `~/.config/mcp/mcp.json` or project-root `.mcp.json`.
+Keep project `.mcp.json` only if other hosts (Cursor/Claude/Codex) need it.
+
+Tools are named `mcp__<server>__<tool>`. Manage servers with:
 
 ```bash
 pi mcp list
-pi mcp add <name> -- <command> [args...]
+pi mcp add <name> -- <command> [args...]          # writes ~/.pi/agent/mcp.json
+pi mcp add -l <name> -- <command> [args...]       # writes .pi/mcp.json
 pi mcp remove <name>
 ```
 
-Exposure controls how tools reach the model (`direct`, `codemode`, `deferred`,
-`hidden`, plus per-tool `toolExposure`). See Pi's `docs/mcp.md`.
+Exposure: `direct`, `codemode`, `deferred`, `hidden`, plus per-tool
+`toolExposure`. See Pi's `docs/mcp.md`.
 
 **Important:** an extension that registers `/mcp` (such as `pi-mcp-adapter`)
 replaces built-in MCP. Keep that package uninstalled for this setup.
 
 ## Configure Playwright MCP
 
-Playwright MCP is the browser automation path for Claude, Codex, Cursor,
-Antigravity, and Pi. Every configuration launches Microsoft Edge via
-`--browser msedge`.
-
-Pi project config is checked in at `.pi/mcp.json`:
+Playwright + the local recorder are configured **globally** in
+`~/.pi/agent/mcp.json` (Edge via `--browser msedge`). The recorder uses an
+absolute path into this repo:
 
 ```json
 {
-  "mcpServers": {
-    "playwright": {
-      "command": "npx",
-      "args": ["-y", "@playwright/mcp@latest", "--browser", "msedge"],
-      "exposure": "direct"
-    },
-    "playwright-recorder": {
-      "command": "node",
-      "args": ["scripts/playwright-record-mcp.mjs"],
-      "exposure": "direct"
-    }
+  "playwright": {
+    "command": "npx",
+    "args": ["-y", "@playwright/mcp@latest", "--browser", "msedge"],
+    "exposure": "direct"
+  },
+  "playwright-recorder": {
+    "command": "node",
+    "args": ["C:/my-pi/scripts/playwright-record-mcp.mjs"],
+    "exposure": "direct"
   }
 }
 ```
 
-A cross-host shared config remains at project `.mcp.json` for Claude, Codex,
-Cursor, and similar clients. Those hosts do not read `.pi/mcp.json`.
+Cross-host copy (optional): project `.mcp.json` for Claude/Cursor/Codex — those
+hosts do not read Pi's `mcp.json` files.
 
-After changing MCP config, run `/reload` in Pi (or start a new session). Verify
-with `/mcp` or `pi mcp list`.
+After changing MCP config, run `/reload` (or a new session). Verify with `/mcp`
+or `pi mcp list`.
 
 ### Save a video recording
 

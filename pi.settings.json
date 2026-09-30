@@ -39,7 +39,8 @@
     },
     "aiknow": {
       "tools": {
-        "aiknow_search": "agent-visible"
+        "aiknow_search": "agent-hidden",
+        "aiknow_external_search": "agent-hidden"
       }
     },
     "background-jobs": {

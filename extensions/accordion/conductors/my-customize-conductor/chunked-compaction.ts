@@ -212,8 +212,8 @@ export function corpusContentHash(blocks: readonly Pick<ViewBlock, "id" | "token
 }
 
 /**
- * A contiguous sub-range of the pre-group window that contains only complete
- * accordion turns and is bounded by hard barriers.
+ * A contiguous sub-range of the pre-group window bounded by complete messages
+ * and hard barriers. Completed messages within a long active turn are eligible.
  */
 export type SafeCompactionRange = {
 	fromIndex: number;
@@ -225,8 +225,9 @@ export type SafeCompactionRange = {
 
 /**
  * Select a contiguous sub-range of `[fromIndex, view.protectedFromIndex)` that:
- *   - Contains only complete accordion turns (never splits a turn across the boundary).
- *   - Stops before any hard barrier (held, grouped).
+ *   - Starts on a complete message, even when a token-sized interval begins mid-turn.
+ *   - Never splits a message across its boundaries.
+ *   - Stops before a held barrier; grouped blocks delimit later candidate runs.
  *   - Allows user / MCP / recall / pstack blocks — they may belong to an eligible turn.
  *
  * Returns `null` when the resulting range would be empty.
@@ -236,18 +237,17 @@ export function selectCompactionRange(view: ConductorView, fromIndex: number): S
 	const blocks = view.blocks;
 	if (fromIndex >= end) return null;
 
-	// The current partial turn is the turn of the first protected block.
-	// All blocks with the same turn number must stay in the protected tail.
-	const currentTurn = end < blocks.length ? blocks[end].turn : Infinity;
-	// Never begin in the middle of a turn. Excluding the partial turn is safer than
-	// splitting it across a group boundary.
+	// A token-sized Pre-Group often begins mid-turn, including in a completed
+	// historical turn. Skip only the remainder of a split MESSAGE, not the whole
+	// turn; otherwise a 30k interval inside a long turn can never roll over.
 	let safeFromIndex = fromIndex;
 	while (
 		safeFromIndex < end &&
 		safeFromIndex > 0 &&
-		blocks[safeFromIndex - 1].turn === blocks[safeFromIndex].turn &&
 		!blocks[safeFromIndex].held &&
-		!blocks[safeFromIndex].grouped
+		!blocks[safeFromIndex].grouped &&
+		(blocks[safeFromIndex - 1].messageKey ?? blocks[safeFromIndex - 1].id) ===
+			(blocks[safeFromIndex].messageKey ?? blocks[safeFromIndex].id)
 	) {
 		safeFromIndex++;
 	}
@@ -266,10 +266,16 @@ export function selectCompactionRange(view: ConductorView, fromIndex: number): S
 		}
 	}
 
-	// Trim from the soft end: exclude blocks that belong to the current partial turn.
+	// A long tool-using turn may exceed the entire Pre-Group target. Its completed
+	// messages can still be grouped; only a message split by the protected boundary
+	// must remain live. The group planner subsequently trims open tool pairs.
 	let toIndexExclusive = harderEnd;
-	while (toIndexExclusive > safeFromIndex && blocks[toIndexExclusive - 1].turn === currentTurn) {
-		toIndexExclusive--;
+	if (toIndexExclusive < blocks.length) {
+		const boundaryKey = blocks[toIndexExclusive].messageKey ?? blocks[toIndexExclusive].id;
+		while (toIndexExclusive > safeFromIndex &&
+			(blocks[toIndexExclusive - 1].messageKey ?? blocks[toIndexExclusive - 1].id) === boundaryKey) {
+			toIndexExclusive--;
+		}
 	}
 
 	if (toIndexExclusive <= safeFromIndex) return null;

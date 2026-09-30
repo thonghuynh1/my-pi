@@ -36,6 +36,15 @@ function makeStore(): AccordionStore {
 }
 
 describe("createGroup — validation & message snapping", () => {
+	it("reports the overlapping group member and endpoints without transcript content", () => {
+		const s = makeStore();
+		s.createGroup("u:1", "r:c1");
+		const reports = s.applyCommands([{ kind: "group", ids: ["a:r1:p1", "u:2"], lifecycle: "rollover" }], "conductor");
+		expect(reports).toContainEqual(expect.objectContaining({
+			reason: "invalid-group",
+			detail: "overlap at block 1; range 2..5",
+		}));
+	});
 	it("groups a clean range (assistant msg + its tool result) and folds it by default", () => {
 		const s = makeStore();
 		const g = s.createGroup("a:r1:p0", "r:c1")!;

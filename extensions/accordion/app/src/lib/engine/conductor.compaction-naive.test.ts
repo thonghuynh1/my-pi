@@ -2389,6 +2389,49 @@ describe("MyCustomizeConductor — deterministic chunked-compaction rollover", (
 		}
 	});
 
+	it("compacts completed messages in a long active turn without touching a protected message", () => {
+		const blocks = Array.from({ length: 8 }, (_, i) => chunkedBlock(`long:${i}`, i, 5_000, { turn: 1 }));
+		blocks.push(chunkedBlock("long:tail", 8, 100, { kind: "user", protected: true, turn: 1 }));
+		const view = rolloverView(blocks);
+		const range = chunkedCompaction.selectCompactionRange(view, 0);
+		expect(range).toMatchObject({ fromIndex: 0, toIndexExclusive: 8 });
+		const plan = new MyCustomizeConductor().conduct(view);
+		expect(plan.commands.some((command) => command.kind === "group" && command.ids.length > 0)).toBe(true);
+		expect(plan.commands.flatMap((command) => command.kind === "group" ? command.ids : [])).not.toContain("long:tail");
+	});
+
+	it("groups the complete-message suffix of a long active turn after a preserved group", () => {
+		const blocks = [
+			chunkedBlock("leftover", 0, 1_000, { turn: 1 }),
+			chunkedBlock("preserved", 1, 20_000, { turn: 1, grouped: true }),
+			...Array.from({ length: 8 }, (_, i) => chunkedBlock(`active:${i}`, i + 2, 5_000, { turn: 1 })),
+			chunkedBlock("active:tail", 10, 100, { kind: "user", protected: true, turn: 1 }),
+		];
+		const view = { ...rolloverView(blocks), budget: 70_000, liveTokens: 105_000, harnessOverhead: 0 };
+		const plan = new MyCustomizeConductor().conduct(view);
+		const groupedIds = plan.commands.flatMap((command) => command.kind === "group" ? command.ids : []);
+		expect(groupedIds).toContain("active:2");
+		expect(groupedIds).not.toContain("preserved");
+		expect(groupedIds).not.toContain("active:tail");
+	});
+
+	it("retains complete messages when the Pre-Group begins mid historical turn", () => {
+		const blocks = Array.from({ length: 8 }, (_, i) => chunkedBlock(`past:${i}`, i, 5_000, { turn: 1 }));
+		blocks.push(chunkedBlock("tail", 8, 100, { kind: "user", protected: true, turn: 2 }));
+		const view = rolloverView(blocks);
+		expect(chunkedCompaction.selectCompactionRange(view, 2)).toMatchObject({ fromIndex: 2, toIndexExclusive: 8 });
+	});
+
+	it("does not split a protected assistant message in a long active turn", () => {
+		const blocks = [
+			chunkedBlock("old", 0, 20_000, { turn: 1 }),
+			{ ...chunkedBlock("a:same:p0", 1, 5_000, { turn: 1 }), messageKey: "a:same" },
+			{ ...chunkedBlock("a:same:p1", 2, 100, { protected: true, turn: 1 }), messageKey: "a:same" },
+		];
+		const range = chunkedCompaction.selectCompactionRange(rolloverView(blocks), 0);
+		expect(range).toMatchObject({ fromIndex: 0, toIndexExclusive: 1 });
+	});
+
 	it("includes MCP recall pstack and user blocks but stops at hard barriers", () => {
 		// User and MCP blocks may belong to an eligible turn; held blocks are hard barriers.
 		const blocks = [

@@ -1299,7 +1299,15 @@ export class AccordionStore {
 			}
 		}
 		const g = this.createGroup(ids[0], ids[ids.length - 1], by, digest, lifecycle);
-		if (!g) reports.push(clamp("group", ids, "invalid-group", "not a valid contiguous, ungrouped run older than the protected tail"));
+		if (!g) {
+			const last = range?.[range.length - 1];
+			const overlap = range?.find((id) => this.groupAt.has(id));
+			const cause = !range ? "unknown endpoint"
+				: last && (this.index.get(last) ?? Infinity) >= this.protectedFromIndex ? `protected boundary at block ${this.index.get(last)}`
+				: overlap ? `overlap at block ${this.index.get(overlap)}`
+				: "no collapsible carrier";
+			reports.push(clamp("group", ids, "invalid-group", `${cause}; range ${this.index.get(ids[0]) ?? "?"}..${this.index.get(ids[ids.length - 1]) ?? "?"}`));
+		}
 	}
 
 	setBudget(n: number): void {

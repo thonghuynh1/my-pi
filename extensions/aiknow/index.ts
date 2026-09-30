@@ -41,7 +41,11 @@ export function resolveAiknowPath(): string {
 
 export const piExtension = { id: "aiknow" };
 
+// Temporary: aiKnow repo is pending. Do not load or register tools for any Pi agent.
+const AIKNOW_TEMPORARILY_DISABLED = true;
+
 export default async function (pi: unknown) {
+  if (AIKNOW_TEMPORARILY_DISABLED) return;
   const aiknowPath = resolveAiknowPath();
   if (!existsSync(aiknowPath)) {
     return;

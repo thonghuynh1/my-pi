@@ -109,6 +109,14 @@ export function reset(): void {
 	};
 }
 
+/**
+ * cache_control markers (breakpoint position, TTL rewrites by other extensions)
+ * are not part of the cached content, so they must not register as prefix breaks.
+ */
+function stableStringify(value: unknown): string {
+	return JSON.stringify(value, (key, item) => (key === "cache_control" ? undefined : item));
+}
+
 function buildSnapshot(payload: unknown, provider: string | undefined): PrefixSnapshot {
 	const record = asRecord(payload);
 	const messageItems = getMessageItems(record);
@@ -118,9 +126,9 @@ function buildSnapshot(payload: unknown, provider: string | undefined): PrefixSn
 	const toolsValue = hasOwnValue(record, "tools") ? record?.tools : record?.toolConfig;
 
 	return {
-		messageStrings: conversationItems.map((message) => JSON.stringify(message)),
-		systemHash: JSON.stringify(systemValue),
-		toolsHash: JSON.stringify(toolsValue),
+		messageStrings: conversationItems.map((message) => stableStringify(message)),
+		systemHash: stableStringify(systemValue),
+		toolsHash: stableStringify(toolsValue),
 		provider: provider ?? "",
 	};
 }

@@ -71,6 +71,23 @@ import {
 } from "./lib/packet-runtime-policy.ts";
 import { type PacketTermination } from "./lib/reconciliation.ts";
 import {
+	BackgroundJobRegistry,
+	DELIVERY_HEADER,
+	DEFAULT_BACKGROUND_TIMEOUT_SECONDS,
+	MAX_BACKGROUND_SUBAGENTS,
+	clampWaitSeconds,
+	durationSeconds,
+	formatDeliveryMessage,
+	formatJobResult,
+	longTtlWanted,
+	resolveWaitTargets,
+	selectDeliverable,
+	selectWaitResults,
+	shouldApplyLongCacheTtl,
+	withLongCacheTtl,
+	type BackgroundJob,
+} from "./lib/subagent-background.ts";
+import {
 	parseRoutingConfig,
 	resolveRoutingConfig,
 	type EffectiveRoutingConfig,
@@ -153,8 +170,9 @@ interface SubagentDetails {
 	cwd: string;
 	tools: string[];
 	model?: string;
-	status: "completed" | "error" | "running";
+	status: "completed" | "error" | "running" | "background";
 	output: string;
+	jobId?: string;
 	error?: string;
 	turns: number;
 	toolCalls: Array<{ name: string; args: unknown; isError?: boolean }>;
@@ -354,14 +372,38 @@ const SubagentParams = Type.Object({
 	),
 	timeoutSeconds: Type.Optional(
 		Type.Number({
-			description: "Optional timeout in seconds. Packet calls honor up to 300 seconds; ordinary calls use a 600-second minimum.",
+			description: "Optional timeout in seconds. Packet calls honor up to 300 seconds; ordinary calls use a 600-second minimum; background calls without a timeout default to 1800 seconds.",
 			minimum: 1,
 		}),
 	),
 	evidencePacket: Type.Optional(Type.Unknown({ description: "Optional selected EvidencePacketV1 slice. Invalid packets visibly fall back to prose." })),
+	background: Type.Optional(
+		Type.Boolean({
+			description: "Default true: the call returns a job id immediately and the result is delivered automatically as a follow-up message. Set false only when the very next step cannot proceed without the result.",
+		}),
+	),
 });
 
 type SubagentParamsType = Static<typeof SubagentParams>;
+
+const SubagentWaitParams = Type.Object({
+	jobIds: Type.Optional(Type.Array(Type.String(), { description: "Background job ids (e.g. 'sa-1'). Defaults to all running jobs." })),
+	timeoutSeconds: Type.Optional(Type.Number({ description: "Maximum seconds to wait. Default 120, max 240." })),
+});
+
+type SubagentWaitParamsType = Static<typeof SubagentWaitParams>;
+
+const SubagentStatusParams = Type.Object({
+	jobId: Type.Optional(Type.String({ description: "Background job id. Omit for all jobs." })),
+});
+
+type SubagentStatusParamsType = Static<typeof SubagentStatusParams>;
+
+const SubagentCancelParams = Type.Object({
+	jobId: Type.String({ description: "Background job id to cancel (e.g. 'sa-1')." }),
+});
+
+type SubagentCancelParamsType = Static<typeof SubagentCancelParams>;
 
 const EXPLORE_PROMPT = `You are Pi's explore subagent.
 
@@ -1720,6 +1762,190 @@ export default function (pi: ExtensionAPI) {
 	}
 	publishStateLabel();
 
+	// --- Background subagents ---
+	// Jobs run detached from the launching turn; results are delivered as one
+	// follow-up user message when the parent is idle (mirrors background-jobs.ts).
+	const backgroundJobs = new BackgroundJobRegistry();
+	let isAgentBusy = false;
+	let hasUserTurnPending = false;
+	let parentTurnSeq = 0;
+	let deliveryTimer: ReturnType<typeof setTimeout> | undefined;
+	let lastUiCtx: Pick<ExtensionContext, "hasUI" | "ui"> | undefined;
+	// Delivery handshake: pi.sendUserMessage is fire-and-forget (prompt() rejections
+	// are swallowed into emitError), so jobs are only marked delivered once the
+	// prompt is confirmed (queued as a follow-up while streaming, or agent_start).
+	let deliveryInFlight: string[] | undefined;
+	let deliveryAccepted = false;
+	let deliveryInFlightTimer: ReturnType<typeof setTimeout> | undefined;
+	const DELIVERY_CONFIRM_TIMEOUT_MS = 60_000;
+	// Manual/auto compaction rejects prompts and does not fire agent_start.
+	let compactionInProgress = false;
+	// Custom agents are snapshotted once per session so the system prompt stays stable.
+	let customAgentsSnapshot: CustomAgent[] | undefined;
+
+	function recordSubagentUsage(result: SubagentDetails) {
+		const u = result.usage;
+		if (!u) return;
+		subagentState.totalCostUsd += u.costUsd ?? 0;
+		subagentState.totalInputTokens += u.inputTokens ?? 0;
+		subagentState.totalOutputTokens += u.outputTokens ?? 0;
+		subagentState.totalCacheTokens += u.cacheTokens ?? 0;
+		subagentState.totalTokens +=
+			u.totalTokens ??
+			(u.inputTokens ?? 0) + (u.outputTokens ?? 0) + (u.cacheTokens ?? 0);
+	}
+
+	function safeRefreshWidget() {
+		if (!lastUiCtx) {
+			publishStateLabel();
+			return;
+		}
+		try {
+			refreshSubagentStatusWidget(lastUiCtx);
+		} catch {
+			// A captured ctx can go stale after session replacement; the state label is still updated.
+			publishStateLabel();
+		}
+	}
+
+	function clearDeliveryTimer() {
+		if (deliveryTimer) clearTimeout(deliveryTimer);
+		deliveryTimer = undefined;
+	}
+
+	function clearDeliveryInFlight() {
+		if (deliveryInFlightTimer) clearTimeout(deliveryInFlightTimer);
+		deliveryInFlightTimer = undefined;
+		deliveryInFlight = undefined;
+		deliveryAccepted = false;
+	}
+
+	/** The delivery prompt was accepted by the session: its jobs are delivered. */
+	function confirmDeliveryInFlight() {
+		if (!deliveryInFlight) return;
+		backgroundJobs.markDelivered(deliveryInFlight);
+		clearDeliveryInFlight();
+	}
+
+	function flushBackgroundDeliveries() {
+		clearDeliveryTimer();
+		const now = Date.now();
+		const selection = selectDeliverable(backgroundJobs.list(), now);
+		if (selection.nextCheckAt !== undefined) {
+			deliveryTimer = setTimeout(flushBackgroundDeliveries, Math.max(0, selection.nextCheckAt - now));
+			(deliveryTimer as { unref?: () => void }).unref?.();
+		}
+		// Busy, compacting, or a delivery prompt not yet confirmed: keep everything
+		// queued (never drop); agent_settled / compaction end / handshake timeout retry.
+		if (isAgentBusy || hasUserTurnPending || compactionInProgress || deliveryInFlight) return;
+		if (selection.ready.length === 0) return;
+		// Not marked delivered yet: only a confirmed prompt counts as delivery.
+		deliveryInFlight = selection.ready.map((job) => job.id);
+		deliveryAccepted = false;
+		deliveryInFlightTimer = setTimeout(() => {
+			// The prompt failed before agent_start (auth, model, compaction race): retry.
+			clearDeliveryInFlight();
+			flushBackgroundDeliveries();
+		}, DELIVERY_CONFIRM_TIMEOUT_MS);
+		(deliveryInFlightTimer as { unref?: () => void }).unref?.();
+		pi.sendUserMessage(formatDeliveryMessage(selection.ready, (text) => truncateForToolResult(text)), { deliverAs: "followUp" });
+	}
+
+	function abortAllBackgroundJobs() {
+		clearDeliveryTimer();
+		clearDeliveryInFlight();
+		backgroundJobs.abortAllAndClear();
+	}
+
+	function backgroundDisplayName(params: SubagentParamsType): string {
+		return params.type === "custom" ? (params.customAgent ?? "custom") : params.type;
+	}
+
+	function launchBackgroundSubagent(params: SubagentParamsType, ctx: ExtensionContext) {
+		lastUiCtx = ctx;
+		const job = backgroundJobs.launch({
+			type: params.type,
+			name: backgroundDisplayName(params),
+			task: params.task,
+			batchId: `turn-${parentTurnSeq}`,
+			startedAt: Date.now(),
+		});
+		// Detach from the launching turn: no ctx.signal, so Esc in a later turn does not kill the job.
+		// Model/registry are snapshotted at launch; runSubagent only reads these four fields.
+		const runCtx = {
+			cwd: ctx.cwd,
+			model: ctx.model,
+			modelRegistry: ctx.modelRegistry,
+			signal: undefined,
+		} as unknown as ExtensionContext;
+		const runParams: SubagentParamsType = {
+			...params,
+			timeoutSeconds: params.timeoutSeconds ?? DEFAULT_BACKGROUND_TIMEOUT_SECONDS,
+		};
+		const isCurrent = () => backgroundJobs.get(job.id) === job;
+		const statusSink: SubagentStatusSink = (status) => {
+			if (status && isCurrent()) {
+				activeSubagents.set(job.id, status);
+				job.turns = status.turns;
+				job.toolCount = status.toolCalls.length;
+				job.preview = status.currentTool ? `running ${status.currentTool}` : oneLine(status.preview).slice(0, 160);
+			} else {
+				activeSubagents.delete(job.id);
+			}
+			safeRefreshWidget();
+		};
+		void runSubagent(pi, runCtx, job.id, runParams, undefined, statusSink, job.abort.signal)
+			.then(
+				(result) => {
+					// A session reset cleared the registry: drop the stale result and its billing.
+					if (!isCurrent()) return;
+					recordSubagentUsage(result);
+					backgroundJobs.complete(job.id, {
+						status: result.status === "completed" ? "completed" : "error",
+						output: result.output,
+						error: result.error,
+						turns: result.turns,
+						toolCount: result.toolCalls.length,
+						endedAt: Date.now(),
+					});
+				},
+				(error: unknown) => {
+					if (!isCurrent()) return;
+					backgroundJobs.complete(job.id, {
+						status: "error",
+						output: "",
+						error: error instanceof Error ? error.message : String(error),
+						turns: job.turns,
+						toolCount: job.toolCount,
+						endedAt: Date.now(),
+					});
+				},
+			)
+			.finally(() => {
+				activeSubagents.delete(job.id);
+				safeRefreshWidget();
+				flushBackgroundDeliveries();
+			});
+
+		const text = [
+			`Background subagent started: ${job.id} (${job.type}:${job.name})`,
+			"Running in background. Continue independent work or end your turn; results will be delivered automatically. Use subagent_wait only if you are blocked on this result.",
+		].join("\n");
+		const details: SubagentDetails = {
+			type: params.type,
+			name: job.name,
+			task: params.task,
+			cwd: ctx.cwd,
+			tools: [],
+			status: "background",
+			output: text,
+			jobId: job.id,
+			turns: 0,
+			toolCalls: [],
+		};
+		return { content: [{ type: "text" as const, text }], details };
+	}
+
 	const renderSubagentStatusWidget = () => {
 		return (tui: { requestRender: () => void }, theme: Theme) => {
 			tuiRef = tui;
@@ -1769,6 +1995,15 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		subagentModeEnabled = resolveSubagentModeDefault();
+		abortAllBackgroundJobs();
+		isAgentBusy = false;
+		hasUserTurnPending = false;
+		lastUiCtx = ctx;
+		try {
+			customAgentsSnapshot = discoverCustomAgents(ctx.cwd);
+		} catch {
+			customAgentsSnapshot = undefined;
+		}
 		activeSubagents.clear();
 		resetBatchCoachState();
 		// New session ⇒ reset accumulated subagent billing so the footer
@@ -1871,8 +2106,69 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		abortAllBackgroundJobs();
 		activeSubagents.clear();
 		refreshSubagentStatusWidget(ctx);
+	});
+
+	// Parent lifecycle tracking for background delivery (mirrors background-jobs.ts).
+	pi.on("agent_start", () => {
+		isAgentBusy = true;
+		// Our delivery prompt passed input, model and auth checks and is running.
+		if (deliveryAccepted) confirmDeliveryInFlight();
+	});
+
+	pi.on("turn_start", () => {
+		isAgentBusy = true;
+		parentTurnSeq += 1;
+	});
+
+	pi.on("input", (event) => {
+		const isOurDelivery = Boolean(deliveryInFlight) && event.source === "extension" && event.text.startsWith(DELIVERY_HEADER);
+		if (!isOurDelivery) {
+			hasUserTurnPending = true;
+			return;
+		}
+		// While streaming, prompt() queues the follow-up right after input: delivered.
+		// When idle it still has to pass model/auth checks: confirm on agent_start.
+		if (event.streamingBehavior) confirmDeliveryInFlight();
+		else deliveryAccepted = true;
+	});
+
+	pi.on("agent_settled", () => {
+		isAgentBusy = false;
+		hasUserTurnPending = false;
+		// A delivery still unconfirmed at a settle never started: release it for retry.
+		clearDeliveryInFlight();
+		flushBackgroundDeliveries();
+	});
+
+	pi.on("session_before_compact", () => {
+		compactionInProgress = true;
+	});
+
+	const onCompactionEnd = () => {
+		compactionInProgress = false;
+		// pi clears its compaction guard right after these events resolve; flush on the next tick.
+		const timer = setTimeout(flushBackgroundDeliveries, 0);
+		(timer as { unref?: () => void }).unref?.();
+	};
+	pi.on("session_compact", onCompactionEnd);
+	pi.on("session_compact_failed", onCompactionEnd);
+
+	// 1h cache TTL while background subagents run, so the parent's prompt cache
+	// survives the gap between launching jobs and receiving their results.
+	pi.on("before_provider_request", (event, ctx) => {
+		const model = ctx.model as { api?: string; compat?: { supportsLongCacheRetention?: boolean } } | undefined;
+		const apply = shouldApplyLongCacheTtl({
+			api: model?.api,
+			supportsLongCacheRetention: model?.compat?.supportsLongCacheRetention,
+			// Decided per request: 1h only while background jobs are running.
+			windowActive: longTtlWanted({ running: backgroundJobs.running().length }),
+			optOutEnv: process.env.PI_SUBAGENT_LONG_CACHE,
+		});
+		if (!apply) return undefined;
+		return withLongCacheTtl(event.payload);
 	});
 
 	// Helper to build tool definition based on mode state
@@ -1883,7 +2179,7 @@ export default function (pi: ExtensionAPI) {
 			name: "subagent",
 			label: "Subagent",
 			description: enabled
-				? "Run an isolated in-process Pi subagent. **BATCH IN PARALLEL**: emit multiple subagent calls in one assistant message and they run concurrently — always prefer a parallel batch over sequential one-by-one. Types: explore (read-only codebase investigation), shell (command-oriented investigation), custom (markdown agent from ~/.pi/agent/agents or .pi/agents)."
+				? "Run an isolated in-process Pi subagent. Runs in the BACKGROUND by default: the call returns a job id immediately and the result arrives automatically as a follow-up message. **BATCH IN PARALLEL**: emit multiple subagent calls in one assistant message and they run concurrently — always prefer a parallel batch over sequential one-by-one. Types: explore (read-only codebase investigation), shell (command-oriented investigation), custom (markdown agent from ~/.pi/agent/agents or .pi/agents)."
 				: "Run an isolated in-process Pi subagent.",
 			promptSnippet: enabled
 				? "Delegate focused investigation to an isolated in-process subagent (explore = read-only, shell = with bash, custom = specialized). **Always batch independent questions as parallel subagent calls in the SAME assistant message** — they run concurrently, so 4 in parallel ≈ wall-clock cost of 1."
@@ -1893,6 +2189,7 @@ export default function (pi: ExtensionAPI) {
 					"**BATCH IN PARALLEL — this is the #1 rule.** Multiple `subagent` calls in the same assistant message execute concurrently. Before launching any subagent, ask: 'can I split this into 2–5 independent sub-questions?' If yes, emit them all in one message. Sequential one-by-one is almost always wrong.",
 					"Concrete batch examples: understanding a feature → 3 parallel explores (API route, DB model, UI call site). Debugging → 1 shell (run test) + 1 explore (map modules), fanned out together. Refactor planning → one explore per affected layer, all dispatched at once.",
 					"`subagent` spins up an isolated child agent with its own context window and returns a concise summary. Useful when an investigation would take more than a couple of read/grep calls or would clutter the main context.",
+					"Subagents run in the background by default: each call returns a job id at once and results are delivered automatically as one follow-up message. After launching, continue independent work or end your turn. Never poll `subagent_status`. Call `subagent_wait` only when you are blocked on a result; pass `background: false` only when the very next step cannot proceed without it.",
 					"type=explore for read-only codebase questions (read/grep/find/ls). type=shell when commands, tests, or logs are needed. type=custom with `customAgent` for specialized agents.",
 					"Keep each subagent's task NARROW and focused. Don't stuff multiple questions into one mega-task — narrow tasks return faster, cleaner summaries. Split first, batch second.",
 					"For broad repo exploration, omit `timeoutSeconds` or use at least 600 seconds.",
@@ -1902,27 +2199,28 @@ export default function (pi: ExtensionAPI) {
 			parameters: SubagentParams,
 			prepareArguments: normalizeTimeoutSeconds,
 			execute: async (toolCallId, params, _signal, onUpdate, ctx) => {
+				// Background by default. Foreground when explicitly requested, when an
+				// evidence packet is supplied (structured results are consumed in-turn),
+				// or when the background cap is reached.
+				const wantsBackground = params.background !== false && params.evidencePacket === undefined;
+				const atCap = wantsBackground && backgroundJobs.running().length >= MAX_BACKGROUND_SUBAGENTS;
+				if (wantsBackground && !atCap) return launchBackgroundSubagent(params, ctx);
+				const capNote = atCap
+					? `Note: ran in foreground because the background subagent cap (${MAX_BACKGROUND_SUBAGENTS} running) was reached.\n\n`
+					: "";
+
 				const result = await runSubagent(pi, ctx, toolCallId, params, onUpdate as any, (status) => {
 					if (status) activeSubagents.set(toolCallId, status);
 					else activeSubagents.delete(toolCallId);
 					refreshSubagentStatusWidget(ctx);
 				}, _signal);
-				const u = result.usage;
-				if (u) {
-					subagentState.totalCostUsd += u.costUsd ?? 0;
-					subagentState.totalInputTokens += u.inputTokens ?? 0;
-					subagentState.totalOutputTokens += u.outputTokens ?? 0;
-					subagentState.totalCacheTokens += u.cacheTokens ?? 0;
-					subagentState.totalTokens +=
-						u.totalTokens ??
-						(u.inputTokens ?? 0) + (u.outputTokens ?? 0) + (u.cacheTokens ?? 0);
-				}
+				recordSubagentUsage(result);
 				if (result.status === "error") {
 					return {
 						content: [
 							{
 								type: "text",
-								text: `Subagent ${result.type}:${result.name} failed: ${result.error}\n\n${truncateForToolResult(result.output)}`,
+								text: `${capNote}Subagent ${result.type}:${result.name} failed: ${result.error}\n\n${truncateForToolResult(result.output)}`,
 							},
 						],
 						details: { ...result },
@@ -1930,7 +2228,7 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				return {
-					content: [{ type: "text", text: truncateForToolResult(result.output) }],
+					content: [{ type: "text", text: `${capNote}${truncateForToolResult(result.output)}` }],
 					details: { ...result },
 				};
 			},
@@ -1949,6 +2247,13 @@ export default function (pi: ExtensionAPI) {
 				if (!details) {
 					const text = result.content[0];
 					return new Text(text?.type === "text" ? text.text : "", 0, 0);
+				}
+				if (details.status === "background") {
+					return new Text(
+						`${theme.fg("warning", "⧗")} ${theme.fg("dim", `background ${details.jobId ?? "?"}`)} ${theme.fg("toolTitle", theme.bold(`${details.type}:${details.name}`))}`,
+						0,
+						0,
+					);
 				}
 				const icon = details.status === "completed"
 					? theme.fg("success", "✓")
@@ -1999,7 +2304,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (!subagentModeEnabled) return;
-		const customAgents = prioritizeCustomAgentsForDisplay(discoverCustomAgents(ctx.cwd))
+		customAgentsSnapshot ??= discoverCustomAgents(ctx.cwd);
+		const customAgents = prioritizeCustomAgentsForDisplay(customAgentsSnapshot)
 			.slice(0, 20)
 			.map((agent) => `- ${agent.name} (${agent.source}): ${agent.description || agent.filePath}`)
 			.join("\n");
@@ -2007,13 +2313,123 @@ export default function (pi: ExtensionAPI) {
 		return {
 			systemPrompt:
 				event.systemPrompt +
-				`\n\n=== Subagent workflow mode is enabled ===\n\nYou have an extra capability in this session: the \\\`subagent\\\` tool. It spins up an isolated child Pi agent with its own context window, so investigations done inside a subagent do not consume your main context. The child returns only a concise summary.\n\n## PLAN FIRST, THEN FAN OUT WIDE\n\nBefore you start investigating, pause and ask: **\"Can I split this work into independent sub-questions that don't depend on each other's answers?\"** If yes, dispatch them as a SINGLE BATCH of parallel \\\`subagent\\\` calls in one assistant message. Subagents run concurrently — 4 subagents in parallel finish in roughly the same wall-clock time as 1. Sequential one-by-one investigation is the slow, wrong default.\n\nA good batch is typically 2–5 subagents, each with a narrow, well-scoped task. Don't be shy about going wide — if you can frame 4 independent questions, launch 4 subagents.\n\n### Example batches (do this)\n- Understanding a feature: launch 3 explores in parallel — (1) where the API route is defined, (2) where the DB model lives, (3) where the UI calls it.\n- Debugging a failing test: launch 2 in parallel — one \"shell\" to run the test and capture the stack, one \"explore\" to map the involved modules.\n- Refactor planning: one explore per affected layer (data, service, controller, view) all dispatched together.\n- Reviewing a PR-sized change: one explore per touched subsystem, fanned out simultaneously.\n\n### Anti-patterns (don't do this)\n- ❌ Run one subagent, wait for the result, then run the next one to ask a related-but-independent question. That doubles your wall-clock time for no reason.\n- ❌ Stuff every question into one giant subagent prompt. Narrow, focused tasks return faster and cleaner summaries than one bloated mega-task.\n- ❌ Use a subagent for a single \\\`read\\\` of a known file — just read it directly.\n\n## Available subagent types\n- type=\"explore\" — read-only codebase reconnaissance. The child only has read/grep/find/ls. Good for \"where is X defined\", \"how is Y wired\", \"explain this module\", or any multi-file investigation.\n- type=\"shell\" — same as explore plus \\\`bash\\\`. Good for running tests, inspecting logs, reproducing a failure, or any diagnosis that needs commands.\n- type=\"custom\" with \\\`customAgent\\\` — a specialized markdown-defined agent (see list below).\n\n## When a subagent is a good fit\n- The investigation will likely take more than a couple of read/grep calls.\n- The findings would otherwise clutter your main context with details you only need to summarize.\n- You need to run tests or other commands whose long output you do not want in your main context.\n- You have multiple independent questions — dispatch them as a parallel batch.\n\n## When direct read/grep/edit/bash from the main agent is fine\n- Reading a single known file before editing it.\n- A single targeted lookup at a known location.\n- Quick follow-ups after a subagent has already returned.\n\n## Available custom subagents\n${customAgentsText}`,
+				`\n\n=== Subagent workflow mode is enabled ===\n\nYou have an extra capability in this session: the \\\`subagent\\\` tool. It spins up an isolated child Pi agent with its own context window, so investigations done inside a subagent do not consume your main context. The child returns only a concise summary.\n\n## Subagents run in the background\nEvery \\\`subagent\\\` call runs in the background by default: it returns a job id immediately, and all finished results are delivered to you automatically as one follow-up message.\n- After launching, continue independent work or end your turn. Do not sleep or loop waiting.\n- Never poll \\\`subagent_status\\\` to check on progress.\n- Call \\\`subagent_wait\\\` only when you are blocked and cannot do anything useful without the result.\n- Pass \\\`background: false\\\` only when the very next step cannot proceed without the result.\n\n## PLAN FIRST, THEN FAN OUT WIDE\n\nBefore you start investigating, pause and ask: **\"Can I split this work into independent sub-questions that don't depend on each other's answers?\"** If yes, dispatch them as a SINGLE BATCH of parallel \\\`subagent\\\` calls in one assistant message. Subagents run concurrently — 4 subagents in parallel finish in roughly the same wall-clock time as 1. Sequential one-by-one investigation is the slow, wrong default.\n\nA good batch is typically 2–5 subagents, each with a narrow, well-scoped task. Don't be shy about going wide — if you can frame 4 independent questions, launch 4 subagents.\n\n### Example batches (do this)\n- Understanding a feature: launch 3 explores in parallel — (1) where the API route is defined, (2) where the DB model lives, (3) where the UI calls it.\n- Debugging a failing test: launch 2 in parallel — one \"shell\" to run the test and capture the stack, one \"explore\" to map the involved modules.\n- Refactor planning: one explore per affected layer (data, service, controller, view) all dispatched together.\n- Reviewing a PR-sized change: one explore per touched subsystem, fanned out simultaneously.\n\n### Anti-patterns (don't do this)\n- ❌ Run one subagent, wait for the result, then run the next one to ask a related-but-independent question. That doubles your wall-clock time for no reason.\n- ❌ Stuff every question into one giant subagent prompt. Narrow, focused tasks return faster and cleaner summaries than one bloated mega-task.\n- ❌ Use a subagent for a single \\\`read\\\` of a known file — just read it directly.\n\n## Available subagent types\n- type=\"explore\" — read-only codebase reconnaissance. The child only has read/grep/find/ls. Good for \"where is X defined\", \"how is Y wired\", \"explain this module\", or any multi-file investigation.\n- type=\"shell\" — same as explore plus \\\`bash\\\`. Good for running tests, inspecting logs, reproducing a failure, or any diagnosis that needs commands.\n- type=\"custom\" with \\\`customAgent\\\` — a specialized markdown-defined agent (see list below).\n\n## When a subagent is a good fit\n- The investigation will likely take more than a couple of read/grep calls.\n- The findings would otherwise clutter your main context with details you only need to summarize.\n- You need to run tests or other commands whose long output you do not want in your main context.\n- You have multiple independent questions — dispatch them as a parallel batch.\n\n## When direct read/grep/edit/bash from the main agent is fine\n- Reading a single known file before editing it.\n- A single targeted lookup at a known location.\n- Quick follow-ups after a subagent has already returned.\n\n## Available custom subagents\n${customAgentsText}`,
 		};
 	});
 
 	// Initial registration. Defaults ON unless PI_SUBAGENT_MODE disables it, so
 	// prompting metadata is included from startup.
 	managed.registerTool({ ...buildSubagentToolDef(subagentModeEnabled), defaultVisibility: "agent-visible" as const });
+
+	// Background job tools: registered once with fixed, mode-independent
+	// descriptions. Re-registering would change the tool list and break the
+	// prompt cache.
+	const formatResult = (job: BackgroundJob) => formatJobResult(job, (text) => truncateForToolResult(text));
+
+	managed.registerTool({
+		name: "subagent_wait",
+		label: "Wait for Subagents",
+		description: "Block until background subagent jobs finish (or the timeout hits) and return their results. Use ONLY when you cannot make progress without the result; otherwise end your turn and results are delivered automatically. Defaults to all running jobs; timeout defaults to 120s, max 240s.",
+		parameters: SubagentWaitParams,
+		defaultVisibility: "agent-visible" as const,
+		async execute(_toolCallId: string, params: SubagentWaitParamsType, signal: AbortSignal | undefined) {
+			const timeoutSeconds = clampWaitSeconds(params.timeoutSeconds);
+			const targets = resolveWaitTargets(backgroundJobs, params.jobIds);
+			if (targets.length === 0 && !(params.jobIds?.length)) {
+				return { content: [{ type: "text" as const, text: "No background subagent jobs to wait for." }], details: {} };
+			}
+			await new Promise<void>((resolve) => {
+				const allDone = () => targets.every((job) => job.status !== "running");
+				if (allDone() || signal?.aborted) return resolve();
+				let unsubscribe: () => void = () => {};
+				const finish = () => {
+					clearTimeout(timer);
+					unsubscribe();
+					signal?.removeEventListener("abort", finish);
+					resolve();
+				};
+				const timer = setTimeout(finish, timeoutSeconds * 1000);
+				unsubscribe = backgroundJobs.onChange(() => {
+					if (allDone()) finish();
+				});
+				signal?.addEventListener("abort", finish, { once: true });
+			});
+			const selection = selectWaitResults(backgroundJobs, targets, params.jobIds);
+			// Results returned here are not repeated in the automatic follow-up.
+			backgroundJobs.markDelivered(selection.finished.map((job) => job.id));
+			const parts: string[] = [];
+			if (selection.finished.length > 0) parts.push(formatDeliveryMessage(selection.finished, (text) => truncateForToolResult(text)));
+			if (selection.alreadyDelivered.length > 0) {
+				parts.push(`Already delivered earlier: ${selection.alreadyDelivered.map((job) => `${job.id} (${job.status})`).join(", ")}`);
+			}
+			if (selection.cleared.length > 0) {
+				parts.push(`Cancelled by session reset (no results will be delivered): ${selection.cleared.map((job) => job.id).join(", ")}`);
+			}
+			if (selection.unknownIds.length > 0) parts.push(`Unknown job ids: ${selection.unknownIds.join(", ")}`);
+			if (selection.stillRunning.length > 0) {
+				parts.push(
+					`Still running: ${selection.stillRunning.map((job) => job.id).join(", ")}${signal?.aborted ? " (wait aborted)" : ""}. Their results will be delivered automatically; continue independent work or end your turn.`,
+				);
+			}
+			if (parts.length === 0) parts.push("No results.");
+			return {
+				content: [{ type: "text" as const, text: parts.join("\n\n") }],
+				details: {
+					finished: selection.finished.map((job) => job.id),
+					stillRunning: selection.stillRunning.map((job) => job.id),
+				},
+			};
+		},
+	});
+
+	managed.registerTool({
+		name: "subagent_status",
+		label: "Subagent Status",
+		description: "Snapshot of background subagent jobs (id, type:name, status, elapsed, turns, tools, preview). Do not poll: results are delivered automatically when jobs finish. Call only when the user asks for progress.",
+		parameters: SubagentStatusParams,
+		defaultVisibility: "agent-visible" as const,
+		async execute(_toolCallId: string, params: SubagentStatusParamsType) {
+			const now = Date.now();
+			const jobs = params.jobId ? [backgroundJobs.get(params.jobId)].filter((job): job is BackgroundJob => Boolean(job)) : backgroundJobs.list();
+			if (jobs.length === 0) {
+				return {
+					content: [{ type: "text" as const, text: params.jobId ? `Background subagent job '${params.jobId}' not found.` : "No background subagent jobs." }],
+					details: {},
+				};
+			}
+			const rows = jobs.map((job) => {
+				const live = activeSubagents.get(job.id);
+				const turns = live?.turns ?? job.turns;
+				const tools = live?.toolCalls.length ?? job.toolCount;
+				const preview = job.status === "running" ? job.preview : oneLine(job.output ?? job.error ?? "").slice(0, 120);
+				const delivered = job.status !== "running" ? (job.delivered ? ", delivered" : ", pending delivery") : "";
+				return `- ${job.id} ${job.type}:${job.name} [${job.status}${delivered}] ${durationSeconds(job, now)}s, ${turns} turns, ${tools} tools${preview ? ` — ${preview}` : ""}`;
+			});
+			return {
+				content: [{ type: "text" as const, text: `Background subagent jobs (${jobs.length}):\n${rows.join("\n")}\n\nDo not poll; finished results are delivered automatically.` }],
+				details: { total: jobs.length },
+			};
+		},
+	});
+
+	managed.registerTool({
+		name: "subagent_cancel",
+		label: "Cancel Subagent",
+		description: "Cancel a running background subagent job. It is then delivered as cancelled with any partial output.",
+		parameters: SubagentCancelParams,
+		defaultVisibility: "agent-visible" as const,
+		async execute(_toolCallId: string, params: SubagentCancelParamsType) {
+			const job = backgroundJobs.get(params.jobId);
+			if (!job) return { content: [{ type: "text" as const, text: `Background subagent job '${params.jobId}' not found.` }], details: {} };
+			if (!backgroundJobs.cancel(params.jobId)) {
+				return { content: [{ type: "text" as const, text: `Background subagent job '${job.id}' is not running (status: ${job.status}).` }], details: {} };
+			}
+			return {
+				content: [{ type: "text" as const, text: `Cancelling background subagent job '${job.id}' (${job.type}:${job.name}). It will be delivered as cancelled, unless it had already finished.` }],
+				details: { jobId: job.id },
+			};
+		},
+	});
 
 	managed.registerCommand("subagent", {
 		description: "Enable, disable, or show session-level subagent workflow instructions",

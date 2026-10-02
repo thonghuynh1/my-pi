@@ -15,10 +15,11 @@ export const SUBAGENT_WAIT_DEFAULT_SECONDS = 120;
 export const SUBAGENT_WAIT_MAX_SECONDS = 240;
 export const DELIVERY_TASK_PREVIEW_CHARS = 200;
 
-export type BackgroundJobStatus = "running" | "completed" | "failed" | "cancelled";
+export type BackgroundJobStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
 
 export interface BackgroundJob {
 	id: string;
+	requestId?: string;
 	type: string;
 	name: string;
 	task: string;
@@ -35,14 +36,22 @@ export interface BackgroundJob {
 	delivered: boolean;
 	cancelRequested: boolean;
 	abort: AbortController;
+	/** Saved launch configuration and audit transcript for explicit recovery. */
+	resumeParams?: unknown;
+	sessionFilePath?: string;
+	resumedFrom?: string;
+	usage?: { costUsd: number; totalTokens: number; inputTokens: number; outputTokens: number; cacheTokens: number };
 }
 
 export interface LaunchJobInput {
+	requestId?: string;
 	type: string;
 	name: string;
 	task: string;
 	batchId: string;
 	startedAt: number;
+	resumeParams?: unknown;
+	resumedFrom?: string;
 }
 
 export interface CompleteJobInput {
@@ -54,12 +63,78 @@ export interface CompleteJobInput {
 	endedAt: number;
 }
 
+export type StoredBackgroundJob = Omit<BackgroundJob, "abort">;
+export interface RegistrySnapshot { counter: number; jobs: StoredBackgroundJob[] }
+
 export type RegistryListener = (job: BackgroundJob) => void;
 
 export class BackgroundJobRegistry {
 	private counter = 0;
 	private readonly jobs = new Map<string, BackgroundJob>();
 	private readonly listeners = new Set<RegistryListener>();
+
+	constructor(private readonly persist?: (snapshot: RegistrySnapshot) => void) {}
+
+	snapshot(): RegistrySnapshot {
+		return { counter: this.counter, jobs: this.list().map(({ abort, ...job }) => job) };
+	}
+
+	/** Rehydrate terminal work; in-process runs cannot survive a dead host. */
+	restore(snapshot: RegistrySnapshot, now = Date.now()): void {
+		this.jobs.clear();
+		this.counter = snapshot.counter;
+		for (const saved of snapshot.jobs) {
+			const job: BackgroundJob = { ...saved, abort: new AbortController() };
+			if (job.status === "running") {
+				job.status = job.cancelRequested ? "cancelled" : "interrupted";
+				job.endedAt = now;
+				job.error = "Pi stopped before the run settled. Checkpoint and transcript retained; unfinished tools were NOT replayed. Use subagent_resume only after checking possible side effects.";
+				job.delivered = false;
+			}
+			this.jobs.set(job.id, job);
+		}
+		this.save();
+	}
+
+	checkpoint(id: string, patch: Partial<StoredBackgroundJob>): void {
+		const job = this.jobs.get(id);
+		if (!job || job.status !== "running") return;
+		this.mutate(job, () => Object.assign(job, patch));
+	}
+
+	/** Preserve history and pending delivery on reload/shutdown, never clear it. */
+	interruptRunning(now = Date.now()): void {
+		const interrupted = this.running();
+		const previous = interrupted.map((job) => ({ ...job }));
+		for (const job of interrupted) {
+			job.status = job.cancelRequested ? "cancelled" : "interrupted";
+			job.endedAt = now;
+			job.error = "Pi stopped before the run settled. Checkpoint retained; unfinished tools were NOT replayed.";
+		}
+		try { this.save(); } catch (error) {
+			interrupted.forEach((job, index) => {
+				for (const key of Object.keys(job)) if (!(key in previous[index])) delete (job as any)[key];
+				Object.assign(job, previous[index]);
+			});
+			throw error;
+		} finally {
+			// A disk failure must not leave in-process children executing after shutdown.
+			for (const job of interrupted) job.abort.abort();
+		}
+		for (const job of interrupted) this.emit(job);
+	}
+
+	private save(): void { this.persist?.(this.snapshot()); }
+
+	private mutate(job: BackgroundJob, apply: () => void): void {
+		const previous = { ...job };
+		apply();
+		try { this.save(); } catch (error) {
+			for (const key of Object.keys(job)) if (!(key in previous)) delete (job as any)[key];
+			Object.assign(job, previous);
+			throw error;
+		}
+	}
 
 	/** Monotonic id; never derived from map size so ids are not reused after clear/delete. */
 	nextId(): string {
@@ -70,6 +145,7 @@ export class BackgroundJobRegistry {
 	launch(input: LaunchJobInput): BackgroundJob {
 		const job: BackgroundJob = {
 			id: this.nextId(),
+			requestId: input.requestId,
 			type: input.type,
 			name: input.name,
 			task: input.task,
@@ -82,8 +158,11 @@ export class BackgroundJobRegistry {
 			delivered: false,
 			cancelRequested: false,
 			abort: new AbortController(),
+			resumeParams: input.resumeParams,
+			resumedFrom: input.resumedFrom,
 		};
 		this.jobs.set(job.id, job);
+		try { this.save(); } catch (error) { this.jobs.delete(job.id); throw error; }
 		return job;
 	}
 
@@ -107,12 +186,14 @@ export class BackgroundJobRegistry {
 		const job = this.jobs.get(id);
 		if (!job || job.status !== "running") return job;
 		// A cancel that lands after the child already succeeded keeps the real result.
-		job.status = input.status === "completed" ? "completed" : job.cancelRequested ? "cancelled" : "failed";
-		job.output = input.output;
-		job.error = input.error;
-		job.turns = input.turns;
-		job.toolCount = input.toolCount;
-		job.endedAt = input.endedAt;
+		this.mutate(job, () => {
+			job.status = input.status === "completed" ? "completed" : job.cancelRequested ? "cancelled" : "failed";
+			job.output = input.output;
+			job.error = input.error;
+			job.turns = input.turns;
+			job.toolCount = input.toolCount;
+			job.endedAt = input.endedAt;
+		});
 		this.emit(job);
 		return job;
 	}
@@ -121,15 +202,20 @@ export class BackgroundJobRegistry {
 	cancel(id: string): boolean {
 		const job = this.jobs.get(id);
 		if (!job || job.status !== "running") return false;
-		job.cancelRequested = true;
+		this.mutate(job, () => { job.cancelRequested = true; });
 		job.abort.abort();
 		return true;
 	}
 
 	markDelivered(ids: Iterable<string>): void {
+		const previous = new Map<BackgroundJob, boolean>();
 		for (const id of ids) {
 			const job = this.jobs.get(id);
-			if (job) job.delivered = true;
+			if (job) { previous.set(job, job.delivered); job.delivered = true; }
+		}
+		try { this.save(); } catch (error) {
+			for (const [job, delivered] of previous) job.delivered = delivered;
+			throw error;
 		}
 	}
 
@@ -153,6 +239,7 @@ export class BackgroundJobRegistry {
 			}
 		}
 		this.jobs.clear();
+		this.save();
 		for (const job of cleared) this.emit(job);
 	}
 
@@ -225,8 +312,23 @@ export function formatJobResult(job: BackgroundJob, truncate: (text: string) => 
 		`Duration: ${durationSeconds(job)}s`,
 	];
 	if (job.error) lines.push(`Error: ${job.error}`);
+	if (job.sessionFilePath) lines.push(`Transcript: ${job.sessionFilePath}`);
+	if (job.resumedFrom) lines.push(`Recovered from: ${job.resumedFrom}`);
 	lines.push("", truncate(job.output || "(no output)"));
 	return lines.join("\n");
+}
+
+/** Recovery is a fresh, explicit run, not replay of uncertain external effects. */
+export function buildRecoveryTask(job: BackgroundJob): string {
+	return [
+		job.task,
+		"", "Recovery handoff from an interrupted run:",
+		`Previous job: ${job.id}`,
+		job.sessionFilePath ? `Audit transcript: ${job.sessionFilePath}` : "",
+		"Continue from the saved findings below. They may be partial or stale; verify against current state.",
+		"Do NOT blindly repeat completed work or interrupted shell actions. An unfinished action may already have had side effects. Inspect current state first; if safe continuation cannot be established, stop and report that uncertainty.",
+		"<saved-checkpoint>", (job.output ?? job.preview ?? "(no checkpoint)").slice(-64_000), "</saved-checkpoint>",
+	].filter(Boolean).join("\n");
 }
 
 export const DELIVERY_HEADER = "[Background subagent results]";

@@ -162,6 +162,16 @@ clients, an agent can call it with a URL and duration, for example:
 It returns the saved `.webm` path. The tool requires a bounded duration from
 1 to 3600 seconds and launches a separate headed Edge context.
 
+## Durable background work
+
+- `bg_run` uses a detached supervisor: commands, logs, stdin, and timeout enforcement survive Pi exit/reload. Reopen the **same Pi session** to recover status and completion notifications. Stop persistent jobs explicitly with `bg_kill` or `/jobs kill <id>`; quitting Pi no longer stops them.
+- Background subagents persist results, checkpoints, launch configuration, usage, and child audit transcripts. Their in-process execution cannot survive host exit: unfinished runs become `interrupted`, never automatically replayed.
+- `subagent_resume({ jobId: "sa-1" })` explicitly starts a **new** run with a checkpoint handoff. Inspect uncertain side effects first. This is not exact tool/model replay; each interrupted run can have only one recovery child.
+- Storage: `~/.pi/agent/jobs/`, isolated by Pi session ID. Override with `PI_DURABLE_JOBS_DIR`. IDs remain session-local and monotonic across reloads; logs/transcripts are retained. One host per session is supported.
+- Completion delivery is at-least-once across crashes. Confirmed results stay queryable; unconfirmed notifications are recovered. Supervisor loss or host reboot yields an unknown/interrupted command outcome, not an automatic retry.
+
+See [ADR 0006](docs/adr/0006-durable-background-work.md) for the recovery contract.
+
 ## Subagents
 
 This package registers a `subagent` tool. It runs child Pi `AgentSession`s in-process (SDK-style, no subprocess) with isolated context.

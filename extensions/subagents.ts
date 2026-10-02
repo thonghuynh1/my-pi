@@ -8,6 +8,8 @@
  */
 
 import * as fs from "node:fs";
+import { randomUUID } from "node:crypto";
+import { DurableJobStore, durableSessionDirectory, hasRecordedUserMessage } from "./lib/durable-jobs.ts";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -86,6 +88,8 @@ import {
 	shouldApplyLongCacheTtl,
 	withLongCacheTtl,
 	type BackgroundJob,
+	type StoredBackgroundJob,
+	buildRecoveryTask,
 } from "./lib/subagent-background.ts";
 import {
 	parseRoutingConfig,
@@ -344,6 +348,8 @@ interface RunningSubagentStatus {
 	toolCalls: Array<{ name: string; args: unknown; isError?: boolean }>;
 	currentTool?: string;
 	preview: string;
+	checkpointOutput?: string;
+	sessionFilePath?: string;
 	inputTokens: number;
 	outputTokens: number;
 	cacheTokens: number;
@@ -1274,6 +1280,8 @@ async function runSubagent(
 	onUpdate: ((partial: { content: Array<{ type: "text"; text: string }>; details?: Partial<SubagentDetails> }) => void) | undefined,
 	statusSink?: SubagentStatusSink,
 	signal?: AbortSignal,
+	durableDirectory?: string,
+	checkpointControl?: { flush?: () => void },
 ): Promise<SubagentDetails> {
 	const packetSelection: PacketSelection = resolveEvidencePacket(params.evidencePacket);
 	params = normalizeTimeoutSeconds(params);
@@ -1354,7 +1362,8 @@ async function runSubagent(
 		customAgentSource: config.source,
 	};
 
-	const publishStatus = () => {
+	let lastCheckpointAt = 0;
+	const publishStatus = (forceCheckpoint = false) => {
 		if (session) {
 			const usage = (session as { getContextUsage?: () => { tokens: number | null; contextWindow: number; percent: number | null } | undefined }).getContextUsage?.();
 			if (usage) {
@@ -1364,8 +1373,16 @@ async function runSubagent(
 			}
 		}
 		liveStatus.turns = turns;
-		statusSink?.({ ...liveStatus, toolCalls: [...toolCalls] });
+		const checkpointDue = durableDirectory && (forceCheckpoint || Date.now() - lastCheckpointAt >= 1000);
+		if (checkpointDue) lastCheckpointAt = Date.now();
+		statusSink?.({
+			...liveStatus, toolCalls: [...toolCalls], sessionFilePath: session?.sessionFile,
+			checkpointOutput: checkpointDue
+				? appendRetainedToolOutput({ assistantOutput: streamingText.trim(), toolOutputs: completedToolOutputs })
+				: undefined,
+		});
 	};
+	if (checkpointControl) checkpointControl.flush = () => publishStatus(true);
 
 	try {
 		const services = await createAgentSessionServices({
@@ -1401,7 +1418,7 @@ async function runSubagent(
 		const createChildSession = (model: ActiveModel) =>
 			createAgentSessionFromServices({
 				services,
-				sessionManager: SessionManager.inMemory(cwd),
+				sessionManager: durableDirectory ? SessionManager.create(cwd, durableDirectory) : SessionManager.inMemory(cwd),
 				model,
 				tools: packet
 					? (runtimeState && reportToolsOnly(runtimeState) ? ["report_verification"] : [...config.tools, "report_verification"])
@@ -1516,13 +1533,13 @@ async function runSubagent(
 					}
 					liveStatus.currentTool = undefined;
 					liveStatus.preview = `${event.toolName} ${event.isError ? "failed" : "finished"}`;
-					publishStatus();
+					publishStatus(true);
 					break;
 				}
 				case "message_end": {
 					const message = event.message as Message;
 					applyAssistantUsage(liveStatus, message);
-					publishStatus();
+					publishStatus(true);
 					break;
 				}
 				case "turn_end": {
@@ -1544,7 +1561,7 @@ async function runSubagent(
 				case "agent_end": {
 					finalMessages = event.messages as Message[];
 					liveStatus.preview = "finalizing...";
-					publishStatus();
+					publishStatus(true);
 					break;
 				}
 				}
@@ -1674,6 +1691,9 @@ async function runSubagent(
 			},
 		};
 	} finally {
+		try { if (durableDirectory) publishStatus(true); }
+		catch (error) { console.error(`[subagents] checkpoint failed for ${toolCallId}`, error); }
+		if (checkpointControl) checkpointControl.flush = undefined;
 		statusSink?.(undefined);
 		if (timeout) clearTimeout(timeout);
 		unsubscribeSession?.();
@@ -1723,7 +1743,7 @@ export default function (pi: ExtensionAPI) {
 
 	// Shared global so other extensions (e.g. usage-footer) can render our status
 	// and include real subagent billing in the session totals. Subagents run in
-	// their own in-memory sessions, so their cost/tokens never appear in the
+	// their own isolated sessions, so their cost/tokens never appear in the
 	// parent's sessionManager branch — we accumulate them here so the footer can
 	// add them on top.
 	const subagentState = ((globalThis as any).__subagent ??= {
@@ -1765,15 +1785,33 @@ export default function (pi: ExtensionAPI) {
 	// --- Background subagents ---
 	// Jobs run detached from the launching turn; results are delivered as one
 	// follow-up user message when the parent is idle (mirrors background-jobs.ts).
-	const backgroundJobs = new BackgroundJobRegistry();
+	let backgroundJobs = new BackgroundJobRegistry();
+	const fallbackSessionId = randomUUID();
+	let backgroundStore: DurableJobStore<StoredBackgroundJob> | undefined;
+	let backgroundActive = true;
+	const backgroundCheckpoints = new Map<string, () => void>();
+
+	function initializeBackgroundStore(ctx: ExtensionContext): void {
+		const directory = durableSessionDirectory(ctx, "subagents", fallbackSessionId);
+		if (backgroundStore?.directory === directory && backgroundActive) return;
+		const store = new DurableJobStore<StoredBackgroundJob>(directory);
+		const snapshot = store.load();
+		backgroundStore = store;
+		backgroundJobs = new BackgroundJobRegistry((state) => store.save(state.counter, state.jobs));
+		if (snapshot) backgroundJobs.restore(snapshot);
+		backgroundActive = true;
+	}
 	let isAgentBusy = false;
 	let hasUserTurnPending = false;
+	const parentRunId = randomUUID();
 	let parentTurnSeq = 0;
 	let deliveryTimer: ReturnType<typeof setTimeout> | undefined;
 	let lastUiCtx: Pick<ExtensionContext, "hasUI" | "ui"> | undefined;
+	let lastSessionCtx: ExtensionContext | undefined;
+	let deliveryMessage: string | undefined;
 	// Delivery handshake: pi.sendUserMessage is fire-and-forget (prompt() rejections
-	// are swallowed into emitError), so jobs are only marked delivered once the
-	// prompt is confirmed (queued as a follow-up while streaming, or agent_start).
+	// are swallowed into emitError), so jobs are only marked delivered after the
+	// exact follow-up user message appears in the persisted session transcript.
 	let deliveryInFlight: string[] | undefined;
 	let deliveryAccepted = false;
 	let deliveryInFlightTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1818,13 +1856,30 @@ export default function (pi: ExtensionAPI) {
 		deliveryInFlightTimer = undefined;
 		deliveryInFlight = undefined;
 		deliveryAccepted = false;
+		deliveryMessage = undefined;
 	}
 
-	/** The delivery prompt was accepted by the session: its jobs are delivered. */
+	/** Admission is insufficient; confirm only a recorded follow-up user entry. */
 	function confirmDeliveryInFlight() {
-		if (!deliveryInFlight) return;
+		if (!deliveryInFlight || !deliveryMessage || !hasRecordedUserMessage(lastSessionCtx, deliveryMessage)) return;
 		backgroundJobs.markDelivered(deliveryInFlight);
 		clearDeliveryInFlight();
+	}
+
+	function confirmRecordedWaitResults() {
+		if (!backgroundJobs.undelivered().length) return;
+		const ids = new Set<string>();
+		for (const entry of lastSessionCtx?.sessionManager.getEntries() ?? []) {
+			if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== "subagent_wait") continue;
+			const details = entry.message.details as { finished?: unknown } | undefined;
+			if (!Array.isArray(details?.finished)) continue;
+			for (const id of details.finished) {
+				if (typeof id !== "string") continue;
+				const job = backgroundJobs.get(id);
+				if (job && job.status !== "running" && !job.delivered) ids.add(id);
+			}
+		}
+		if (ids.size) backgroundJobs.markDelivered(ids);
 	}
 
 	function flushBackgroundDeliveries() {
@@ -1837,38 +1892,55 @@ export default function (pi: ExtensionAPI) {
 		}
 		// Busy, compacting, or a delivery prompt not yet confirmed: keep everything
 		// queued (never drop); agent_settled / compaction end / handshake timeout retry.
-		if (isAgentBusy || hasUserTurnPending || compactionInProgress || deliveryInFlight) return;
+		if (!backgroundActive || isAgentBusy || hasUserTurnPending || compactionInProgress || deliveryInFlight) return;
 		if (selection.ready.length === 0) return;
 		// Not marked delivered yet: only a confirmed prompt counts as delivery.
 		deliveryInFlight = selection.ready.map((job) => job.id);
 		deliveryAccepted = false;
 		deliveryInFlightTimer = setTimeout(() => {
-			// The prompt failed before agent_start (auth, model, compaction race): retry.
+			// Check the persisted transcript before retrying a slow/failed prompt.
+			confirmDeliveryInFlight();
 			clearDeliveryInFlight();
 			flushBackgroundDeliveries();
 		}, DELIVERY_CONFIRM_TIMEOUT_MS);
 		(deliveryInFlightTimer as { unref?: () => void }).unref?.();
-		pi.sendUserMessage(formatDeliveryMessage(selection.ready, (text) => truncateForToolResult(text)), { deliverAs: "followUp" });
+		deliveryMessage = formatDeliveryMessage(selection.ready, (text) => truncateForToolResult(text));
+		pi.sendUserMessage(deliveryMessage, { deliverAs: "followUp" });
 	}
 
 	function abortAllBackgroundJobs() {
 		clearDeliveryTimer();
 		clearDeliveryInFlight();
-		backgroundJobs.abortAllAndClear();
+		for (const flush of backgroundCheckpoints.values()) {
+			try { flush(); } catch (error) { console.error("[subagents] final checkpoint failed", error); }
+		}
+		backgroundCheckpoints.clear();
+		backgroundActive = false;
+		backgroundJobs.interruptRunning();
 	}
 
 	function backgroundDisplayName(params: SubagentParamsType): string {
 		return params.type === "custom" ? (params.customAgent ?? "custom") : params.type;
 	}
 
-	function launchBackgroundSubagent(params: SubagentParamsType, ctx: ExtensionContext) {
+	function launchBackgroundSubagent(params: SubagentParamsType, ctx: ExtensionContext, recovery?: BackgroundJob, requestId?: string) {
+		initializeBackgroundStore(ctx);
 		lastUiCtx = ctx;
+		lastSessionCtx = ctx;
+		const existing = requestId ? backgroundJobs.list().find((job) => job.requestId === requestId) : undefined;
+		if (existing) {
+			if (existing.task !== params.task || existing.type !== params.type || existing.resumedFrom !== recovery?.id) throw new Error("Subagent request ID reused with different task.");
+			return backgroundLaunchResult(existing, ctx.cwd);
+		}
 		const job = backgroundJobs.launch({
+			requestId,
 			type: params.type,
 			name: backgroundDisplayName(params),
 			task: params.task,
-			batchId: `turn-${parentTurnSeq}`,
+			batchId: `turn-${parentRunId}-${parentTurnSeq}`,
 			startedAt: Date.now(),
+			resumeParams: { ...params, cwd: path.resolve(ctx.cwd, normalizePathArgument(params.cwd ?? ".")), model: params.model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined) },
+			resumedFrom: recovery?.id,
 		});
 		// Detach from the launching turn: no ctx.signal, so Esc in a later turn does not kill the job.
 		// Model/registry are snapshotted at launch; runSubagent only reads these four fields.
@@ -1880,26 +1952,36 @@ export default function (pi: ExtensionAPI) {
 		} as unknown as ExtensionContext;
 		const runParams: SubagentParamsType = {
 			...params,
+			task: recovery ? buildRecoveryTask(recovery) : params.task,
 			timeoutSeconds: params.timeoutSeconds ?? DEFAULT_BACKGROUND_TIMEOUT_SECONDS,
 		};
-		const isCurrent = () => backgroundJobs.get(job.id) === job;
+		const registry = backgroundJobs;
+		const isCurrent = () => backgroundActive && registry === backgroundJobs && registry.get(job.id) === job && job.status === "running";
 		const statusSink: SubagentStatusSink = (status) => {
 			if (status && isCurrent()) {
 				activeSubagents.set(job.id, status);
 				job.turns = status.turns;
 				job.toolCount = status.toolCalls.length;
 				job.preview = status.currentTool ? `running ${status.currentTool}` : oneLine(status.preview).slice(0, 160);
-			} else {
+				if (status.checkpointOutput !== undefined) registry.checkpoint(job.id, {
+					output: status.checkpointOutput, turns: job.turns, toolCount: job.toolCount, preview: job.preview,
+					sessionFilePath: status.sessionFilePath,
+					usage: { costUsd: status.cost, inputTokens: status.inputTokens, outputTokens: status.outputTokens, cacheTokens: status.cacheTokens, totalTokens: status.totalTokens },
+				});
+			} else if (registry === backgroundJobs && backgroundActive) {
 				activeSubagents.delete(job.id);
 			}
 			safeRefreshWidget();
 		};
-		void runSubagent(pi, runCtx, job.id, runParams, undefined, statusSink, job.abort.signal)
+		const checkpointControl: { flush?: () => void } = {};
+		backgroundCheckpoints.set(job.id, () => checkpointControl.flush?.());
+		void runSubagent(pi, runCtx, job.id, runParams, undefined, statusSink, job.abort.signal, path.join(backgroundStore!.directory, job.id, "transcripts"), checkpointControl)
 			.then(
 				(result) => {
 					// A session reset cleared the registry: drop the stale result and its billing.
 					if (!isCurrent()) return;
 					recordSubagentUsage(result);
+					registry.checkpoint(job.id, { usage: result.usage });
 					backgroundJobs.complete(job.id, {
 						status: result.status === "completed" ? "completed" : "error",
 						output: result.output,
@@ -1922,20 +2004,31 @@ export default function (pi: ExtensionAPI) {
 				},
 			)
 			.finally(() => {
+				if (registry !== backgroundJobs || !backgroundActive) return;
+				backgroundCheckpoints.delete(job.id);
 				activeSubagents.delete(job.id);
 				safeRefreshWidget();
 				flushBackgroundDeliveries();
+			})
+			.catch((error) => {
+				// A storage failure must not become an unhandled rejection or publish
+				// an uncommitted result. The last saved checkpoint remains recoverable.
+				console.error(`[subagents] failed to commit background job ${job.id}`, error);
 			});
 
-		const text = [
+		return backgroundLaunchResult(job, ctx.cwd);
+	}
+
+	function backgroundLaunchResult(job: BackgroundJob, cwd: string) {
+		const text = job.status === "running" ? [
 			`Background subagent started: ${job.id} (${job.type}:${job.name})`,
 			"Running in background. Continue independent work or end your turn; results will be delivered automatically. Use subagent_wait only if you are blocked on this result.",
-		].join("\n");
+		].join("\n") : formatJobResult(job, (output) => truncateForToolResult(output));
 		const details: SubagentDetails = {
-			type: params.type,
+			type: job.type as SubagentType,
 			name: job.name,
-			task: params.task,
-			cwd: ctx.cwd,
+			task: job.task,
+			cwd,
 			tools: [],
 			status: "background",
 			output: text,
@@ -1996,9 +2089,12 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		subagentModeEnabled = resolveSubagentModeDefault();
 		abortAllBackgroundJobs();
+		initializeBackgroundStore(ctx);
 		isAgentBusy = false;
 		hasUserTurnPending = false;
+		compactionInProgress = false;
 		lastUiCtx = ctx;
+		lastSessionCtx = ctx;
 		try {
 			customAgentsSnapshot = discoverCustomAgents(ctx.cwd);
 		} catch {
@@ -2021,7 +2117,12 @@ export default function (pi: ExtensionAPI) {
 		// Sync the tool's prompting metadata with the resolved mode so a flag/env
 		// enabled run gets the steering snippet from the first turn.
 		managed.registerTool({ ...buildSubagentToolDef(subagentModeEnabled), defaultVisibility: "agent-visible" as const });
+		for (const job of backgroundJobs.list()) {
+			if (job.usage) recordSubagentUsage({ usage: job.usage } as SubagentDetails);
+		}
 		refreshSubagentStatusWidget(ctx);
+		confirmRecordedWaitResults();
+		flushBackgroundDeliveries();
 	});
 
 	// Batch-coach: active only when subagent mode is enabled (MESO-001).
@@ -2031,6 +2132,8 @@ export default function (pi: ExtensionAPI) {
 	let batchCoachNudged = false;
 
 	pi.on("turn_end", (event: TurnEndEvent) => {
+		confirmRecordedWaitResults();
+		confirmDeliveryInFlight();
 		if (!subagentModeEnabled) return;
 
 		const record = batchCoachSummarizeTurn(event);
@@ -2129,8 +2232,8 @@ export default function (pi: ExtensionAPI) {
 			hasUserTurnPending = true;
 			return;
 		}
-		// While streaming, prompt() queues the follow-up right after input: delivered.
-		// When idle it still has to pass model/auth checks: confirm on agent_start.
+		// Input/agent_start may precede persistence. The confirmation helper checks
+		// the transcript; turn_end/settle or the retry timer checks again later.
 		if (event.streamingBehavior) confirmDeliveryInFlight();
 		else deliveryAccepted = true;
 	});
@@ -2138,7 +2241,9 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_settled", () => {
 		isAgentBusy = false;
 		hasUserTurnPending = false;
-		// A delivery still unconfirmed at a settle never started: release it for retry.
+		// Acknowledgement requires a recorded result/message, not just admission.
+		confirmRecordedWaitResults();
+		confirmDeliveryInFlight();
 		clearDeliveryInFlight();
 		flushBackgroundDeliveries();
 	});
@@ -2189,6 +2294,7 @@ export default function (pi: ExtensionAPI) {
 					"**BATCH IN PARALLEL — this is the #1 rule.** Multiple `subagent` calls in the same assistant message execute concurrently. Before launching any subagent, ask: 'can I split this into 2–5 independent sub-questions?' If yes, emit them all in one message. Sequential one-by-one is almost always wrong.",
 					"Concrete batch examples: understanding a feature → 3 parallel explores (API route, DB model, UI call site). Debugging → 1 shell (run test) + 1 explore (map modules), fanned out together. Refactor planning → one explore per affected layer, all dispatched at once.",
 					"`subagent` spins up an isolated child agent with its own context window and returns a concise summary. Useful when an investigation would take more than a couple of read/grep calls or would clutter the main context.",
+					"Interrupted jobs retain checkpoints and audit transcripts. Use subagent_resume only when the user requests recovery; never automatically replay interrupted shell/custom actions.",
 					"Subagents run in the background by default: each call returns a job id at once and results are delivered automatically as one follow-up message. After launching, continue independent work or end your turn. Never poll `subagent_status`. Call `subagent_wait` only when you are blocked on a result; pass `background: false` only when the very next step cannot proceed without it.",
 					"type=explore for read-only codebase questions (read/grep/find/ls). type=shell when commands, tests, or logs are needed. type=custom with `customAgent` for specialized agents.",
 					"Keep each subagent's task NARROW and focused. Don't stuff multiple questions into one mega-task — narrow tasks return faster, cleaner summaries. Split first, batch second.",
@@ -2203,8 +2309,10 @@ export default function (pi: ExtensionAPI) {
 				// evidence packet is supplied (structured results are consumed in-turn),
 				// or when the background cap is reached.
 				const wantsBackground = params.background !== false && params.evidencePacket === undefined;
+				if (wantsBackground) initializeBackgroundStore(ctx);
 				const atCap = wantsBackground && backgroundJobs.running().length >= MAX_BACKGROUND_SUBAGENTS;
-				if (wantsBackground && !atCap) return launchBackgroundSubagent(params, ctx);
+				const duplicate = backgroundJobs.list().some((job) => job.requestId === toolCallId);
+				if (wantsBackground && (!atCap || duplicate)) return launchBackgroundSubagent(params, ctx, undefined, toolCallId);
 				const capNote = atCap
 					? `Note: ran in foreground because the background subagent cap (${MAX_BACKGROUND_SUBAGENTS} running) was reached.\n\n`
 					: "";
@@ -2327,6 +2435,25 @@ export default function (pi: ExtensionAPI) {
 	const formatResult = (job: BackgroundJob) => formatJobResult(job, (text) => truncateForToolResult(text));
 
 	managed.registerTool({
+		name: "subagent_resume",
+		label: "Recover Subagent",
+		defaultVisibility: "agent-visible" as const,
+		description: "Only when the user requests recovery: recover an interrupted subagent into a NEW background run using its saved task and checkpoint. Inspect possible side effects first. This is a checkpoint handoff, not exact execution replay; never automatically rerun interrupted shell actions.",
+		parameters: Type.Object({ jobId: Type.String() }),
+		async execute(_id: string, params: { jobId: string }, _signal: AbortSignal | undefined, _update: unknown, ctx: ExtensionContext) {
+			initializeBackgroundStore(ctx);
+			const job = backgroundJobs.get(params.jobId);
+			if (!job || job.status !== "interrupted") throw new Error("Only interrupted background subagents can be recovered.");
+			const saved = job.resumeParams as SubagentParamsType | undefined;
+			if (!saved || !["explore", "shell", "custom"].includes(saved.type) || typeof saved.task !== "string") throw new Error("Saved launch configuration is unavailable.");
+			const child = backgroundJobs.list().find((other) => other.resumedFrom === job.id);
+			if (child && child.requestId !== _id) throw new Error("This job already has a recovery run; inspect that run instead of duplicating work.");
+			if (!child && backgroundJobs.running().length >= MAX_BACKGROUND_SUBAGENTS) throw new Error("Background subagent cap reached.");
+			return launchBackgroundSubagent(saved, ctx, job, _id);
+		},
+	});
+
+	managed.registerTool({
 		name: "subagent_wait",
 		label: "Wait for Subagents",
 		description: "Block until background subagent jobs finish (or the timeout hits) and return their results. Use ONLY when you cannot make progress without the result; otherwise end your turn and results are delivered automatically. Defaults to all running jobs; timeout defaults to 120s, max 240s.",
@@ -2355,8 +2482,9 @@ export default function (pi: ExtensionAPI) {
 				signal?.addEventListener("abort", finish, { once: true });
 			});
 			const selection = selectWaitResults(backgroundJobs, targets, params.jobIds);
-			// Results returned here are not repeated in the automatic follow-up.
-			backgroundJobs.markDelivered(selection.finished.map((job) => job.id));
+			// Do not acknowledge before the tool result is recorded: a crash between
+			// returning and persistence must leave these outcomes recoverable.
+			// turn_end/settle/start confirmRecordedWaitResults() commits the receipt.
 			const parts: string[] = [];
 			if (selection.finished.length > 0) parts.push(formatDeliveryMessage(selection.finished, (text) => truncateForToolResult(text)));
 			if (selection.alreadyDelivered.length > 0) {

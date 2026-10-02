@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, after } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+
+const storage = mkdtempSync(join(tmpdir(), "pi-bg-test-"));
+process.env.PI_DURABLE_JOBS_DIR = storage;
+after(() => rmSync(storage, { recursive: true, force: true }));
 import backgroundJobsExtension, { piExtension } from "../background-jobs.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -48,7 +56,7 @@ function createMockPi(): MockPi & ExtensionAPI {
     },
     emit(event: string, ...args: any[]) {
       const handlers = listeners.get(event) ?? [];
-      for (const h of handlers) h(...args);
+      return Promise.all(handlers.map((h) => h(...args)));
     },
   };
 
@@ -56,7 +64,10 @@ function createMockPi(): MockPi & ExtensionAPI {
 }
 
 function createMockContext(): ExtensionContext {
+  const sessionId = randomUUID();
+  const entries: any[] = [];
   return {
+    sessionManager: { getSessionId: () => sessionId, getEntries: () => entries },
     cwd: process.cwd(),
     hasUI: true,
     ui: {
@@ -117,7 +128,7 @@ test("bg_run executes a quick command and resolves immediately with running stat
   assert.ok(listResult.content[0].text.includes(jobId));
 
   // Wait for the quick process to finish
-  await new Promise((r) => setTimeout(r, 600));
+  await awaitTerminal(pi, ctx, jobId);
 
   // Check status after finish
   const statusResult = await bgStatus.execute(
@@ -166,8 +177,9 @@ test("bg_kill terminates a running process", async () => {
     ctx,
   );
 
-  assert.ok(killResult.content[0].text.includes("Successfully killed"));
-  assert.equal(killResult.details.status, "killed");
+  assert.ok(killResult.content[0].text.includes("Termination requested"));
+  assert.equal(killResult.details.status, "kill_requested");
+  assert.equal((await awaitTerminal(pi, ctx, jobId)).details.status, "killed");
 });
 
 test("/jobs command handles list, tail, and clear", async () => {
@@ -191,7 +203,7 @@ test("/jobs command handles list, tail, and clear", async () => {
     ctx,
   );
 
-  await new Promise((r) => setTimeout(r, 600));
+  await awaitTerminal(pi, ctx, "bg-1");
 
   const jobsCmd = pi.commands.get("jobs");
   assert.ok(jobsCmd, "/jobs command should exist");
@@ -232,7 +244,7 @@ test("bg_run executes shell-native echo via cmd/sh (matches run_tests path)", as
 
   assert.equal(runResult.details.status, "running", `Expected running start, got: ${JSON.stringify(runResult)}`);
   const jobId = runResult.details.jobId;
-  await new Promise((r) => setTimeout(r, 800));
+  await awaitTerminal(pi, ctx, jobId);
 
   const statusResult = await bgStatus.execute(
     "call-8",
@@ -299,7 +311,100 @@ test("tool_call intercepts and blocks sleep commands while jobs are running", as
   // Clean up
   const bgKill = pi.tools.get("bg_kill");
   await bgKill.execute("kill-long", { jobId: runResult.details.jobId }, new AbortController().signal, () => {}, ctx);
+  await awaitTerminal(pi, ctx, runResult.details.jobId);
 });
 
 
 
+
+/** Internal test synchronization only; agent-facing tools must never poll. */
+async function awaitTerminal(pi: MockPi, ctx: ExtensionContext, jobId: string): Promise<any> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const result = await pi.tools.get("bg_status").execute("test-status", { jobId }, undefined, undefined, ctx);
+    if (result.details.status !== "running") return result;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("Job did not settle: " + jobId);
+}
+
+test("jobs survive parent shutdown, restore output and ids, and keep sessions isolated", async () => {
+  const first = createMockPi();
+  backgroundJobsExtension(first);
+  const ctx = createMockContext();
+  const result = await first.tools.get("bg_run").execute("launch", {
+    command: `node -e "setTimeout(() => console.log('survived-host'), 500)"`,
+  }, undefined, undefined, ctx);
+  await (first as any).emit("session_shutdown", {}, ctx);
+  const restored = createMockPi();
+  backgroundJobsExtension(restored);
+  await (restored as any).emit("session_start", {}, ctx);
+  const outcome = await awaitTerminal(restored, ctx, result.details.jobId);
+  assert.equal(outcome.details.status, "completed");
+  assert.match(outcome.content[0].text, /survived-host/);
+  assert.ok(restored.sentMessages.some((message) => message.message.includes("COMPLETED")));
+  // Confirm the notification before reopening again.
+  await (restored as any).emit("input", { source: "extension", text: restored.sentMessages[0].message });
+  await (restored as any).emit("agent_start");
+  (ctx.sessionManager.getEntries() as any[]).push({ type: "message", message: { role: "user", content: restored.sentMessages[0].message } });
+  await (restored as any).emit("agent_settled");
+  await (restored as any).emit("session_shutdown", {}, ctx);
+  const again = createMockPi();
+  backgroundJobsExtension(again);
+  await (again as any).emit("session_start", {}, ctx);
+  assert.equal(again.sentMessages.length, 0, "confirmed completion is not redelivered");
+  const next = await again.tools.get("bg_run").execute("next", { command: "echo next", notifyOnFinish: false }, undefined, undefined, ctx);
+  assert.equal(next.details.jobId, "bg-2");
+  const duplicate = await again.tools.get("bg_run").execute("next", { command: "echo next", notifyOnFinish: false }, undefined, undefined, ctx);
+  assert.equal(duplicate.details.jobId, "bg-2", "same request ID must not execute a second command");
+  await awaitTerminal(again, ctx, "bg-2");
+  const otherCtx = createMockContext();
+  const other = await again.tools.get("bg_list").execute("other", {}, undefined, undefined, otherCtx);
+  assert.equal(other.details.total, 0);
+  await (again as any).emit("session_shutdown", {}, otherCtx);
+});
+
+test("timeout remains enforced by supervisor after host shutdown", async () => {
+  const pi = createMockPi();
+  backgroundJobsExtension(pi);
+  const ctx = createMockContext();
+  const result = await pi.tools.get("bg_run").execute("timeout", {
+    command: `node -e "setTimeout(() => {}, 30000)"`, timeoutSeconds: 0.5, notifyOnFinish: false,
+  }, undefined, undefined, ctx);
+  await (pi as any).emit("session_shutdown", {}, ctx);
+  const resumed = createMockPi();
+  backgroundJobsExtension(resumed);
+  assert.equal((await awaitTerminal(resumed, ctx, result.details.jobId)).details.status, "timed_out");
+  await (resumed as any).emit("session_shutdown", {}, ctx);
+});
+
+test("stdin controls work after reconnecting to the supervisor", async () => {
+  const pi = createMockPi();
+  backgroundJobsExtension(pi);
+  const ctx = createMockContext();
+  const result = await pi.tools.get("bg_run").execute("stdin", {
+    command: `node -e "process.stdin.once('data', d => { console.log(d.toString().trim()); process.exit(0); })"`,
+  }, undefined, undefined, ctx);
+  await (pi as any).emit("session_shutdown", {}, ctx);
+  const resumed = createMockPi();
+  backgroundJobsExtension(resumed);
+  await resumed.tools.get("bg_input").execute("input", { jobId: result.details.jobId, input: "durable-stdin" }, undefined, undefined, ctx);
+  const outcome = await awaitTerminal(resumed, ctx, result.details.jobId);
+  assert.equal(outcome.details.status, "completed", outcome.content[0].text);
+  assert.match(outcome.content[0].text, /durable-stdin/);
+  await (resumed as any).emit("session_shutdown", {}, ctx);
+});
+
+test("unconfirmed completion is redelivered after reopening", async () => {
+  const pi = createMockPi();
+  backgroundJobsExtension(pi);
+  const ctx = createMockContext();
+  const run = await pi.tools.get("bg_run").execute("launch", { command: "echo recovered-notification" }, undefined, undefined, ctx);
+  await awaitTerminal(pi, ctx, run.details.jobId);
+  await (pi as any).emit("session_shutdown", {}, ctx);
+  const resumed = createMockPi();
+  backgroundJobsExtension(resumed);
+  await (resumed as any).emit("session_start", {}, ctx);
+  assert.ok(resumed.sentMessages.some((message) => message.message.includes(run.details.jobId)));
+  await (resumed as any).emit("session_shutdown", {}, ctx);
+});

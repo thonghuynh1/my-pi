@@ -17,7 +17,6 @@ import {
 import { piExtension as subagentsExtension } from "../subagents.ts";
 import { piExtension as lavishAxiExtension } from "../lavish-axi.ts";
 import { piExtension as usageFooterExtension } from "../usage-footer.ts";
-import { piExtension as herdrAgentReportExtension } from "../herdr-agent-report.ts";
 import { piExtension as toolPanelExtension } from "../tool-panel.ts";
 
 function warningCodes(warnings: ReadonlyArray<CapabilityVisibilityWarning>): string[] {
@@ -436,7 +435,6 @@ test("all remaining active extensions have stable piExtension.id values", () => 
 	assert.equal(subagentsExtension.id, "subagents");
 	assert.equal(lavishAxiExtension.id, "lavish-axi");
 	assert.equal(usageFooterExtension.id, "usage-footer");
-	assert.equal(herdrAgentReportExtension.id, "herdr-agent-report");
 	assert.equal(toolPanelExtension.id, "tool-panel");
 });
 

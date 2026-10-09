@@ -30,6 +30,33 @@ function finish(registry: BackgroundJobRegistry, id: string, endedAt: number, ou
 	return registry.complete(id, { status: "completed", output, turns: 2, toolCount: 3, endedAt });
 }
 
+test("terminal persistence failure preserves actual outcomes and releases all capacity without retry", () => {
+	let fail = false;
+	let attempts = 0;
+	const registry = new BackgroundJobRegistry(() => {
+		if (fail) { attempts++; throw new Error("registry locked"); }
+	});
+	const jobs = Array.from({ length: 6 }, () => launch(registry, "joined"));
+	let notifications = 0;
+	registry.onChange(() => { notifications++; });
+	fail = true;
+	for (const job of jobs) {
+		const settled = registry.complete(job.id, { status: "completed", output: "actual report", turns: 1, toolCount: 0, endedAt: 1 });
+		assert.equal(settled?.status, "completed");
+		assert.match(settled?.persistenceError ?? "", /registry locked/);
+	}
+	assert.equal(registry.running().length, 0);
+	assert.equal(notifications, 6);
+	assert.equal(attempts, 6);
+	assert.ok(registry.list().every((job) => job.output === "actual report"));
+	assert.equal(longTtlWanted({ running: registry.running().length }), false);
+	assert.deepEqual(selectDeliverable(registry.list(), 1).ready, []);
+	fail = false;
+	launch(registry, "after-recovery");
+	assert.ok(registry.list().every((job) => !job.persistenceError));
+	assert.equal(selectDeliverable(registry.list(), 1).ready.length, 6);
+});
+
 test("job ids are monotonic and never reuse after clear", () => {
 	const registry = new BackgroundJobRegistry();
 	const a = launch(registry, "t1");
@@ -221,4 +248,22 @@ test("abortAllAndClear finalizes running jobs and notifies waiters", () => {
 	assert.deepEqual(sel.stillRunning, []);
 	assert.deepEqual(sel.unknownIds, []);
 	assert.equal(registry.list().length, 0);
+});
+
+
+test("legacy saved jobs normalize to detached without losing their outbox; joined jobs require explicit receipts", () => {
+	const seed = new BackgroundJobRegistry();
+	const legacy = launch(seed, "legacy");
+	finish(seed, legacy.id, 1_000, "legacy outcome");
+	const { mode: _mode, ...savedLegacy } = seed.snapshot().jobs[0];
+	const registry = new BackgroundJobRegistry();
+	registry.restore({ counter: 1, jobs: [savedLegacy] });
+	assert.equal(registry.get(legacy.id)?.mode, "detached");
+	const joined = registry.launch({ type: "explore", name: "explore", task: "required", mode: "joined", batchId: "joined", startedAt: 0 });
+	finish(registry, joined.id, 2_000, "required outcome");
+	assert.deepEqual(selectDeliverable(registry.list(), 100_000).ready.map((job) => job.id), [legacy.id]);
+	assert.deepEqual(resolveWaitTargets(registry).map((job) => job.id), [legacy.id, joined.id]);
+	assert.equal(joined.delivered, false);
+	registry.markDelivered([joined.id]);
+	assert.equal(registry.get(joined.id)?.output, "required outcome");
 });

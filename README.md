@@ -176,7 +176,29 @@ See [ADR 0006](docs/adr/0006-durable-background-work.md) for the recovery contra
 
 This package registers a `subagent` tool. It runs child Pi `AgentSession`s in-process (SDK-style, no subprocess) with isolated context.
 
-Modes:
+Execution is **joined by default**: the launching tool stays pending until the child finishes and cleans up, then returns its report. Batch independent calls in the same assistant message to run children concurrently. `/subagent on/off` changes prompting only, not execution mode.
+
+Fresh agents automatically receive a capability-selection guide through tool metadata and the startup system prompt while workflow mode is on (the default). The guide explains required joined work vs optional detached work, true parallel batches, saved-context follow-ups using the latest job ID, self-contained tasks, limited child tools, shared-filesystem ownership, evidence packets, context/slot limits, and explicit recovery. It warns against batching dependent edits with prerequisite research or duplicating a child's owned work. Workflow off removes coaching, not the joined runtime safeguards. The guide is shared between both instruction surfaces to avoid drift.
+
+- `subagent({ type: "explore", task: "Find the route" })` returns the required joined result.
+- `subagent({ type: "shell", task: "Investigate optional logs", mode: "detached" })` returns an immediate job ID with an optional result delivered later.
+- Legacy `background: true` means detached; `false` means joined. Conflicting `mode`/`background` is rejected.
+- Capacity is **6 running children across both modes**. Excess admission fails explicitly; there is no queue or silent mode switch. Repeated tool-call request IDs reuse the admitted job before the capacity check.
+- Evidence packets honor either mode. Structured verification, packet diagnostics, limits, usage, and audit transcripts are retained for retrieval; packet children cannot be followed up. Result `mode` is joined/detached; packet/prose-fallback telemetry uses `evidenceMode`.
+- `subagent_wait({ jobIds: ["sa-1"], waitFor: "any", timeoutSeconds: 120 })` retrieves outcomes. `waitFor` defaults to `all`; `any` returns after one targeted terminal outcome. Omitted IDs target running and undelivered finished jobs. Timeout defaults to 120 seconds (max 240); timeout or abort stops **waiting**, not children. Explicit IDs can retrieve already acknowledged outcomes.
+- Joined cancellation aborts the child and awaits cleanup. Detached children are cancelled explicitly with `subagent_cancel`. Cancelling a wait never cancels its children.
+- Completion saves the outcome/report atomically. If that save fails, the finished child remains terminal in memory, releases capacity, and returns an explicit `persistenceError` warning instead of losing its report or pretending to keep running. Detached automatic delivery waits for a confirmed registry write; explicit retrieval still works. A later successful snapshot confirms the in-memory outcomes. After a crash during persistent disk failure, inspect recorded tool results/transcripts before explicit recovery.
+- Joined results are acknowledged only after the launching tool receipt (or a wait receipt) is recorded. Normal joined results are **not** automatically delivered again. After a crash, unacknowledged joined outcomes remain discoverable with `subagent_status` and retrievable with `subagent_wait`; there is no automatic restart. Legacy saved jobs remain detached and keep their outbox.
+
+### Explicit follow-up and bounded context
+
+`subagent_followup({ jobId: "sa-1", task: "Check a related detail" })` explicitly reopens a **successful normal** child's disk transcript using its saved resolved model, cwd, tools, and prompt. It also defaults to joined and accepts the same legacy mode alias. Unknown, failed, cancelled, interrupted, packet, and legacy jobs without reusable configuration/transcripts are rejected. The transcript lineage has exclusive ownership during execution/cleanup, including requests through ancestor IDs. Use the latest successful job ID only if there has been no later failed/cancelled/interrupted assignment. A failed lineage stays closed even when an older assignment succeeded: start an explicit new child with a reviewed handoff, or explicitly recover interrupted work after checking side effects. Ancestor receipts retain their original per-segment reports but their transcript pointer names mutable shared history. Unavailable saved models fail rather than silently switching.
+
+Child-only in-memory settings enable native SDK compaction independently of the parent's Accordion/global settings, without loading extensions or writing settings to disk. The target context budget is 50k tokens, reduced for smaller model windows with response reserve and a recent-tail target no larger than 12k. Native estimates and indivisible messages mean this is a compaction target, not a hard per-request token ceiling. Status/report context usage is known tokens/window or explicitly unknown (especially immediately after compaction).
+
+At an idle follow-up boundary, over-budget reusable context is compacted before prompting. After **3 assignments**, **1 MiB raw transcript**, or unknown/unsafe context, the next explicit follow-up uses a new session with a bounded handoff: original goal, previous report up to 8k characters, and the full audit transcript pointer. This is marked **fresh handoff, not full memory**, with reset reason and generation in the result. Oversized goals that cannot fit the bounded handoff fail visibly. Full old transcripts remain for audit. Compaction failures are visible errors requiring a reviewed new child/handoff, not infinite retries or replay of uncertain side effects. Usage, turns, tools, tokens, and costs are per assignment; historical usage is not billed again.
+
+Types:
 
 - `explore` - read-only codebase investigation using `read`, `grep`, `find`, `ls`
 - `shell` - command-oriented investigation using `read`, `grep`, `find`, `ls`, `bash`

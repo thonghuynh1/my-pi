@@ -105,3 +105,39 @@ test("wait acknowledges results only after the tool receipt is recorded", async 
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+
+test("joined outcomes are never automatically redelivered and recorded launch receipts survive reload", async () => {
+  const base = mkdtempSync(join(tmpdir(), "pi-subagent-joined-receipt-"));
+  const previousBase = process.env.PI_DURABLE_JOBS_DIR;
+  process.env.PI_DURABLE_JOBS_DIR = base;
+  const entries: unknown[] = [];
+  const ctx = { cwd: base, hasUI: false, ui: {}, sessionManager: { getSessionId: () => "joined-session", getEntries: () => entries } } as unknown as ExtensionContext;
+  const store = new DurableJobStore<StoredBackgroundJob>(durableSessionDirectory(ctx, "subagents", randomUUID()));
+  const seed = new BackgroundJobRegistry((state) => store.save(state.counter, state.jobs));
+  const job = seed.launch({ mode: "joined", requestId: "launch-call", type: "explore", name: "explore", task: "done", batchId: "batch", startedAt: 1 });
+  seed.complete(job.id, { status: "completed", output: "joined findings", turns: 1, toolCount: 0, endedAt: 2 });
+  const first = mock();
+  try {
+    await first.emit("session_start", {}, ctx);
+    assert.deepEqual(first.messages, []);
+    assert.equal(store.load()!.jobs[0].delivered, false);
+    await assert.rejects(() => first.tools.get("subagent_followup").execute("legacy-reuse", { jobId: job.id, task: "x" }, undefined, undefined, ctx), /Only successful normal/);
+    const wait = await first.tools.get("subagent_wait").execute("wait", {}, undefined);
+    assert.match(wait.content[0].text, /joined findings/);
+    entries.push({ type: "message", message: { role: "toolResult", toolName: "subagent", toolCallId: "launch-call", details: { mode: "joined", status: "completed", jobId: job.id } } });
+    await first.emit("session_shutdown", {}, ctx);
+    const second = mock();
+    await second.emit("session_start", {}, ctx);
+    assert.equal(store.load()!.jobs[0].delivered, true);
+    assert.deepEqual(second.messages, []);
+    const explicit = await second.tools.get("subagent_wait").execute("again", { jobIds: [job.id] }, undefined);
+    assert.match(explicit.content[0].text, /joined findings/);
+    await second.emit("session_shutdown", {}, ctx);
+  } finally {
+    await first.emit("session_shutdown", {}, ctx);
+    if (previousBase === undefined) delete process.env.PI_DURABLE_JOBS_DIR;
+    else process.env.PI_DURABLE_JOBS_DIR = previousBase;
+    rmSync(base, { recursive: true, force: true });
+  }
+});

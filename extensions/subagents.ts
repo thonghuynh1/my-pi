@@ -1,12 +1,3 @@
-/**
- * Cursor-shaped in-process subagents for Pi.
- *
- * Provides one `subagent` tool with three modes:
- * - explore: read-only codebase exploration
- * - shell: command-oriented investigation
- * - custom: markdown-defined agent from ~/.pi/agent/agents or .pi/agents
- */
-
 import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { DurableJobStore, durableSessionDirectory, hasRecordedUserMessage } from "./lib/durable-jobs.ts";
@@ -17,7 +8,7 @@ import {
 	loadCapabilityVisibilitySettings,
 	type CapabilityVisibilitySettings,
 } from "./lib/capability-visibility.ts";
-import { StringEnum, type Message } from "@earendil-works/pi-ai";
+import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
@@ -27,6 +18,7 @@ import {
 	keyText,
 	parseFrontmatter,
 	SessionManager,
+	SettingsManager,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
@@ -89,6 +81,9 @@ import {
 	withLongCacheTtl,
 	type BackgroundJob,
 	type StoredBackgroundJob,
+	type SubagentMode,
+	type SubagentReport,
+	resolveSubagentMode,
 	buildRecoveryTask,
 } from "./lib/subagent-background.ts";
 import {
@@ -96,6 +91,18 @@ import {
 	resolveRoutingConfig,
 	type EffectiveRoutingConfig,
 } from "./lib/routing-policy.ts";
+
+import {
+	childContextPolicy, followupReset, buildFollowupHandoff, isReusableChild,
+	type ChildConfig, type ChildReuse, type ChildContext, type ChildSessionPlan,
+} from "./lib/subagent-context.ts";
+
+/** SDK factory boundary; production uses the installed SDK, tests can supply local providers. */
+export interface SubagentSdk {
+	createServices: typeof createAgentSessionServices;
+	createSession: typeof createAgentSessionFromServices;
+}
+const defaultSdk: SubagentSdk = { createServices: createAgentSessionServices, createSession: createAgentSessionFromServices };
 
 type SubagentType = "explore" | "shell" | "custom";
 type AgentSource = "user" | "project";
@@ -152,14 +159,6 @@ interface RunConfig {
 	filePath?: string;
 }
 
-interface SubagentUsage {
-	inputTokens: number;
-	outputTokens: number;
-	cacheTokens: number;
-	totalTokens: number;
-	costUsd: number;
-	modelId?: string;
-}
 
 interface ModelSelection {
 	model?: ActiveModel;
@@ -167,32 +166,13 @@ interface ModelSelection {
 	usedFallback: boolean;
 }
 
-interface SubagentDetails {
-	type: SubagentType;
-	name: string;
-	task: string;
-	cwd: string;
-	tools: string[];
-	model?: string;
-	status: "completed" | "error" | "running" | "background";
-	output: string;
+interface SubagentDetails extends SubagentReport {
+	persistenceError?: string;
+	mode?: SubagentMode;
 	jobId?: string;
-	error?: string;
-	turns: number;
-	toolCalls: Array<{ name: string; args: unknown; isError?: boolean }>;
-	customAgentPath?: string;
-	customAgentSource?: AgentSource;
-	usage?: SubagentUsage;
-	mode?: "packet" | "prose-fallback";
-	packetAccepted?: boolean;
-	packetDiagnostics?: string[];
-	packetId?: string;
-	groupId?: string;
-	shape?: EvidencePacketV1["shape"];
-	effectiveLimits?: PacketEffectiveLimits;
-	verification?: VerificationReportV1;
-	incomplete?: boolean;
-	termination?: PacketTermination;
+	reuse?: ChildReuse;
+	followedFrom?: string;
+	report?: SubagentReport;
 }
 
 type AssistantUsage = {
@@ -358,6 +338,7 @@ interface RunningSubagentStatus {
 	contextTokens?: number | null;
 	contextWindow?: number;
 	contextPercent?: number | null;
+	context?: ChildContext;
 	customAgentPath?: string;
 	customAgentSource?: AgentSource;
 }
@@ -378,14 +359,15 @@ const SubagentParams = Type.Object({
 	),
 	timeoutSeconds: Type.Optional(
 		Type.Number({
-			description: "Optional timeout in seconds. Packet calls honor up to 300 seconds; ordinary calls use a 600-second minimum; background calls without a timeout default to 1800 seconds.",
+			description: "Optional timeout in seconds. Packet calls honor up to 300 seconds; ordinary calls use a 600-second minimum; calls without a timeout default to 1800 seconds.",
 			minimum: 1,
 		}),
 	),
 	evidencePacket: Type.Optional(Type.Unknown({ description: "Optional selected EvidencePacketV1 slice. Invalid packets visibly fall back to prose." })),
+	mode: Type.Optional(StringEnum(["joined", "detached"] as const, { description: "Defaults to joined: required result returned after child cleanup. Detached is only for optional results delivered later." })),
 	background: Type.Optional(
 		Type.Boolean({
-			description: "Default true: the call returns a job id immediately and the result is delivered automatically as a follow-up message. Set false only when the very next step cannot proceed without the result.",
+			description: "Legacy alias: true=detached, false=joined. Must agree with mode; omission defaults to joined.",
 		}),
 	),
 });
@@ -393,20 +375,30 @@ const SubagentParams = Type.Object({
 type SubagentParamsType = Static<typeof SubagentParams>;
 
 const SubagentWaitParams = Type.Object({
-	jobIds: Type.Optional(Type.Array(Type.String(), { description: "Background job ids (e.g. 'sa-1'). Defaults to all running jobs." })),
+	waitFor: Type.Optional(StringEnum(["all", "any"] as const, { description: "Defaults to all. Any returns after at least one targeted terminal outcome." })),
+	jobIds: Type.Optional(Type.Array(Type.String(), { description: "Child job ids (e.g. 'sa-1'). Defaults to running and undelivered finished jobs." })),
 	timeoutSeconds: Type.Optional(Type.Number({ description: "Maximum seconds to wait. Default 120, max 240." })),
 });
+
+const SubagentFollowupParams = Type.Object({
+	jobId: Type.String({ description: "Successful normal child to reuse explicitly; never an interrupted or packet child." }),
+	task: Type.String({ description: "Explicit related follow-up assignment." }),
+	mode: Type.Optional(StringEnum(["joined", "detached"] as const)),
+	background: Type.Optional(Type.Boolean({ description: "Legacy mode alias: true=detached, false=joined." })),
+	timeoutSeconds: Type.Optional(Type.Number({ minimum: 1 })),
+});
+type SubagentFollowupParamsType = Static<typeof SubagentFollowupParams>;
 
 type SubagentWaitParamsType = Static<typeof SubagentWaitParams>;
 
 const SubagentStatusParams = Type.Object({
-	jobId: Type.Optional(Type.String({ description: "Background job id. Omit for all jobs." })),
+	jobId: Type.Optional(Type.String({ description: "Child job id. Omit for all jobs." })),
 });
 
 type SubagentStatusParamsType = Static<typeof SubagentStatusParams>;
 
 const SubagentCancelParams = Type.Object({
-	jobId: Type.String({ description: "Background job id to cancel (e.g. 'sa-1')." }),
+	jobId: Type.String({ description: "Child job id to cancel (e.g. 'sa-1')." }),
 });
 
 type SubagentCancelParamsType = Static<typeof SubagentCancelParams>;
@@ -1036,6 +1028,20 @@ function sameModel(left: ActiveModel | undefined, right: ActiveModel | undefined
 	return Boolean(left && right && left.provider === right.provider && left.id === right.id);
 }
 
+function sameTranscript(left: string | undefined, right: string | undefined): boolean {
+	if (!left || !right) return false;
+	const canonical = (value: string) => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
+	return canonical(left) === canonical(right);
+}
+
+function sameModelId(id: string, model: ExtensionContext["model"]): boolean {
+	return Boolean(model && id === `${model.provider}/${model.id}`);
+}
+function findSavedModel(id: string, registry: ExtensionContext["modelRegistry"]): ActiveModel | undefined {
+	const slash = id.indexOf("/");
+	return slash > 0 ? registry.find(id.slice(0, slash), id.slice(slash + 1)) : undefined;
+}
+
 export function selectSubagentModel(
 	requestedModel: string | undefined,
 	inheritedModel: ExtensionContext["model"],
@@ -1185,9 +1191,9 @@ function formatElapsed(startedAt: number): string {
 	return `${Math.floor(seconds / 60)}m${seconds % 60}s`;
 }
 
-function applyAssistantUsage(status: RunningSubagentStatus, message: Message): void {
+function applyAssistantUsage(status: RunningSubagentStatus, message: { role: string; usage?: AssistantUsage }): void {
 	if (message.role !== "assistant") return;
-	const usage = (message as { usage?: AssistantUsage }).usage;
+	const usage = message.usage;
 	if (!usage) return;
 	const input = usage.input ?? 0;
 	const output = usage.output ?? 0;
@@ -1274,7 +1280,7 @@ function renderSubagentWidget(statuses: Iterable<RunningSubagentStatus>, theme: 
 
 async function runSubagent(
 	pi: ExtensionAPI,
-	ctx: ExtensionContext,
+	ctx: Pick<ExtensionContext, "cwd" | "model" | "modelRegistry" | "signal">,
 	toolCallId: string,
 	params: SubagentParamsType,
 	onUpdate: ((partial: { content: Array<{ type: "text"; text: string }>; details?: Partial<SubagentDetails> }) => void) | undefined,
@@ -1282,14 +1288,18 @@ async function runSubagent(
 	signal?: AbortSignal,
 	durableDirectory?: string,
 	checkpointControl?: { flush?: () => void },
+	control?: { config: ChildConfig; plan: ChildSessionPlan; resolvedModel: (model: string) => void; allowFallback: boolean },
+	sdk: SubagentSdk = defaultSdk,
 ): Promise<SubagentDetails> {
 	const packetSelection: PacketSelection = resolveEvidencePacket(params.evidencePacket);
 	params = normalizeTimeoutSeconds(params);
 	const cwd = path.resolve(ctx.cwd, normalizePathArgument(params.cwd ?? "."));
-	const config = resolveRunConfig(params, cwd);
+	const config = control?.config ?? resolveRunConfig(params, cwd);
 	const packet = packetSelection.mode === "packet" ? packetSelection.packet : undefined;
 	const inheritedModel = ctx.model;
-	const modelSelection = selectSubagentModel(config.model, inheritedModel, ctx.modelRegistry);
+	const modelSelection = control
+		? { model: sameModelId(control.config.model, inheritedModel) ? inheritedModel : findSavedModel(control.config.model, ctx.modelRegistry), usedFallback: false, requestedModel: config.model }
+		: selectSubagentModel(config.model, inheritedModel, ctx.modelRegistry);
 	const selectedModel = modelSelection.model;
 	if (!selectedModel) {
 		throw new Error(
@@ -1299,10 +1309,23 @@ async function runSubagent(
 		);
 	}
 	let resolvedModel: ActiveModel = selectedModel;
+	const policy = childContextPolicy(resolvedModel.contextWindow);
+	const context: ChildContext = { tokens: null, window: resolvedModel.contextWindow, budget: policy.budget, reset: control?.plan.reset ?? "none" };
+	const priorAttemptUsage = { inputTokens: 0, outputTokens: 0, cacheTokens: 0, totalTokens: 0, costUsd: 0 };
+	let initialStats: ReturnType<Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"]["getSessionStats"]> | undefined;
+	const readSegmentUsage = () => {
+		if (!session || !initialStats) return;
+		const stats = session.getSessionStats();
+		liveStatus.inputTokens = priorAttemptUsage.inputTokens + Math.max(0, stats.tokens.input - initialStats.tokens.input);
+		liveStatus.outputTokens = priorAttemptUsage.outputTokens + Math.max(0, stats.tokens.output - initialStats.tokens.output);
+		liveStatus.cacheTokens = priorAttemptUsage.cacheTokens + Math.max(0, stats.tokens.cacheRead + stats.tokens.cacheWrite - initialStats.tokens.cacheRead - initialStats.tokens.cacheWrite);
+		liveStatus.totalTokens = priorAttemptUsage.totalTokens + Math.max(0, stats.tokens.total - initialStats.tokens.total);
+		liveStatus.cost = priorAttemptUsage.costUsd + Math.max(0, stats.cost - initialStats.cost);
+	};
 
 	const timeoutController = new AbortController();
 	let timeout: NodeJS.Timeout | undefined;
-	let finalMessages: Message[] = [];
+	let finalMessages: unknown[] = [];
 	let streamingText = "";
 	let turns = 0;
 	const toolCalls: Array<{ name: string; args: unknown; isError?: boolean }> = [];
@@ -1356,7 +1379,7 @@ async function runSubagent(
 		totalTokens: 0,
 		cost: 0,
 		contextTokens: null,
-		contextWindow: 0,
+		contextWindow: resolvedModel.contextWindow,
 		contextPercent: null,
 		customAgentPath: config.filePath,
 		customAgentSource: config.source,
@@ -1365,18 +1388,20 @@ async function runSubagent(
 	let lastCheckpointAt = 0;
 	const publishStatus = (forceCheckpoint = false) => {
 		if (session) {
-			const usage = (session as { getContextUsage?: () => { tokens: number | null; contextWindow: number; percent: number | null } | undefined }).getContextUsage?.();
+			const usage = session.getContextUsage();
 			if (usage) {
 				liveStatus.contextTokens = usage.tokens;
 				liveStatus.contextWindow = usage.contextWindow;
 				liveStatus.contextPercent = usage.percent;
+				context.tokens = usage.tokens;
+				context.window = usage.contextWindow;
 			}
 		}
 		liveStatus.turns = turns;
 		const checkpointDue = durableDirectory && (forceCheckpoint || Date.now() - lastCheckpointAt >= 1000);
 		if (checkpointDue) lastCheckpointAt = Date.now();
 		statusSink?.({
-			...liveStatus, toolCalls: [...toolCalls], sessionFilePath: session?.sessionFile,
+			...liveStatus, toolCalls: [...toolCalls], sessionFilePath: session?.sessionFile, context: { ...context },
 			checkpointOutput: checkpointDue
 				? appendRetainedToolOutput({ assistantOutput: streamingText.trim(), toolOutputs: completedToolOutputs })
 				: undefined,
@@ -1385,8 +1410,9 @@ async function runSubagent(
 	if (checkpointControl) checkpointControl.flush = () => publishStatus(true);
 
 	try {
-		const services = await createAgentSessionServices({
+		const services = await sdk.createServices({
 			cwd,
+			settingsManager: SettingsManager.inMemory({ compaction: policy.compaction }),
 			resourceLoaderOptions: {
 				// Keep child agents isolated and avoid recursively loading this extension.
 				noExtensions: true,
@@ -1416,15 +1442,15 @@ async function runSubagent(
 			},
 		} satisfies ToolDefinition<any, unknown> : undefined;
 		const createChildSession = (model: ActiveModel) =>
-			createAgentSessionFromServices({
+			sdk.createSession({
 				services,
-				sessionManager: durableDirectory ? SessionManager.create(cwd, durableDirectory) : SessionManager.inMemory(cwd),
+				sessionManager: control?.plan.kind === "reopen" ? SessionManager.open(control.plan.transcript) : durableDirectory ? SessionManager.create(cwd, durableDirectory) : SessionManager.inMemory(cwd),
 				model,
 				tools: packet
 					? (runtimeState && reportToolsOnly(runtimeState) ? ["report_verification"] : [...config.tools, "report_verification"])
 					: config.tools,
 				customTools: reportTool ? [reportTool] : undefined,
-				thinkingLevel: pi.getThinkingLevel(),
+				thinkingLevel: control?.config.thinkingLevel ?? pi.getThinkingLevel(),
 			});
 		let created: Awaited<ReturnType<typeof createAgentSessionFromServices>>;
 		try {
@@ -1433,7 +1459,7 @@ async function runSubagent(
 		} catch (error) {
 			const fallbackModel = inheritedModel;
 			const canFallbackToInheritedModel = Boolean(
-				termination === "completed" && config.model && fallbackModel && !sameModel(resolvedModel, fallbackModel),
+				termination === "completed" && (control?.allowFallback ?? true) && config.model && fallbackModel && !sameModel(resolvedModel, fallbackModel),
 			);
 			if (!canFallbackToInheritedModel || !fallbackModel) throw error;
 			resolvedModel = fallbackModel;
@@ -1443,6 +1469,7 @@ async function runSubagent(
 			created = await createChildSession(resolvedModel);
 		}
 		if (termination !== "completed") {
+			await created.session.abort();
 			created.session.dispose();
 			throw new Error(`Subagent ${termination} before prompt.`);
 		}
@@ -1452,13 +1479,13 @@ async function runSubagent(
 			turns = 0;
 			toolCalls.length = 0;
 			liveStatus.currentTool = undefined;
-			liveStatus.inputTokens = 0;
-			liveStatus.outputTokens = 0;
-			liveStatus.cacheTokens = 0;
-			liveStatus.totalTokens = 0;
-			liveStatus.cost = 0;
+			liveStatus.inputTokens = priorAttemptUsage.inputTokens;
+			liveStatus.outputTokens = priorAttemptUsage.outputTokens;
+			liveStatus.cacheTokens = priorAttemptUsage.cacheTokens;
+			liveStatus.totalTokens = priorAttemptUsage.totalTokens;
+			liveStatus.cost = priorAttemptUsage.costUsd;
 			liveStatus.contextTokens = null;
-			liveStatus.contextWindow = 0;
+			liveStatus.contextWindow = resolvedModel.contextWindow;
 			liveStatus.contextPercent = null;
 		};
 
@@ -1474,6 +1501,12 @@ async function runSubagent(
 		const bindSession = (nextSession: Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"]) => {
 			unsubscribeSession?.();
 			session = nextSession;
+			initialStats = nextSession.getSessionStats();
+			control?.resolvedModel(`${resolvedModel.provider}/${resolvedModel.id}`);
+			const nextPolicy = childContextPolicy(resolvedModel.contextWindow);
+			services.settingsManager.applyOverrides({ compaction: nextPolicy.compaction });
+			context.window = resolvedModel.contextWindow;
+			context.budget = nextPolicy.budget;
 			publishStatus();
 			unsubscribeSession = nextSession.subscribe((event) => {
 				switch (event.type) {
@@ -1537,7 +1570,8 @@ async function runSubagent(
 					break;
 				}
 				case "message_end": {
-					const message = event.message as Message;
+					const message = event.message;
+					if (message.role === "assistant") finalMessages.push(message);
 					applyAssistantUsage(liveStatus, message);
 					publishStatus(true);
 					break;
@@ -1558,8 +1592,14 @@ async function runSubagent(
 					publishStatus();
 					break;
 				}
+				case "compaction_end": {
+					readSegmentUsage();
+					if (event.errorMessage || event.aborted) context.compactionError = event.errorMessage ?? "Child compaction aborted; explicit fresh handoff required.";
+					publishStatus(true);
+					break;
+				}
 				case "agent_end": {
-					finalMessages = event.messages as Message[];
+					readSegmentUsage();
 					liveStatus.preview = "finalizing...";
 					publishStatus(true);
 					break;
@@ -1572,27 +1612,38 @@ async function runSubagent(
 		if (runtimeState && reportToolsOnly(runtimeState)) activateReportOnly();
 
 		const prompt = packet ? `${buildEvidencePacketPrompt(packet, effectiveLimits)}\n\nParent task: ${params.task}` : `Task: ${params.task}\n\nReturn only the useful findings for the parent agent.`;
-		const runPrompt = (promptText: string) =>
-			Promise.race([
-				session!.prompt(promptText),
-				new Promise<never>((_, reject) => {
-					if (ctx.signal?.aborted || signal?.aborted) return reject(new Error("Subagent was aborted."));
-					if (timeoutController.signal.aborted) return reject(new Error(`Subagent timed out after ${timeoutSeconds ?? 0} seconds.`));
-					ctx.signal?.addEventListener("abort", () => reject(new Error("Subagent was aborted.")), { once: true });
-					signal?.addEventListener("abort", () => reject(new Error("Subagent was aborted.")), { once: true });
-					timeoutController.signal.addEventListener(
-						"abort",
-						() => reject(new Error(`Subagent timed out after ${timeoutSeconds ?? 0} seconds.`)),
-						{ once: true },
-					);
-				}),
-			]);
+		const runPrompt = async (promptText: string) => {
+			const signals = [ctx.signal, signal, timeoutController.signal].filter((value): value is AbortSignal => Boolean(value));
+			let rejectCancelled: (reason: Error) => void = () => {};
+			const cancelled = new Promise<never>((_, reject) => { rejectCancelled = reject; });
+			const onAbort = () => rejectCancelled(new Error(timeoutController.signal.aborted ? `Subagent timed out after ${timeoutSeconds ?? 0} seconds.` : "Subagent was aborted."));
+			for (const source of signals) source.addEventListener("abort", onAbort, { once: true });
+			try {
+				if (signals.some((source) => source.aborted)) throw new Error("Subagent was aborted before prompt.");
+				await Promise.race([session!.prompt(promptText), cancelled]);
+			} finally {
+				for (const source of signals) source.removeEventListener("abort", onAbort);
+			}
+		};
+		if (control?.plan.kind === "reopen") {
+			const current = session!.getContextUsage();
+			if (current?.tokens === null || !current) throw new Error("Reopened child context is unknown. Start a reviewed fresh handoff instead.");
+			if (current.tokens > context.budget) {
+				try { await session!.compact("Preserve the original goal, verified facts, evidence paths, and unresolved constraints."); }
+				catch (error) { throw new Error(`Child compaction failed; explicit fresh handoff required: ${error instanceof Error ? error.message : String(error)}`); }
+				const after = session!.getContextUsage();
+				if (after?.tokens !== null && after?.tokens !== undefined && after.tokens > context.budget) throw new Error("Child remains over its context budget after compaction; explicit fresh handoff required.");
+			}
+		}
+
 		try {
-			await runPrompt(prompt);
+			await runPrompt(control?.plan.kind === "handoff" ? `${control.plan.handoff}
+
+${prompt}` : prompt);
 		} catch (error) {
 			const fallbackModel = inheritedModel;
 			const canRetryPromptWithInheritedModel = Boolean(
-				termination === "completed" && !reportOnlyRequested && config.model && fallbackModel && !sameModel(resolvedModel, fallbackModel) && turns === 0 && toolCalls.length === 0,
+				termination === "completed" && (control?.allowFallback ?? true) && !reportOnlyRequested && config.model && fallbackModel && !sameModel(resolvedModel, fallbackModel) && turns === 0 && toolCalls.length === 0,
 			);
 			if (reportOnlyRequested && termination === "completed") {
 				await reportAbortPromise;
@@ -1600,6 +1651,8 @@ async function runSubagent(
 				throw error;
 			} else {
 				await session?.abort();
+				readSegmentUsage();
+				Object.assign(priorAttemptUsage, { inputTokens: liveStatus.inputTokens, outputTokens: liveStatus.outputTokens, cacheTokens: liveStatus.cacheTokens, totalTokens: liveStatus.totalTokens, costUsd: liveStatus.cost });
 				session?.dispose();
 				unsubscribeSession?.();
 				unsubscribeSession = undefined;
@@ -1608,6 +1661,11 @@ async function runSubagent(
 				liveStatus.model = `${resolvedModel.provider}/${resolvedModel.id}`;
 				liveStatus.preview = `override ${config.model} failed, using inherited model`;
 				const retryCreated = await createChildSession(resolvedModel);
+				if (termination !== "completed") {
+					await retryCreated.session.abort();
+					retryCreated.session.dispose();
+					throw new Error(`Subagent ${termination} before retry prompt.`);
+				}
 				bindSession(retryCreated.session);
 				await runPrompt(prompt);
 			}
@@ -1630,11 +1688,14 @@ async function runSubagent(
 			const failure = assistantFailureReason(finalMessages);
 			if (failure) termination = "error";
 		}
-		const packetProjection = projectPacketResult(packetSelection, verificationReport, termination, effectiveLimits);
+		readSegmentUsage();
+		publishStatus(true);
+		const { mode: evidenceMode, ...packetFields } = projectPacketResult(packetSelection, verificationReport, termination, effectiveLimits);
+		const packetProjection = { evidenceMode, ...packetFields };
 		const output = finalAssistantText(finalMessages) || streamingText.trim() || "(subagent completed with no output)";
-		const parentOutput = formatPacketResultForParent(packetSelection, packetProjection, output);
+		const parentOutput = formatPacketResultForParent(packetSelection, { mode: evidenceMode, ...packetFields }, output);
 		const failure = assistantFailureReason(finalMessages);
-		const runFailed = termination === "timeout" || termination === "cancelled" || termination === "error" || Boolean(failure && !verificationReport) || Boolean(packetProjection.incomplete);
+		const runFailed = Boolean(context.compactionError) || termination === "timeout" || termination === "cancelled" || termination === "error" || Boolean(failure && !verificationReport) || Boolean(packetProjection.incomplete);
 		return {
 			type: config.type,
 			name: config.name,
@@ -1647,11 +1708,13 @@ async function runSubagent(
 			output: runFailed
 				? appendRetainedToolOutput({ assistantOutput: parentOutput, toolOutputs: completedToolOutputs })
 				: parentOutput,
-			...(runFailed ? { error: failure ?? (packetProjection.incomplete ? `Structured verification incomplete (${termination}).` : `Subagent terminated (${termination}).`) } : {}),
+			...(runFailed ? { error: context.compactionError ?? failure ?? (packetProjection.incomplete ? `Structured verification incomplete (${termination}).` : `Subagent terminated (${termination}).`) } : {}),
 			turns,
 			toolCalls,
 			customAgentPath: config.filePath,
 			customAgentSource: config.source,
+			transcript: session?.sessionFile,
+			context: { ...context },
 			usage: {
 				inputTokens: liveStatus.inputTokens,
 				outputTokens: liveStatus.outputTokens,
@@ -1662,9 +1725,13 @@ async function runSubagent(
 			},
 		};
 	} catch (error) {
+		await session?.abort();
 		const message = error instanceof Error ? error.message : String(error);
 		if (packet && termination === "completed") termination = runtimeState ? packetLimitTermination(runtimeState) : "error";
-		const packetProjection = projectPacketResult(packetSelection, verificationReport, termination, effectiveLimits);
+		readSegmentUsage();
+		publishStatus(true);
+		const { mode: evidenceMode, ...packetFields } = projectPacketResult(packetSelection, verificationReport, termination, effectiveLimits);
+		const packetProjection = { evidenceMode, ...packetFields };
 		const output = appendRetainedToolOutput({ assistantOutput: streamingText.trim(), toolOutputs: completedToolOutputs });
 		return {
 			type: config.type,
@@ -1675,12 +1742,14 @@ async function runSubagent(
 			tools: config.tools,
 			model: resolvedModel ? `${resolvedModel.provider}/${resolvedModel.id}` : undefined,
 			status: "error",
-			output: formatPacketResultForParent(packetSelection, packetProjection, output),
+			output: formatPacketResultForParent(packetSelection, { mode: evidenceMode, ...packetFields }, output),
 			error: message,
 			turns,
 			toolCalls,
 			customAgentPath: config.filePath,
 			customAgentSource: config.source,
+			transcript: session?.sessionFile,
+			context: { ...context },
 			usage: {
 				inputTokens: liveStatus.inputTokens,
 				outputTokens: liveStatus.outputTokens,
@@ -1696,6 +1765,9 @@ async function runSubagent(
 		if (checkpointControl) checkpointControl.flush = undefined;
 		statusSink?.(undefined);
 		if (timeout) clearTimeout(timeout);
+		ctx.signal?.removeEventListener("abort", onCancelled);
+		signal?.removeEventListener("abort", onCancelled);
+		timeoutController.signal.removeEventListener("abort", onTimedOut);
 		unsubscribeSession?.();
 		try {
 			await session?.abort();
@@ -1713,7 +1785,7 @@ export function isSubagentModeDefaultEnabled(envValue: string | undefined = proc
 	return !/^(0|false|no|off)$/i.test(envValue ?? "");
 }
 
-export default function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI, sdk: SubagentSdk = defaultSdk) {
 	// Subagent workflow mode is ON by default so the model is steered to use the
 	// `subagent` tool without anyone typing `/subagent on`.
 	//
@@ -1727,7 +1799,7 @@ export default function (pi: ExtensionAPI) {
 		type: "boolean",
 		default: true,
 	});
-	const resolveSubagentModeDefault = (): boolean => isSubagentModeDefaultEnabled();
+	const resolveSubagentModeDefault = (): boolean => isSubagentModeDefaultEnabled() && pi.getFlag?.("subagents") !== false;
 	let subagentModeEnabled = resolveSubagentModeDefault();
 	const activeSubagents = new Map<string, RunningSubagentStatus>();
 	let tuiRef: { requestRender: () => void } | undefined;
@@ -1782,17 +1854,16 @@ export default function (pi: ExtensionAPI) {
 	}
 	publishStateLabel();
 
-	// --- Background subagents ---
-	// Jobs run detached from the launching turn; results are delivered as one
-	// follow-up user message when the parent is idle (mirrors background-jobs.ts).
 	let backgroundJobs = new BackgroundJobRegistry();
 	const fallbackSessionId = randomUUID();
 	let backgroundStore: DurableJobStore<StoredBackgroundJob> | undefined;
 	let backgroundActive = true;
 	const backgroundCheckpoints = new Map<string, () => void>();
+	const childRuns = new Map<BackgroundJob, Promise<void>>();
 
 	function initializeBackgroundStore(ctx: ExtensionContext): void {
 		const directory = durableSessionDirectory(ctx, "subagents", fallbackSessionId);
+		if (childRuns.size > 0 && (!backgroundActive || backgroundStore?.directory !== directory)) throw new Error("Previous child generation is still cleaning up. Retry after the session transition completes.");
 		if (backgroundStore?.directory === directory && backgroundActive) return;
 		const store = new DurableJobStore<StoredBackgroundJob>(directory);
 		const snapshot = store.load();
@@ -1862,7 +1933,8 @@ export default function (pi: ExtensionAPI) {
 	/** Admission is insufficient; confirm only a recorded follow-up user entry. */
 	function confirmDeliveryInFlight() {
 		if (!deliveryInFlight || !deliveryMessage || !hasRecordedUserMessage(lastSessionCtx, deliveryMessage)) return;
-		backgroundJobs.markDelivered(deliveryInFlight);
+		try { backgroundJobs.markDelivered(deliveryInFlight); }
+		catch (error) { console.error("[subagents] delivery receipt persistence failed", error); return; }
 		clearDeliveryInFlight();
 	}
 
@@ -1870,16 +1942,25 @@ export default function (pi: ExtensionAPI) {
 		if (!backgroundJobs.undelivered().length) return;
 		const ids = new Set<string>();
 		for (const entry of lastSessionCtx?.sessionManager.getEntries() ?? []) {
-			if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.toolName !== "subagent_wait") continue;
-			const details = entry.message.details as { finished?: unknown } | undefined;
-			if (!Array.isArray(details?.finished)) continue;
-			for (const id of details.finished) {
-				if (typeof id !== "string") continue;
-				const job = backgroundJobs.get(id);
-				if (job && job.status !== "running" && !job.delivered) ids.add(id);
+			if (entry.type !== "message" || entry.message.role !== "toolResult") continue;
+			const receipt = entry.message;
+			const details: unknown = receipt.details;
+			if (!isRecord(details)) continue;
+			if (receipt.toolName === "subagent_wait" && Array.isArray(details.finished)) {
+				for (const id of details.finished) {
+					if (typeof id !== "string") continue;
+					const job = backgroundJobs.get(id);
+					if (job && job.status !== "running" && !job.delivered) ids.add(id);
+				}
+			} else if (["subagent", "subagent_followup"].includes(receipt.toolName) && details.mode === "joined" && typeof details.jobId === "string" && ["completed", "error"].includes(String(details.status))) {
+				const job = backgroundJobs.get(details.jobId);
+				if (job?.mode === "joined" && job.requestId === receipt.toolCallId && job.status !== "running" && !job.delivered) ids.add(job.id);
 			}
 		}
-		if (ids.size) backgroundJobs.markDelivered(ids);
+		if (ids.size) {
+			try { backgroundJobs.markDelivered(ids); }
+			catch (error) { console.error("[subagents] tool receipt persistence failed", error); }
+		}
 	}
 
 	function flushBackgroundDeliveries() {
@@ -1908,7 +1989,7 @@ export default function (pi: ExtensionAPI) {
 		pi.sendUserMessage(deliveryMessage, { deliverAs: "followUp" });
 	}
 
-	function abortAllBackgroundJobs() {
+	async function abortAllBackgroundJobs() {
 		clearDeliveryTimer();
 		clearDeliveryInFlight();
 		for (const flush of backgroundCheckpoints.values()) {
@@ -1916,127 +1997,134 @@ export default function (pi: ExtensionAPI) {
 		}
 		backgroundCheckpoints.clear();
 		backgroundActive = false;
-		backgroundJobs.interruptRunning();
+		try { backgroundJobs.interruptRunning(); }
+		finally { await Promise.allSettled([...childRuns.values()]); }
 	}
 
 	function backgroundDisplayName(params: SubagentParamsType): string {
 		return params.type === "custom" ? (params.customAgent ?? "custom") : params.type;
 	}
 
-	function launchBackgroundSubagent(params: SubagentParamsType, ctx: ExtensionContext, recovery?: BackgroundJob, requestId?: string) {
+	function launchBackgroundSubagent(
+		params: SubagentParamsType, ctx: ExtensionContext, mode: SubagentMode, requestId: string,
+		signal?: AbortSignal, recovery?: BackgroundJob,
+		followup?: { previous: BackgroundJob; reuse: Extract<ChildReuse, { kind: "transcript" }>; plan: ChildSessionPlan },
+	) {
 		initializeBackgroundStore(ctx);
 		lastUiCtx = ctx;
 		lastSessionCtx = ctx;
-		const existing = requestId ? backgroundJobs.list().find((job) => job.requestId === requestId) : undefined;
+		const existing = backgroundJobs.list().find((job) => job.requestId === requestId);
 		if (existing) {
-			if (existing.task !== params.task || existing.type !== params.type || existing.resumedFrom !== recovery?.id) throw new Error("Subagent request ID reused with different task.");
-			return backgroundLaunchResult(existing, ctx.cwd);
+			if (existing.task !== params.task || existing.type !== params.type || existing.mode !== mode || existing.resumedFrom !== recovery?.id || existing.followedFrom !== followup?.previous.id) throw new Error("Subagent request ID reused with different task or mode.");
+			return returnAdmission(existing, signal, ctx.signal);
 		}
+		if (backgroundJobs.running().length >= MAX_BACKGROUND_SUBAGENTS) throw new Error(`Subagent capacity reached (${MAX_BACKGROUND_SUBAGENTS} running). Wait for a child to finish; mode was not changed.`);
+		let reuse: ChildReuse = followup?.reuse ?? { kind: "unavailable", reason: "unresolved-model" };
+		if (!followup) {
+			const cwd = path.resolve(ctx.cwd, normalizePathArgument(params.cwd ?? "."));
+			const config = resolveRunConfig(params, cwd);
+			const selected = ctx.model ? selectSubagentModel(config.model, ctx.model, ctx.modelRegistry).model : undefined;
+			if (selected) reuse = {
+				kind: "transcript", config: { ...config, cwd, model: `${selected.provider}/${selected.id}`, thinkingLevel: pi.getThinkingLevel() },
+				lineageId: randomUUID(), originalGoal: params.task, assignments: 1, generation: 1,
+			};
+		}
+		const executionConfig = reuse.kind === "transcript" ? reuse.config : undefined;
+		if (params.evidencePacket !== undefined) reuse = { kind: "unavailable", reason: "packet" };
 		const job = backgroundJobs.launch({
-			requestId,
-			type: params.type,
-			name: backgroundDisplayName(params),
-			task: params.task,
-			batchId: `turn-${parentRunId}-${parentTurnSeq}`,
-			startedAt: Date.now(),
-			resumeParams: { ...params, cwd: path.resolve(ctx.cwd, normalizePathArgument(params.cwd ?? ".")), model: params.model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined) },
-			resumedFrom: recovery?.id,
+			mode, requestId, reuse, type: params.type, name: executionConfig?.name ?? backgroundDisplayName(params), task: params.task,
+			batchId: `turn-${parentRunId}-${parentTurnSeq}`, startedAt: Date.now(),
+			resumeParams: { ...params, cwd: executionConfig?.cwd ?? path.resolve(ctx.cwd, normalizePathArgument(params.cwd ?? ".")), model: executionConfig?.model ?? params.model },
+			resumedFrom: recovery?.id, followedFrom: followup?.previous.id,
+			sessionFilePath: followup?.plan.kind === "reopen" ? followup.plan.transcript : undefined,
 		});
-		// Detach from the launching turn: no ctx.signal, so Esc in a later turn does not kill the job.
-		// Model/registry are snapshotted at launch; runSubagent only reads these four fields.
-		const runCtx = {
-			cwd: ctx.cwd,
-			model: ctx.model,
-			modelRegistry: ctx.modelRegistry,
-			signal: undefined,
-		} as unknown as ExtensionContext;
-		const runParams: SubagentParamsType = {
-			...params,
-			task: recovery ? buildRecoveryTask(recovery) : params.task,
-			timeoutSeconds: params.timeoutSeconds ?? DEFAULT_BACKGROUND_TIMEOUT_SECONDS,
-		};
+		const runCtx = { cwd: ctx.cwd, model: ctx.model, modelRegistry: ctx.modelRegistry, signal: undefined };
+		const runParams = { ...params, task: recovery ? buildRecoveryTask(recovery) : params.task, timeoutSeconds: params.timeoutSeconds ?? DEFAULT_BACKGROUND_TIMEOUT_SECONDS };
 		const registry = backgroundJobs;
 		const isCurrent = () => backgroundActive && registry === backgroundJobs && registry.get(job.id) === job && job.status === "running";
 		const statusSink: SubagentStatusSink = (status) => {
-			if (status && isCurrent()) {
+			if (!isCurrent()) return;
+			if (status) {
 				activeSubagents.set(job.id, status);
 				job.turns = status.turns;
 				job.toolCount = status.toolCalls.length;
 				job.preview = status.currentTool ? `running ${status.currentTool}` : oneLine(status.preview).slice(0, 160);
 				if (status.checkpointOutput !== undefined) registry.checkpoint(job.id, {
 					output: status.checkpointOutput, turns: job.turns, toolCount: job.toolCount, preview: job.preview,
-					sessionFilePath: status.sessionFilePath,
+					sessionFilePath: status.sessionFilePath, context: status.context,
 					usage: { costUsd: status.cost, inputTokens: status.inputTokens, outputTokens: status.outputTokens, cacheTokens: status.cacheTokens, totalTokens: status.totalTokens },
 				});
-			} else if (registry === backgroundJobs && backgroundActive) {
-				activeSubagents.delete(job.id);
-			}
+			} else activeSubagents.delete(job.id);
 			safeRefreshWidget();
 		};
 		const checkpointControl: { flush?: () => void } = {};
 		backgroundCheckpoints.set(job.id, () => checkpointControl.flush?.());
-		void runSubagent(pi, runCtx, job.id, runParams, undefined, statusSink, job.abort.signal, path.join(backgroundStore!.directory, job.id, "transcripts"), checkpointControl)
-			.then(
-				(result) => {
-					// A session reset cleared the registry: drop the stale result and its billing.
-					if (!isCurrent()) return;
-					recordSubagentUsage(result);
-					registry.checkpoint(job.id, { usage: result.usage });
-					backgroundJobs.complete(job.id, {
-						status: result.status === "completed" ? "completed" : "error",
-						output: result.output,
-						error: result.error,
-						turns: result.turns,
-						toolCount: result.toolCalls.length,
-						endedAt: Date.now(),
-					});
-				},
-				(error: unknown) => {
-					if (!isCurrent()) return;
-					backgroundJobs.complete(job.id, {
-						status: "error",
-						output: "",
-						error: error instanceof Error ? error.message : String(error),
-						turns: job.turns,
-						toolCount: job.toolCount,
-						endedAt: Date.now(),
-					});
-				},
-			)
+		const control = executionConfig ? {
+			config: executionConfig, allowFallback: !followup, plan: followup?.plan ?? { kind: "fresh" as const, reset: "none" as const },
+			resolvedModel(model: string) {
+				if (!isCurrent()) return;
+				executionConfig.model = model;
+				registry.checkpoint(job.id, { reuse: job.reuse, resumeParams: { ...runParams, cwd: executionConfig.cwd, model } });
+			},
+		} : undefined;
+		const run = runSubagent(pi, runCtx, job.id, runParams, undefined, statusSink, job.abort.signal, path.join(backgroundStore!.directory, job.id, "transcripts"), checkpointControl, control, sdk)
+			.then((result) => {
+				if (!isCurrent()) return;
+				registry.complete(job.id, {
+					status: result.status === "completed" ? "completed" : "error", output: result.output, error: result.error,
+					turns: result.turns, toolCount: result.toolCalls.length, endedAt: Date.now(),
+					report: result, usage: result.usage, context: result.context, sessionFilePath: result.transcript ?? job.sessionFilePath,
+				});
+				recordSubagentUsage(result);
+			}, (error: unknown) => {
+				if (!isCurrent()) return;
+				registry.complete(job.id, { status: "error", output: "", error: error instanceof Error ? error.message : String(error), turns: job.turns, toolCount: job.toolCount, endedAt: Date.now() });
+			})
 			.finally(() => {
+				childRuns.delete(job);
 				if (registry !== backgroundJobs || !backgroundActive) return;
 				backgroundCheckpoints.delete(job.id);
 				activeSubagents.delete(job.id);
 				safeRefreshWidget();
 				flushBackgroundDeliveries();
-			})
-			.catch((error) => {
-				// A storage failure must not become an unhandled rejection or publish
-				// an uncommitted result. The last saved checkpoint remains recoverable.
-				console.error(`[subagents] failed to commit background job ${job.id}`, error);
 			});
-
-		return backgroundLaunchResult(job, ctx.cwd);
+		childRuns.set(job, run);
+		void run.catch((error) => console.error(`[subagents] failed to commit job ${job.id}`, error));
+		return returnAdmission(job, signal, ctx.signal);
 	}
 
-	function backgroundLaunchResult(job: BackgroundJob, cwd: string) {
-		const text = job.status === "running" ? [
-			`Background subagent started: ${job.id} (${job.type}:${job.name})`,
-			"Running in background. Continue independent work or end your turn; results will be delivered automatically. Use subagent_wait only if you are blocked on this result.",
-		].join("\n") : formatJobResult(job, (output) => truncateForToolResult(output));
+	function jobResult(job: BackgroundJob, launching = false) {
+		const type = job.type === "explore" || job.type === "shell" || job.type === "custom" ? job.type : "custom";
+		const running = job.status === "running";
+		const text = running && launching
+			? `Detached subagent started: ${job.id} (${job.type}:${job.name})
+Optional results will be delivered later. Continue independent work; do not poll.`
+			: formatJobResult(job, truncateForToolResult);
 		const details: SubagentDetails = {
-			type: job.type as SubagentType,
-			name: job.name,
-			task: job.task,
-			cwd,
-			tools: [],
-			status: "background",
-			output: text,
-			jobId: job.id,
-			turns: 0,
-			toolCalls: [],
+			...(job.report ?? { type, name: job.name, task: job.task, cwd: "", tools: [], output: job.output ?? "", turns: job.turns, toolCalls: [] }),
+			mode: job.mode, jobId: job.id, transcript: job.sessionFilePath, usage: job.usage, persistenceError: job.persistenceError,
+			context: job.context, reuse: job.reuse, followedFrom: job.followedFrom, report: job.report,
+			status: running ? "background" : job.status === "completed" ? "completed" : "error",
+			error: job.error,
 		};
 		return { content: [{ type: "text" as const, text }], details };
+	}
+
+	function returnAdmission(job: BackgroundJob, ...sources: Array<AbortSignal | undefined>) {
+		if (job.mode === "detached") return Promise.resolve(jobResult(job, true));
+		const registry = backgroundJobs;
+		const signals = [...new Set(sources.filter((source): source is AbortSignal => Boolean(source)))];
+		let cancellationError: unknown;
+		const cancel = () => {
+			if (registry.get(job.id) !== job) return;
+			try { registry.cancel(job.id); }
+			catch (error) { cancellationError = error; job.abort.abort(); }
+		};
+		for (const source of signals) source.addEventListener("abort", cancel, { once: true });
+		if (signals.some((source) => source.aborted)) cancel();
+		return (childRuns.get(job) ?? Promise.resolve())
+			.then(() => { if (cancellationError) throw cancellationError; return jobResult(job); })
+			.finally(() => { for (const source of signals) source.removeEventListener("abort", cancel); });
 	}
 
 	const renderSubagentStatusWidget = () => {
@@ -2088,7 +2176,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		subagentModeEnabled = resolveSubagentModeDefault();
-		abortAllBackgroundJobs();
+		await abortAllBackgroundJobs();
 		initializeBackgroundStore(ctx);
 		isAgentBusy = false;
 		hasUserTurnPending = false;
@@ -2209,7 +2297,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
-		abortAllBackgroundJobs();
+		await abortAllBackgroundJobs();
 		activeSubagents.clear();
 		refreshSubagentStatusWidget(ctx);
 	});
@@ -2276,69 +2364,37 @@ export default function (pi: ExtensionAPI) {
 		return withLongCacheTtl(event.payload);
 	});
 
-	// Helper to build tool definition based on mode state
-	// When OFF: bare description, no prompting metadata → LLM has no nudge to use subagents
-	// When ON: full description + promptSnippet + promptGuidelines → behavioral push to batch
+	const subagentCapabilityGuidelines = [
+		"CHOOSE BY DEPENDENCY: use mode=joined (default) for findings needed before your next edit, decision, or answer. The call returns the report after cleanup; no extra join is needed. Use mode=detached only for optional work whose result is not a prerequisite for the current answer.",
+		"BATCH IN PARALLEL: split independent work into 2–5 narrow assignments. Use an available parallel tool wrapper or codemode Promise.all([tools.subagent(...), tools.subagent(...)]); otherwise emit a true multi-tool-call message. Do not await independent calls one by one. Never batch a dependent edit/command alongside the child finding it needs; read the prerequisite report first.",
+		"FOLLOW UP instead of restarting related investigation: subagent_followup({ jobId, task }) reopens a successful normal child's saved conversation with the same model/tools/prompt. Use the latest returned job ID, not an ancestor. Only one assignment may own a transcript lineage at a time; do not batch follow-ups on the same lineage. There is no automatic continuation.",
+		"SELF-CONTAINED TASKS: a fresh child does not inherit your parent conversation. Supply its goal, known facts/code anchors, constraints, and expected report. Optional evidencePacket gives claims to verify and bounded source guidance; supplied claims are not proof. Packet children cannot be followed up.",
+		"ISOLATED CONTEXT, shared filesystem: children are not sandboxed worktrees. Assign one owner for coupled implementation files; parallelize read-only investigations or truly disjoint work. Do not perform the same owned task yourself while its child is running.",
+		"CHILD TOOLS: explore has read/grep/find/ls; shell adds bash; custom uses its configured tool set. Children load no extensions: do not assume parent MCP, subagent, or Accordion tools are available. Choose a role that can actually perform the task.",
+		"REPORTS AND CONTROLS: inspect returned findings, errors, verification evidence, and durability warnings before acting; runtime completion is not proof of correctness. subagent_wait retrieves missing/recovered or detached reports (all by default; any after one finishes); timeout/abort stops waiting, not children. subagent_cancel stops a child. subagent_status is for requested progress/recovery discovery, never polling or sleep loops.",
+		"CONTEXT LIMITS: child-local native compaction uses a 50k-token target, not a hard per-request ceiling. After 3 assignments, 1 MiB transcript, or unsafe/unknown context, follow-up uses a clearly marked fresh handoff with goal/report/transcript pointers, not full memory. Respect reset reasons and unknown context values.",
+		"RECOVERY: use subagent_resume only when the user requests recovery of interrupted work, after checking transcripts/checkpoints and possible side effects. Results/history persist, but in-process children cannot survive host exit. Never automatically replay uncertain work. A failed lineage requires a reviewed new-child handoff, not reuse of an older success.",
+		"CAPACITY: 6 running slots shared by joined/detached; overflow fails explicitly, with no queue or silent mode switch. Finish existing work before admitting another batch. Request-ID deduplication is not semantic task deduplication.",
+		"USE DELEGATION WHERE IT HELPS: several source lookups, substantial logs, independent subsystem reviews, or a related follow-up. Read one known file or make a small targeted edit directly. Keep assignments narrow; for broad exploration omit timeoutSeconds or use at least 600 seconds. The parent owns integration and final verification.",
+	];
+
 	function buildSubagentToolDef(enabled: boolean) {
 		return {
 			name: "subagent",
 			label: "Subagent",
+			executionMode: "parallel" as const,
 			description: enabled
-				? "Run an isolated in-process Pi subagent. Runs in the BACKGROUND by default: the call returns a job id immediately and the result arrives automatically as a follow-up message. **BATCH IN PARALLEL**: emit multiple subagent calls in one assistant message and they run concurrently — always prefer a parallel batch over sequential one-by-one. Types: explore (read-only codebase investigation), shell (command-oriented investigation), custom (markdown agent from ~/.pi/agent/agents or .pi/agents)."
-				: "Run an isolated in-process Pi subagent.",
+				? "Run an isolated in-process Pi subagent. JOINED by default: required reports return after cleanup. Detached mode is only for optional results delivered later. Use subagent_followup for related successful work with saved conversation/configuration. Batch independent calls with a real parallel tool batch; never batch dependent edits with prerequisite research. Isolated context, shared filesystem. Capacity 6 across both modes; overflow fails explicitly. Types: explore (read-only), shell (commands/logs), custom (configured markdown agent)."
+				: "Run an isolated in-process Pi subagent. Joined by default; detached only for optional results. Capacity 6; excess admission fails.",
 			promptSnippet: enabled
-				? "Delegate focused investigation to an isolated in-process subagent (explore = read-only, shell = with bash, custom = specialized). **Always batch independent questions as parallel subagent calls in the SAME assistant message** — they run concurrently, so 4 in parallel ≈ wall-clock cost of 1."
+				? "Choose joined for prerequisites, detached only for optional results, and subagent_followup for related successful work. Batch independent assignments with a real parallel tool batch. Children have isolated conversations but share your filesystem; provide self-contained tasks and avoid overlapping ownership."
 				: "",
-			promptGuidelines: enabled
-				? [
-					"**BATCH IN PARALLEL — this is the #1 rule.** Multiple `subagent` calls in the same assistant message execute concurrently. Before launching any subagent, ask: 'can I split this into 2–5 independent sub-questions?' If yes, emit them all in one message. Sequential one-by-one is almost always wrong.",
-					"Concrete batch examples: understanding a feature → 3 parallel explores (API route, DB model, UI call site). Debugging → 1 shell (run test) + 1 explore (map modules), fanned out together. Refactor planning → one explore per affected layer, all dispatched at once.",
-					"`subagent` spins up an isolated child agent with its own context window and returns a concise summary. Useful when an investigation would take more than a couple of read/grep calls or would clutter the main context.",
-					"Interrupted jobs retain checkpoints and audit transcripts. Use subagent_resume only when the user requests recovery; never automatically replay interrupted shell/custom actions.",
-					"Subagents run in the background by default: each call returns a job id at once and results are delivered automatically as one follow-up message. After launching, continue independent work or end your turn. Never poll `subagent_status`. Call `subagent_wait` only when you are blocked on a result; pass `background: false` only when the very next step cannot proceed without it.",
-					"type=explore for read-only codebase questions (read/grep/find/ls). type=shell when commands, tests, or logs are needed. type=custom with `customAgent` for specialized agents.",
-					"Keep each subagent's task NARROW and focused. Don't stuff multiple questions into one mega-task — narrow tasks return faster, cleaner summaries. Split first, batch second.",
-					"For broad repo exploration, omit `timeoutSeconds` or use at least 600 seconds.",
-					"Direct read/grep/edit in the main agent stays appropriate for single-file edits, targeted lookups, and quick follow-ups on subagent results — don't use a subagent to read one known file.",
-				]
-				: [],
+			promptGuidelines: enabled ? subagentCapabilityGuidelines : [],
 			parameters: SubagentParams,
 			prepareArguments: normalizeTimeoutSeconds,
-			execute: async (toolCallId, params, _signal, onUpdate, ctx) => {
-				// Background by default. Foreground when explicitly requested, when an
-				// evidence packet is supplied (structured results are consumed in-turn),
-				// or when the background cap is reached.
-				const wantsBackground = params.background !== false && params.evidencePacket === undefined;
-				if (wantsBackground) initializeBackgroundStore(ctx);
-				const atCap = wantsBackground && backgroundJobs.running().length >= MAX_BACKGROUND_SUBAGENTS;
-				const duplicate = backgroundJobs.list().some((job) => job.requestId === toolCallId);
-				if (wantsBackground && (!atCap || duplicate)) return launchBackgroundSubagent(params, ctx, undefined, toolCallId);
-				const capNote = atCap
-					? `Note: ran in foreground because the background subagent cap (${MAX_BACKGROUND_SUBAGENTS} running) was reached.\n\n`
-					: "";
-
-				const result = await runSubagent(pi, ctx, toolCallId, params, onUpdate as any, (status) => {
-					if (status) activeSubagents.set(toolCallId, status);
-					else activeSubagents.delete(toolCallId);
-					refreshSubagentStatusWidget(ctx);
-				}, _signal);
-				recordSubagentUsage(result);
-				if (result.status === "error") {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `${capNote}Subagent ${result.type}:${result.name} failed: ${result.error}\n\n${truncateForToolResult(result.output)}`,
-							},
-						],
-						details: { ...result },
-					};
-				}
-
-				return {
-					content: [{ type: "text", text: `${capNote}${truncateForToolResult(result.output)}` }],
-					details: { ...result },
-				};
+			execute: async (toolCallId, params, signal, _onUpdate, ctx) => {
+				const mode = resolveSubagentMode(params.mode, params.background);
+				return launchBackgroundSubagent(params, ctx, mode, toolCallId, signal);
 			},
 			renderCall(args, theme) {
 				const type = args.type ?? "...";
@@ -2367,8 +2423,8 @@ export default function (pi: ExtensionAPI) {
 					? theme.fg("success", "✓")
 					: details.status === "error" ? theme.fg("error", "✗") : theme.fg("warning", "…");
 				let text = `${icon} ${theme.fg("toolTitle", theme.bold(`${details.type}:${details.name}`))}`;
-				if (details.mode === "prose-fallback") text += theme.fg("warning", " • prose fallback");
-				if (details.mode === "packet" && details.packetId && details.groupId) {
+				if (details.evidenceMode === "prose-fallback") text += theme.fg("warning", " • prose fallback");
+				if (details.evidenceMode === "packet" && details.packetId && details.groupId) {
 					text += theme.fg("dim", ` • packet ${details.packetId}/${details.groupId}`);
 				}
 				if (details.incomplete) text += theme.fg("warning", ` • incomplete${details.termination ? ` (${details.termination})` : ""}`);
@@ -2376,10 +2432,10 @@ export default function (pi: ExtensionAPI) {
 				text += theme.fg("dim", ` • ${details.turns} turn${details.turns === 1 ? "" : "s"}`);
 				text += theme.fg("dim", ` • ${details.toolCalls.length} tool${details.toolCalls.length === 1 ? "" : "s"}`);
 				if (details.error) text += `\n${theme.fg("error", details.error)}`;
-				if (details.mode === "prose-fallback" && details.packetDiagnostics?.length) text += `\n${theme.fg("warning", details.packetDiagnostics[0])}`;
+				if (details.evidenceMode === "prose-fallback" && details.packetDiagnostics?.length) text += `\n${theme.fg("warning", details.packetDiagnostics[0])}`;
 				if (expanded) {
 					text += `\n\n${theme.fg("muted", "Task:")} ${details.task}`;
-					if (details.mode === "packet") {
+					if (details.evidenceMode === "packet") {
 						const claimCount = details.verification?.claims.length ?? 0;
 						const leadCount = details.verification?.newLeads.length ?? 0;
 						text += `\n\n${theme.fg("muted", "Packet:")} ${details.packetId ?? "?"}/${details.groupId ?? "?"}`;
@@ -2417,11 +2473,16 @@ export default function (pi: ExtensionAPI) {
 			.slice(0, 20)
 			.map((agent) => `- ${agent.name} (${agent.source}): ${agent.description || agent.filePath}`)
 			.join("\n");
-		const customAgentsText = customAgents.length > 0 ? customAgents : "- none discovered";
 		return {
-			systemPrompt:
-				event.systemPrompt +
-				`\n\n=== Subagent workflow mode is enabled ===\n\nYou have an extra capability in this session: the \\\`subagent\\\` tool. It spins up an isolated child Pi agent with its own context window, so investigations done inside a subagent do not consume your main context. The child returns only a concise summary.\n\n## Subagents run in the background\nEvery \\\`subagent\\\` call runs in the background by default: it returns a job id immediately, and all finished results are delivered to you automatically as one follow-up message.\n- After launching, continue independent work or end your turn. Do not sleep or loop waiting.\n- Never poll \\\`subagent_status\\\` to check on progress.\n- Call \\\`subagent_wait\\\` only when you are blocked and cannot do anything useful without the result.\n- Pass \\\`background: false\\\` only when the very next step cannot proceed without the result.\n\n## PLAN FIRST, THEN FAN OUT WIDE\n\nBefore you start investigating, pause and ask: **\"Can I split this work into independent sub-questions that don't depend on each other's answers?\"** If yes, dispatch them as a SINGLE BATCH of parallel \\\`subagent\\\` calls in one assistant message. Subagents run concurrently — 4 subagents in parallel finish in roughly the same wall-clock time as 1. Sequential one-by-one investigation is the slow, wrong default.\n\nA good batch is typically 2–5 subagents, each with a narrow, well-scoped task. Don't be shy about going wide — if you can frame 4 independent questions, launch 4 subagents.\n\n### Example batches (do this)\n- Understanding a feature: launch 3 explores in parallel — (1) where the API route is defined, (2) where the DB model lives, (3) where the UI calls it.\n- Debugging a failing test: launch 2 in parallel — one \"shell\" to run the test and capture the stack, one \"explore\" to map the involved modules.\n- Refactor planning: one explore per affected layer (data, service, controller, view) all dispatched together.\n- Reviewing a PR-sized change: one explore per touched subsystem, fanned out simultaneously.\n\n### Anti-patterns (don't do this)\n- ❌ Run one subagent, wait for the result, then run the next one to ask a related-but-independent question. That doubles your wall-clock time for no reason.\n- ❌ Stuff every question into one giant subagent prompt. Narrow, focused tasks return faster and cleaner summaries than one bloated mega-task.\n- ❌ Use a subagent for a single \\\`read\\\` of a known file — just read it directly.\n\n## Available subagent types\n- type=\"explore\" — read-only codebase reconnaissance. The child only has read/grep/find/ls. Good for \"where is X defined\", \"how is Y wired\", \"explain this module\", or any multi-file investigation.\n- type=\"shell\" — same as explore plus \\\`bash\\\`. Good for running tests, inspecting logs, reproducing a failure, or any diagnosis that needs commands.\n- type=\"custom\" with \\\`customAgent\\\` — a specialized markdown-defined agent (see list below).\n\n## When a subagent is a good fit\n- The investigation will likely take more than a couple of read/grep calls.\n- The findings would otherwise clutter your main context with details you only need to summarize.\n- You need to run tests or other commands whose long output you do not want in your main context.\n- You have multiple independent questions — dispatch them as a parallel batch.\n\n## When direct read/grep/edit/bash from the main agent is fine\n- Reading a single known file before editing it.\n- A single targeted lookup at a known location.\n- Quick follow-ups after a subagent has already returned.\n\n## Available custom subagents\n${customAgentsText}`,
+			systemPrompt: [
+				event.systemPrompt,
+				"=== Subagent workflow mode is enabled ===",
+				"## Capability selection and safeguards",
+				...subagentCapabilityGuidelines.map((line) => `- ${line}`),
+				"## Concrete delegation patterns\n- Feature investigation: batch independent route, data-model, and UI explorers; integrate their reports before editing.\n- Related detail after success: follow up the latest child job instead of restating the investigation from scratch.\n- Optional review/log research: detach only if the current answer does not depend on it.\n- Coupled implementation: one owner; other children investigate or review, not duplicate its edits.",
+				"## Available custom subagents",
+				customAgents || "- none discovered",
+			].join("\n\n"),
 		};
 	});
 
@@ -2449,25 +2510,71 @@ export default function (pi: ExtensionAPI) {
 			const child = backgroundJobs.list().find((other) => other.resumedFrom === job.id);
 			if (child && child.requestId !== _id) throw new Error("This job already has a recovery run; inspect that run instead of duplicating work.");
 			if (!child && backgroundJobs.running().length >= MAX_BACKGROUND_SUBAGENTS) throw new Error("Background subagent cap reached.");
-			return launchBackgroundSubagent(saved, ctx, job, _id);
+			return launchBackgroundSubagent({ ...saved, mode: "detached", background: true }, ctx, "detached", _id, undefined, job);
+		},
+	});
+
+	managed.registerTool({
+		name: "subagent_followup",
+		label: "Follow up Subagent",
+		executionMode: "parallel" as const,
+		defaultVisibility: "agent-visible" as const,
+		description: "Explicit related follow-up for a successful normal child. Reuses its saved model/tools/prompt and disk transcript exclusively, never interrupted work. Joined by default; bounded fresh handoff after 3 assignments, 1 MiB, or unsafe context. No implicit reuse.",
+		parameters: SubagentFollowupParams,
+		async execute(id: string, params: SubagentFollowupParamsType, signal: AbortSignal | undefined, _update: unknown, ctx: ExtensionContext) {
+			initializeBackgroundStore(ctx);
+			const mode = resolveSubagentMode(params.mode, params.background);
+			const duplicate = backgroundJobs.list().find((job) => job.requestId === id);
+			if (duplicate) {
+				if (duplicate.followedFrom !== params.jobId || duplicate.task !== params.task || duplicate.mode !== mode) throw new Error("Subagent request ID reused with different follow-up.");
+				return returnAdmission(duplicate, signal, ctx.signal);
+			}
+			const previous = backgroundJobs.get(params.jobId);
+			if (!previous) throw new Error(`Unknown subagent job ${params.jobId}.`);
+			if (previous.status !== "completed" || typeof previous.sessionFilePath !== "string" || !previous.sessionFilePath || !isReusableChild(previous.reuse)) throw new Error("Only successful normal children with a saved transcript and resolved configuration support follow-up. Failed, cancelled, interrupted, packet, and legacy jobs cannot be reused.");
+			const reuse = previous.reuse;
+			if (backgroundJobs.running().some((job) => isReusableChild(job.reuse) && job.reuse.lineageId === reuse.lineageId || sameTranscript(job.sessionFilePath, previous.sessionFilePath)) || [...childRuns.keys()].some((job) => job === previous || sameTranscript(job.sessionFilePath, previous.sessionFilePath) || (isReusableChild(job.reuse) && job.reuse.lineageId === reuse.lineageId))) throw new Error("This transcript lineage is already in use. Wait for that child to finish cleanup before following up, including via ancestor job IDs.");
+			// Ancestor IDs are not immutable transcript snapshots; the latest assignment must succeed.
+			const latest = backgroundJobs.list().filter((job) => isReusableChild(job.reuse) && job.reuse.lineageId === reuse.lineageId).at(-1);
+			if (latest !== previous) {
+				if (latest && latest.status !== "completed") throw new Error(`The latest lineage job ${latest.id} is ${latest.status}. Start a new child with a reviewed handoff; older transcripts may have changed. Interrupted work can only be explicitly resumed after inspecting possible side effects.`);
+				throw new Error(`Use the latest lineage job ${latest?.id ?? "unknown"}, not an ancestor with stale report/accounting.`);
+			}
+			const model = sameModelId(reuse.config.model, ctx.model) ? ctx.model : findSavedModel(reuse.config.model, ctx.modelRegistry);
+			if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) throw new Error(`Saved child model ${reuse.config.model} is unavailable. Follow-up never silently switches models.`);
+			childContextPolicy(model.contextWindow);
+			let bytes: number;
+			try { bytes = fs.statSync(previous.sessionFilePath).size; }
+			catch { throw new Error("Saved transcript is unavailable; start an explicit new child with a reviewed handoff."); }
+			const reset = followupReset(reuse, bytes, previous.context);
+			const plan: ChildSessionPlan = reset === "none"
+				? { kind: "reopen", transcript: previous.sessionFilePath, reset }
+				: { kind: "handoff", reset, handoff: buildFollowupHandoff(reuse.originalGoal, previous.output ?? "", previous.sessionFilePath) };
+			const nextReuse: Extract<ChildReuse, { kind: "transcript" }> = { ...reuse, config: { ...reuse.config, tools: [...reuse.config.tools] }, assignments: reset === "none" ? reuse.assignments + 1 : 1, generation: reuse.generation + (reset === "none" ? 0 : 1) };
+			return launchBackgroundSubagent({ type: reuse.config.type, customAgent: reuse.config.type === "custom" ? reuse.config.name : undefined, task: params.task, cwd: reuse.config.cwd, model: reuse.config.model, timeoutSeconds: params.timeoutSeconds }, ctx, mode, id, signal, undefined, { previous, reuse: nextReuse, plan });
 		},
 	});
 
 	managed.registerTool({
 		name: "subagent_wait",
 		label: "Wait for Subagents",
-		description: "Block until background subagent jobs finish (or the timeout hits) and return their results. Use ONLY when you cannot make progress without the result; otherwise end your turn and results are delivered automatically. Defaults to all running jobs; timeout defaults to 120s, max 240s.",
+		description: "Retrieve joined or detached child reports. waitFor=all (default) waits for every target; any returns after at least one terminal outcome. No IDs includes running and undelivered finished jobs. Timeout defaults to 120s, max 240s; timeout/abort stops waiting, never children. Detached results also deliver later; joined results do not.",
 		parameters: SubagentWaitParams,
 		defaultVisibility: "agent-visible" as const,
 		async execute(_toolCallId: string, params: SubagentWaitParamsType, signal: AbortSignal | undefined) {
+			if (params.waitFor !== undefined && params.waitFor !== "all" && params.waitFor !== "any") throw new Error("waitFor must be all or any.");
+			const registry = backgroundJobs;
 			const timeoutSeconds = clampWaitSeconds(params.timeoutSeconds);
-			const targets = resolveWaitTargets(backgroundJobs, params.jobIds);
-			if (targets.length === 0 && !(params.jobIds?.length)) {
-				return { content: [{ type: "text" as const, text: "No background subagent jobs to wait for." }], details: {} };
+			const targets = resolveWaitTargets(registry, params.jobIds);
+			if (targets.length === 0) {
+				return {
+					content: [{ type: "text" as const, text: params.jobIds?.length ? `Unknown job ids: ${params.jobIds.join(", ")}` : "No subagent jobs to wait for." }],
+					details: { finished: [], stillRunning: [], unknownIds: params.jobIds ?? [] },
+				};
 			}
 			await new Promise<void>((resolve) => {
-				const allDone = () => targets.every((job) => job.status !== "running");
-				if (allDone() || signal?.aborted) return resolve();
+				const done = () => params.waitFor === "any" ? targets.some((job) => job.status !== "running") : targets.every((job) => job.status !== "running");
+				if (done() || signal?.aborted) return resolve();
 				let unsubscribe: () => void = () => {};
 				const finish = () => {
 					clearTimeout(timer);
@@ -2476,19 +2583,20 @@ export default function (pi: ExtensionAPI) {
 					resolve();
 				};
 				const timer = setTimeout(finish, timeoutSeconds * 1000);
-				unsubscribe = backgroundJobs.onChange(() => {
-					if (allDone()) finish();
+				unsubscribe = registry.onChange(() => {
+					if (done()) finish();
 				});
 				signal?.addEventListener("abort", finish, { once: true });
 			});
-			const selection = selectWaitResults(backgroundJobs, targets, params.jobIds);
+			const selection = selectWaitResults(registry, targets, params.jobIds);
 			// Do not acknowledge before the tool result is recorded: a crash between
 			// returning and persistence must leave these outcomes recoverable.
 			// turn_end/settle/start confirmRecordedWaitResults() commits the receipt.
 			const parts: string[] = [];
 			if (selection.finished.length > 0) parts.push(formatDeliveryMessage(selection.finished, (text) => truncateForToolResult(text)));
 			if (selection.alreadyDelivered.length > 0) {
-				parts.push(`Already delivered earlier: ${selection.alreadyDelivered.map((job) => `${job.id} (${job.status})`).join(", ")}`);
+				parts.push(`Already acknowledged (explicit retrieval):
+${selection.alreadyDelivered.map(formatResult).join("\n\n")}`);
 			}
 			if (selection.cleared.length > 0) {
 				parts.push(`Cancelled by session reset (no results will be delivered): ${selection.cleared.map((job) => job.id).join(", ")}`);
@@ -2496,7 +2604,7 @@ export default function (pi: ExtensionAPI) {
 			if (selection.unknownIds.length > 0) parts.push(`Unknown job ids: ${selection.unknownIds.join(", ")}`);
 			if (selection.stillRunning.length > 0) {
 				parts.push(
-					`Still running: ${selection.stillRunning.map((job) => job.id).join(", ")}${signal?.aborted ? " (wait aborted)" : ""}. Their results will be delivered automatically; continue independent work or end your turn.`,
+					`Still running: ${selection.stillRunning.map((job) => `${job.id} (${job.mode})`).join(", ")}${signal?.aborted ? " (wait aborted)" : ""}. Children continue: joined launch receipts remain pending; detached results deliver later.`,
 				);
 			}
 			if (parts.length === 0) parts.push("No results.");
@@ -2505,6 +2613,8 @@ export default function (pi: ExtensionAPI) {
 				details: {
 					finished: selection.finished.map((job) => job.id),
 					stillRunning: selection.stillRunning.map((job) => job.id),
+					waitFor: params.waitFor ?? "all",
+					jobs: [...selection.finished, ...selection.alreadyDelivered].map((job) => jobResult(job).details),
 				},
 			};
 		},
@@ -2513,7 +2623,7 @@ export default function (pi: ExtensionAPI) {
 	managed.registerTool({
 		name: "subagent_status",
 		label: "Subagent Status",
-		description: "Snapshot of background subagent jobs (id, type:name, status, elapsed, turns, tools, preview). Do not poll: results are delivered automatically when jobs finish. Call only when the user asks for progress.",
+		description: "Snapshot of durable joined/detached children, context usage (unknown when unavailable), transcripts and reuse metadata. Do not poll; call only for requested progress or explicit recovery discovery. Joined outcomes are retrieved by their launch receipt or subagent_wait, never automatically redelivered.",
 		parameters: SubagentStatusParams,
 		defaultVisibility: "agent-visible" as const,
 		async execute(_toolCallId: string, params: SubagentStatusParamsType) {
@@ -2521,7 +2631,7 @@ export default function (pi: ExtensionAPI) {
 			const jobs = params.jobId ? [backgroundJobs.get(params.jobId)].filter((job): job is BackgroundJob => Boolean(job)) : backgroundJobs.list();
 			if (jobs.length === 0) {
 				return {
-					content: [{ type: "text" as const, text: params.jobId ? `Background subagent job '${params.jobId}' not found.` : "No background subagent jobs." }],
+					content: [{ type: "text" as const, text: params.jobId ? `Subagent job '${params.jobId}' not found.` : "No subagent jobs." }],
 					details: {},
 				};
 			}
@@ -2530,12 +2640,14 @@ export default function (pi: ExtensionAPI) {
 				const turns = live?.turns ?? job.turns;
 				const tools = live?.toolCalls.length ?? job.toolCount;
 				const preview = job.status === "running" ? job.preview : oneLine(job.output ?? job.error ?? "").slice(0, 120);
-				const delivered = job.status !== "running" ? (job.delivered ? ", delivered" : ", pending delivery") : "";
-				return `- ${job.id} ${job.type}:${job.name} [${job.status}${delivered}] ${durationSeconds(job, now)}s, ${turns} turns, ${tools} tools${preview ? ` — ${preview}` : ""}`;
+				const delivered = job.status !== "running" ? (job.delivered ? ", acknowledged" : job.mode === "joined" ? ", pending receipt/retrieval" : ", pending delivery") : "";
+				const context = live?.context ?? job.context;
+				const persistence = job.persistenceError ? ", snapshot unconfirmed; retrieve with subagent_wait" : "";
+				return `- ${job.id} ${job.type}:${job.name} (${job.mode}) ctx ${context?.tokens ?? "unknown"}/${context?.window ?? "unknown"} [${job.status}${delivered}${persistence}] ${durationSeconds(job, now)}s, ${turns} turns, ${tools} tools${preview ? ` — ${preview}` : ""}`;
 			});
 			return {
-				content: [{ type: "text" as const, text: `Background subagent jobs (${jobs.length}):\n${rows.join("\n")}\n\nDo not poll; finished results are delivered automatically.` }],
-				details: { total: jobs.length },
+				content: [{ type: "text" as const, text: `Subagent jobs (${jobs.length}):\n${rows.join("\n")}\n\nDo not poll. Joined results return through their launching tool or explicit wait; only detached results deliver automatically.` }],
+				details: { total: jobs.length, jobs: jobs.map((job) => jobResult(job).details) },
 			};
 		},
 	});
@@ -2543,7 +2655,7 @@ export default function (pi: ExtensionAPI) {
 	managed.registerTool({
 		name: "subagent_cancel",
 		label: "Cancel Subagent",
-		description: "Cancel a running background subagent job. It is then delivered as cancelled with any partial output.",
+		description: "Cancel a running child. Joined cancellation awaits cleanup and returns its terminal report; detached cancellation requests delivery of the partial outcome later.",
 		parameters: SubagentCancelParams,
 		defaultVisibility: "agent-visible" as const,
 		async execute(_toolCallId: string, params: SubagentCancelParamsType) {
@@ -2551,6 +2663,10 @@ export default function (pi: ExtensionAPI) {
 			if (!job) return { content: [{ type: "text" as const, text: `Background subagent job '${params.jobId}' not found.` }], details: {} };
 			if (!backgroundJobs.cancel(params.jobId)) {
 				return { content: [{ type: "text" as const, text: `Background subagent job '${job.id}' is not running (status: ${job.status}).` }], details: {} };
+			}
+			if (job.mode === "joined") {
+				await childRuns.get(job);
+				return jobResult(job);
 			}
 			return {
 				content: [{ type: "text" as const, text: `Cancelling background subagent job '${job.id}' (${job.type}:${job.name}). It will be delivered as cancelled, unless it had already finished.` }],

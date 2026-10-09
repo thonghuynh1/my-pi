@@ -94,20 +94,23 @@ test("recovery handoff preserves task and checkpoint, and warns about uncertain 
   assert.match(prompt, /side effects/);
 });
 
-test("failed commits roll back completion, delivery and shutdown state", () => {
+test("failed persistence retains actual completion but rolls back delivery and shutdown writes", () => {
   let fail = false;
   const registry = new BackgroundJobRegistry(() => { if (fail) throw new Error("disk full"); });
   const job = launch(registry);
+  const running = launch(registry);
   registry.checkpoint(job.id, { output: "known checkpoint" });
   fail = true;
-  assert.throws(() => registry.complete(job.id, { status: "completed", output: "uncommitted", turns: 1, toolCount: 2, endedAt: 3 }), /disk full/);
-  assert.equal(job.status, "running");
-  assert.equal(job.output, "known checkpoint");
+  registry.complete(job.id, { status: "completed", output: "actual result", turns: 1, toolCount: 2, endedAt: 3 });
+  assert.equal(job.status, "completed");
+  assert.equal(job.output, "actual result");
+  assert.match(job.persistenceError ?? "", /disk full/);
   assert.throws(() => registry.markDelivered([job.id]), /disk full/);
   assert.equal(job.delivered, false);
   assert.throws(() => registry.interruptRunning(4), /disk full/);
-  assert.equal(job.status, "running", "memory must retain last committed state");
-  assert.equal(job.abort.signal.aborted, true, "shutdown still aborts live children on storage failure");
+  assert.equal(running.status, "running", "shutdown state remains uncommitted");
+  assert.equal(running.abort.signal.aborted, true, "shutdown still aborts live children on storage failure");
+  assert.equal(job.status, "completed", "a finished child cannot become running again");
 });
 
 test("Windows transient replacement locks retry without removing committed data", () => {

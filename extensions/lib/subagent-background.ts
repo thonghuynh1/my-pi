@@ -1,3 +1,8 @@
+import type { ChildContext, ChildReuse } from "./subagent-context.ts";
+import type { EvidencePacketV1, VerificationReportV1 } from "./evidence-packet.ts";
+import type { PacketEffectiveLimits } from "./packet-runtime-policy.ts";
+import type { PacketTermination } from "./reconciliation.ts";
+
 /**
  * Pure logic for background subagents: job registry, smart-join batching,
  * deterministic delivery formatting, the long-cache-TTL window policy, and the
@@ -15,10 +20,55 @@ export const SUBAGENT_WAIT_DEFAULT_SECONDS = 120;
 export const SUBAGENT_WAIT_MAX_SECONDS = 240;
 export const DELIVERY_TASK_PREVIEW_CHARS = 200;
 
+export type SubagentMode = "joined" | "detached";
+
+export function resolveSubagentMode(mode: unknown, background: unknown): SubagentMode {
+	if (mode !== undefined && mode !== "joined" && mode !== "detached") throw new Error("mode must be joined or detached.");
+	if (background !== undefined && typeof background !== "boolean") throw new Error("background must be boolean.");
+	const alias = background === undefined ? undefined : background ? "detached" : "joined";
+	if (mode && alias && mode !== alias) throw new Error("mode and background disagree. Use mode: joined for required results, detached for optional results.");
+	return mode ?? alias ?? "joined";
+}
+
+export interface SubagentReport {
+	type: "explore" | "shell" | "custom";
+	name: string;
+	task: string;
+	cwd: string;
+	tools: string[];
+	model?: string;
+	status: "completed" | "error" | "running" | "background";
+	output: string;
+	error?: string;
+	turns: number;
+	toolCalls: Array<{ name: string; args: unknown; isError?: boolean }>;
+	customAgentPath?: string;
+	customAgentSource?: "user" | "project";
+	usage?: { inputTokens: number; outputTokens: number; cacheTokens: number; totalTokens: number; costUsd: number; modelId?: string };
+	evidenceMode?: "packet" | "prose-fallback";
+	packetAccepted?: boolean;
+	packetDiagnostics?: string[];
+	packetId?: string;
+	groupId?: string;
+	shape?: EvidencePacketV1["shape"];
+	effectiveLimits?: PacketEffectiveLimits;
+	verification?: VerificationReportV1;
+	incomplete?: boolean;
+	termination?: PacketTermination;
+	transcript?: string;
+	context?: ChildContext;
+}
+
 export type BackgroundJobStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
 
 export interface BackgroundJob {
 	id: string;
+	mode: SubagentMode;
+	persistenceError?: string;
+	report?: SubagentReport;
+	reuse?: ChildReuse;
+	context?: ChildContext;
+	followedFrom?: string;
 	requestId?: string;
 	type: string;
 	name: string;
@@ -44,6 +94,10 @@ export interface BackgroundJob {
 }
 
 export interface LaunchJobInput {
+	sessionFilePath?: string;
+	mode?: SubagentMode;
+	reuse?: ChildReuse;
+	followedFrom?: string;
 	requestId?: string;
 	type: string;
 	name: string;
@@ -55,6 +109,10 @@ export interface LaunchJobInput {
 }
 
 export interface CompleteJobInput {
+	report?: SubagentReport;
+	usage?: BackgroundJob["usage"];
+	context?: ChildContext;
+	sessionFilePath?: string;
 	status: "completed" | "error";
 	output: string;
 	error?: string;
@@ -63,7 +121,7 @@ export interface CompleteJobInput {
 	endedAt: number;
 }
 
-export type StoredBackgroundJob = Omit<BackgroundJob, "abort">;
+export type StoredBackgroundJob = Omit<BackgroundJob, "abort" | "mode"> & { mode?: SubagentMode };
 export interface RegistrySnapshot { counter: number; jobs: StoredBackgroundJob[] }
 
 export type RegistryListener = (job: BackgroundJob) => void;
@@ -84,7 +142,8 @@ export class BackgroundJobRegistry {
 		this.jobs.clear();
 		this.counter = snapshot.counter;
 		for (const saved of snapshot.jobs) {
-			const job: BackgroundJob = { ...saved, abort: new AbortController() };
+			if (saved.mode !== undefined && saved.mode !== "joined" && saved.mode !== "detached") throw new Error(`Invalid saved mode for ${saved.id}.`);
+			const job: BackgroundJob = { ...saved, mode: saved.mode ?? "detached", abort: new AbortController() };
 			if (job.status === "running") {
 				job.status = job.cancelRequested ? "cancelled" : "interrupted";
 				job.endedAt = now;
@@ -124,7 +183,11 @@ export class BackgroundJobRegistry {
 		for (const job of interrupted) this.emit(job);
 	}
 
-	private save(): void { this.persist?.(this.snapshot()); }
+	private save(): void {
+		if (!this.persist) return;
+		this.persist(this.snapshot());
+		for (const job of this.jobs.values()) delete job.persistenceError;
+	}
 
 	private mutate(job: BackgroundJob, apply: () => void): void {
 		const previous = { ...job };
@@ -145,6 +208,10 @@ export class BackgroundJobRegistry {
 	launch(input: LaunchJobInput): BackgroundJob {
 		const job: BackgroundJob = {
 			id: this.nextId(),
+			mode: input.mode ?? "detached",
+			reuse: input.reuse,
+			followedFrom: input.followedFrom,
+			sessionFilePath: input.sessionFilePath,
 			requestId: input.requestId,
 			type: input.type,
 			name: input.name,
@@ -185,15 +252,23 @@ export class BackgroundJobRegistry {
 	complete(id: string, input: CompleteJobInput): BackgroundJob | undefined {
 		const job = this.jobs.get(id);
 		if (!job || job.status !== "running") return job;
-		// A cancel that lands after the child already succeeded keeps the real result.
-		this.mutate(job, () => {
+		const settle = () => {
 			job.status = input.status === "completed" ? "completed" : job.cancelRequested ? "cancelled" : "failed";
 			job.output = input.output;
 			job.error = input.error;
 			job.turns = input.turns;
 			job.toolCount = input.toolCount;
 			job.endedAt = input.endedAt;
-		});
+			if (input.report !== undefined) job.report = input.report;
+			if (input.usage !== undefined) job.usage = input.usage;
+			if (input.context !== undefined) job.context = input.context;
+			if (input.sessionFilePath !== undefined) job.sessionFilePath = input.sessionFilePath;
+		};
+		try { this.mutate(job, settle); }
+		catch (error) {
+			settle();
+			job.persistenceError = (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
+		}
 		this.emit(job);
 		return job;
 	}
@@ -275,7 +350,7 @@ export function selectDeliverable(jobs: readonly BackgroundJob[], now: number, g
 	const ready: BackgroundJob[] = [];
 	let nextCheckAt: number | undefined;
 	for (const job of jobs) {
-		if (job.status === "running" || job.delivered) continue;
+		if (job.status === "running" || job.delivered || job.mode === "joined" || job.persistenceError) continue;
 		const batch = jobs.filter((other) => other.batchId === job.batchId);
 		const hasRunningSibling = batch.some((other) => other.status === "running");
 		if (!hasRunningSibling) {
@@ -312,7 +387,10 @@ export function formatJobResult(job: BackgroundJob, truncate: (text: string) => 
 		`Duration: ${durationSeconds(job)}s`,
 	];
 	if (job.error) lines.push(`Error: ${job.error}`);
+	if (job.persistenceError) lines.push(`Completion persistence failed: ${job.persistenceError}. Report returned from memory; inspect recorded tool results and the transcript before explicit recovery. Do not automatically rerun.`);
 	if (job.sessionFilePath) lines.push(`Transcript: ${job.sessionFilePath}`);
+	if (job.followedFrom) lines.push(`Follow-up from: ${job.followedFrom}`);
+	if (job.context) lines.push(`Context: ${job.context.tokens ?? "unknown"}/${job.context.window ?? "unknown"} tokens; budget ${job.context.budget}; reset ${job.context.reset}${job.context.compactionError ? `; ${job.context.compactionError}` : ""}`);
 	if (job.resumedFrom) lines.push(`Recovered from: ${job.resumedFrom}`);
 	lines.push("", truncate(job.output || "(no output)"));
 	return lines.join("\n");

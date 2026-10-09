@@ -20,11 +20,6 @@
         "usage-footer": "enabled"
       }
     },
-    "herdr-agent-report": {
-      "commands": {
-        "herdr-agent": "enabled"
-      }
-    },
     "tool-panel": {
       "commands": {
         "tool-panel": "enabled",

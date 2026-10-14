@@ -8,7 +8,7 @@ import {
 	loadCapabilityVisibilitySettings,
 	type CapabilityVisibilitySettings,
 } from "./lib/capability-visibility.ts";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels, StringEnum, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
@@ -107,6 +107,9 @@ const defaultSdk: SubagentSdk = { createServices: createAgentSessionServices, cr
 type SubagentType = "explore" | "shell" | "custom";
 type AgentSource = "user" | "project";
 type ActiveModel = NonNullable<ExtensionContext["model"]>;
+
+const THINKING_LEVEL_NAMES = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ModelThinkingLevel[];
+type ThinkingLevelName = (typeof THINKING_LEVEL_NAMES)[number];
 
 interface CustomAgent {
 	name: string;
@@ -354,7 +357,7 @@ const SubagentParams = Type.Object({
 	cwd: Type.Optional(Type.String({ description: "Working directory for the subagent. Defaults to the current cwd." })),
 	model: Type.Optional(
 		Type.String({
-			description: "Optional model override. Use provider/model or a model id in the active provider.",
+			description: "Optional model override. Use provider/model or a model id in the active provider, optionally followed by :level (for example provider/model:high).",
 		}),
 	),
 	timeoutSeconds: Type.Optional(
@@ -456,6 +459,25 @@ function parseModelPreference(value: unknown): ModelPreference | undefined {
 }
 
 const INHERIT_MODEL_CHOICE = "inherit";
+
+export function splitModelThinking(value: string): { model: string; thinkingLevel?: ThinkingLevelName } {
+	if (value === INHERIT_MODEL_CHOICE) return { model: value };
+	const separator = value.lastIndexOf(":");
+	if (separator < 0) return { model: value };
+	const model = value.slice(0, separator);
+	const suffix = value.slice(separator + 1);
+	return THINKING_LEVEL_NAMES.includes(suffix as ThinkingLevelName)
+		? { model, thinkingLevel: suffix as ThinkingLevelName }
+		: { model: value };
+}
+
+export function resolveSubagentThinkingLevel(
+	level: ThinkingLevelName | undefined,
+	model: ActiveModel,
+	parentLevel: ModelThinkingLevel,
+): ModelThinkingLevel {
+	return level && getSupportedThinkingLevels(model).includes(level) ? level : parentLevel;
+}
 
 function getCustomAgentModelsPath(dir: string): string {
 	return path.join(dir, "models.json");
@@ -865,12 +887,70 @@ class SubagentModelPicker extends Container {
 	}
 }
 
+class SubagentModelChoicePicker extends Container {
+	private picker: SubagentModelPicker;
+
+	constructor(
+		theme: Theme,
+		title: string,
+		modelItems: SelectItem[],
+		modelsById: ReadonlyMap<string, ActiveModel>,
+		currentValue: string,
+		done: (value?: string) => void,
+	) {
+		super();
+		const current = splitModelThinking(currentValue);
+		this.picker = new SubagentModelPicker(
+			theme,
+			title,
+			modelItems,
+			(value) => {
+				if (value === INHERIT_MODEL_CHOICE) {
+					done(value);
+					return;
+				}
+				const model = modelsById.get(value);
+				if (!model?.reasoning) {
+					done(value);
+					return;
+				}
+				const levels = getSupportedThinkingLevels(model);
+				const thinkingItems: SelectItem[] = [
+					{ value: INHERIT_MODEL_CHOICE, label: INHERIT_MODEL_CHOICE, description: "Use the parent's thinking level." },
+					...levels.map((level) => ({ value: level, label: level })),
+				];
+				const savedLevel = current.model === value && current.thinkingLevel && levels.includes(current.thinkingLevel)
+					? current.thinkingLevel
+					: INHERIT_MODEL_CHOICE;
+				this.clear();
+				this.picker = new SubagentModelPicker(
+					theme,
+					`${title} thinking level`,
+					thinkingItems,
+					(level) => done(level === INHERIT_MODEL_CHOICE ? value : `${value}:${level}`),
+					() => done(),
+					savedLevel,
+				);
+				this.addChild(this.picker);
+			},
+			() => done(),
+			current.model,
+		);
+		this.addChild(this.picker);
+	}
+
+	handleInput(data: string): void {
+		this.picker.handleInput(data);
+	}
+}
+
 class SubagentModelsEditor extends Container {
 	private readonly settingsList: SettingsList;
 
 	constructor(
 		private readonly agents: EditableCustomAgent[],
 		modelItems: SelectItem[],
+		modelsById: ReadonlyMap<string, ActiveModel>,
 		private readonly onSaveValue: (agents: EditableCustomAgent[], typeDefault: EditableSubagentTypeDefault | undefined) => void,
 		private readonly matchesSave: (data: string) => boolean,
 		onCancelValue: () => void,
@@ -887,13 +967,13 @@ class SubagentModelsEditor extends Container {
 				label: typeDefault.label,
 				description: typeDefault.description,
 				currentValue: typeDefault.currentValue,
-				submenu: (currentValue, done) => new SubagentModelPicker(
+				submenu: (currentValue, done) => new SubagentModelChoicePicker(
 					theme,
 					"Generic subagent default model",
 					modelItems,
-					(value) => done(value),
-					() => done(),
+					modelsById,
 					currentValue,
+					done,
 				),
 			}
 			: undefined;
@@ -902,13 +982,13 @@ class SubagentModelsEditor extends Container {
 			label: `${agent.name} [${agent.source}]`,
 			description: agent.description || agent.filePath,
 			currentValue: agent.currentValue,
-			submenu: (currentValue, done) => new SubagentModelPicker(
+			submenu: (currentValue, done) => new SubagentModelChoicePicker(
 				theme,
 				`${agent.name} model`,
 				modelItems,
-				(value) => done(value),
-				() => done(),
+				modelsById,
 				currentValue,
+				done,
 			),
 		}));
 		const saveItem: SettingItem = {
@@ -1019,9 +1099,10 @@ function parseModelOverride(modelOverride: string | undefined, inheritedProvider
 } {
 	const value = modelOverride?.trim();
 	if (!value) return {};
-	const slash = value.indexOf("/");
-	if (slash > 0) return { provider: value.slice(0, slash), modelId: value.slice(slash + 1) };
-	return { provider: inheritedProvider, modelId: value };
+	const modelIdValue = splitModelThinking(value).model;
+	const slash = modelIdValue.indexOf("/");
+	if (slash > 0) return { provider: modelIdValue.slice(0, slash), modelId: modelIdValue.slice(slash + 1) };
+	return { provider: inheritedProvider, modelId: modelIdValue };
 }
 
 function sameModel(left: ActiveModel | undefined, right: ActiveModel | undefined): boolean {
@@ -1035,11 +1116,12 @@ function sameTranscript(left: string | undefined, right: string | undefined): bo
 }
 
 function sameModelId(id: string, model: ExtensionContext["model"]): boolean {
-	return Boolean(model && id === `${model.provider}/${model.id}`);
+	return Boolean(model && splitModelThinking(id).model === `${model.provider}/${model.id}`);
 }
 function findSavedModel(id: string, registry: ExtensionContext["modelRegistry"]): ActiveModel | undefined {
-	const slash = id.indexOf("/");
-	return slash > 0 ? registry.find(id.slice(0, slash), id.slice(slash + 1)) : undefined;
+	const modelId = splitModelThinking(id).model;
+	const slash = modelId.indexOf("/");
+	return slash > 0 ? registry.find(modelId.slice(0, slash), modelId.slice(slash + 1)) : undefined;
 }
 
 export function selectSubagentModel(
@@ -1051,11 +1133,12 @@ export function selectSubagentModel(
 	if (!trimmedRequestedModel) {
 		return { model: inheritedModel ?? undefined, usedFallback: false };
 	}
+	const modelIdValue = splitModelThinking(trimmedRequestedModel).model;
 
 	const currentProviderOverrideModel = inheritedModel?.provider
-		? modelRegistry.find(inheritedModel.provider, trimmedRequestedModel)
+		? modelRegistry.find(inheritedModel.provider, modelIdValue)
 		: undefined;
-	const { provider, modelId } = parseModelOverride(trimmedRequestedModel, inheritedModel?.provider);
+	const { provider, modelId } = parseModelOverride(modelIdValue, inheritedModel?.provider);
 	const overrideModel = currentProviderOverrideModel ?? (provider && modelId ? modelRegistry.find(provider, modelId) : undefined);
 	const overrideModelIsReady = Boolean(overrideModel && modelRegistry.hasConfiguredAuth(overrideModel));
 	if (overrideModel && overrideModelIsReady) {
@@ -1298,8 +1381,8 @@ async function runSubagent(
 	const packet = packetSelection.mode === "packet" ? packetSelection.packet : undefined;
 	const inheritedModel = ctx.model;
 	const modelSelection = control
-		? { model: sameModelId(control.config.model, inheritedModel) ? inheritedModel : findSavedModel(control.config.model, ctx.modelRegistry), usedFallback: false, requestedModel: config.model }
-		: selectSubagentModel(config.model, inheritedModel, ctx.modelRegistry);
+		? { model: sameModelId(splitModelThinking(control.config.model).model, inheritedModel) ? inheritedModel : findSavedModel(splitModelThinking(control.config.model).model, ctx.modelRegistry), usedFallback: false, requestedModel: config.model }
+		: selectSubagentModel(splitModelThinking(config.model ?? "").model, inheritedModel, ctx.modelRegistry);
 	const selectedModel = modelSelection.model;
 	if (!selectedModel) {
 		throw new Error(
@@ -1441,6 +1524,7 @@ async function runSubagent(
 				return { content: [{ type: "text" as const, text: "Verification report accepted." }], details: { valid: true } };
 			},
 		} satisfies ToolDefinition<any, unknown> : undefined;
+		const configuredThinkingLevel = splitModelThinking(config.model ?? "").thinkingLevel;
 		const createChildSession = (model: ActiveModel) =>
 			sdk.createSession({
 				services,
@@ -1450,7 +1534,7 @@ async function runSubagent(
 					? (runtimeState && reportToolsOnly(runtimeState) ? ["report_verification"] : [...config.tools, "report_verification"])
 					: config.tools,
 				customTools: reportTool ? [reportTool] : undefined,
-				thinkingLevel: control?.config.thinkingLevel ?? pi.getThinkingLevel(),
+				thinkingLevel: resolveSubagentThinkingLevel(control?.config.thinkingLevel ?? configuredThinkingLevel, model, pi.getThinkingLevel()),
 			});
 		let created: Awaited<ReturnType<typeof createAgentSessionFromServices>>;
 		try {
@@ -2023,9 +2107,10 @@ export default function (pi: ExtensionAPI, sdk: SubagentSdk = defaultSdk) {
 		if (!followup) {
 			const cwd = path.resolve(ctx.cwd, normalizePathArgument(params.cwd ?? "."));
 			const config = resolveRunConfig(params, cwd);
-			const selected = ctx.model ? selectSubagentModel(config.model, ctx.model, ctx.modelRegistry).model : undefined;
+			const modelPreference = splitModelThinking(config.model ?? "");
+			const selected = ctx.model ? selectSubagentModel(modelPreference.model, ctx.model, ctx.modelRegistry).model : undefined;
 			if (selected) reuse = {
-				kind: "transcript", config: { ...config, cwd, model: `${selected.provider}/${selected.id}`, thinkingLevel: pi.getThinkingLevel() },
+				kind: "transcript", config: { ...config, cwd, model: `${selected.provider}/${selected.id}`, thinkingLevel: resolveSubagentThinkingLevel(modelPreference.thinkingLevel, selected, pi.getThinkingLevel()) },
 				lineageId: randomUUID(), originalGoal: params.task, assignments: 1, generation: 1,
 			};
 		}
@@ -2540,7 +2625,8 @@ Optional results will be delivered later. Continue independent work; do not poll
 				if (latest && latest.status !== "completed") throw new Error(`The latest lineage job ${latest.id} is ${latest.status}. Start a new child with a reviewed handoff; older transcripts may have changed. Interrupted work can only be explicitly resumed after inspecting possible side effects.`);
 				throw new Error(`Use the latest lineage job ${latest?.id ?? "unknown"}, not an ancestor with stale report/accounting.`);
 			}
-			const model = sameModelId(reuse.config.model, ctx.model) ? ctx.model : findSavedModel(reuse.config.model, ctx.modelRegistry);
+			const reuseModelId = splitModelThinking(reuse.config.model).model;
+			const model = sameModelId(reuseModelId, ctx.model) ? ctx.model : findSavedModel(reuseModelId, ctx.modelRegistry);
 			if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) throw new Error(`Saved child model ${reuse.config.model} is unavailable. Follow-up never silently switches models.`);
 			childContextPolicy(model.contextWindow);
 			let bytes: number;
@@ -2743,12 +2829,14 @@ ${selection.alreadyDelivered.map(formatResult).join("\n\n")}`);
 				ctx.ui.notify("No configured models are available. You can still save inherit.", "warning");
 			}
 			const modelItems = buildModelSelectItems(availableModels, ctx);
+			const modelsById = new Map(availableModels.map((model) => [`${model.provider}/${model.id}`, model]));
 
 			type EditorResult = { agents: EditableCustomAgent[]; typeDefault: EditableSubagentTypeDefault | undefined } | undefined;
 			const result = await ctx.ui.custom<EditorResult>(
 				(_tui, theme, keybindings, done) => new SubagentModelsEditor(
 					editableAgents.map((agent) => ({ ...agent })),
 					modelItems,
+					modelsById,
 					(agents, savedTypeDefault) => done({
 						agents: agents.map((agent) => ({ ...agent })),
 						typeDefault: savedTypeDefault ? { ...savedTypeDefault } : undefined,

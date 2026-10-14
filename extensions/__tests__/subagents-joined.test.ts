@@ -28,7 +28,7 @@ function text(result: Awaited<ReturnType<ToolDefinition["execute"]>>): string {
 	return result.content.filter((part) => part.type === "text").map((part) => part.text).join("~");
 }
 
-async function fixture(options: { creationGate?: ReturnType<typeof deferred>; cleanupGate?: ReturnType<typeof deferred>; window?: number; afterDispose?: () => void; workflow?: boolean } = {}) {
+async function fixture(options: { creationGate?: ReturnType<typeof deferred>; cleanupGate?: ReturnType<typeof deferred>; window?: number; afterDispose?: () => void; workflow?: boolean; reasoning?: boolean } = {}) {
 	const base = mkdtempSync(join(tmpdir(), "pi-subagent-sdk-"));
 	const prior = process.env.PI_DURABLE_JOBS_DIR;
 	process.env.PI_DURABLE_JOBS_DIR = base;
@@ -47,7 +47,7 @@ async function fixture(options: { creationGate?: ReturnType<typeof deferred>; cl
 	const runtime = await ModelRuntime.create({ authPath: join(base, "auth.json"), modelsPath: null, refreshOnCreate: false });
 	runtime.registerProvider("subagent-test", {
 		api: "openai-completions", apiKey: "local-test-only", baseUrl: `http://127.0.0.1:${address.port}/v1`,
-		models: [{ id: "scripted", name: "Scripted", reasoning: false, input: ["text"],
+		models: [{ id: "scripted", name: "Scripted", reasoning: options.reasoning ?? false, thinkingLevelMap: options.reasoning ? { xhigh: null, max: null } : undefined, input: ["text"],
 			cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 }, contextWindow: options.window ?? 100_000, maxTokens: 1024,
 			compat: { supportsStore: false, supportsDeveloperRole: false, supportsReasoningEffort: false, supportsUsageInStreaming: true },
 		}],
@@ -62,6 +62,7 @@ async function fixture(options: { creationGate?: ReturnType<typeof deferred>; cl
 	let cleanupStarted = 0;
 	const creationStarted = deferred();
 	const childSettings: Array<ReturnType<typeof childContextPolicy>["compaction"]> = [];
+	const childThinkingLevels: string[] = [];
 	const parents: Array<Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"]> = [];
 	const sdk: SubagentSdk = {
 		async createServices(input) {
@@ -70,6 +71,7 @@ async function fixture(options: { creationGate?: ReturnType<typeof deferred>; cl
 			return services;
 		},
 		async createSession(input) {
+			childThinkingLevels.push(input.thinkingLevel);
 			creationStarted.resolve();
 			await options.creationGate?.promise;
 			const result = await createAgentSessionFromServices(input);
@@ -149,7 +151,7 @@ async function fixture(options: { creationGate?: ReturnType<typeof deferred>; cl
 		requests[index].response.end(JSON.stringify({ error: { message: "Scripted provider failure", type: "invalid_request_error" } }));
 	}
 	function index(task: string) { return requests.findIndex((request) => JSON.stringify(request.body).includes(`Task: ${task}`) || JSON.stringify(request.body).includes(`Parent task: ${task}`)); }
-	return { base, tools, call, emit, startFreshExtension, requests, requestCount, reply, fail, index, close, createParent, store, deliveries, childSettings, sessionManager, creationStarted: creationStarted.promise,
+	return { base, tools, call, emit, startFreshExtension, requests, requestCount, reply, fail, index, close, createParent, store, deliveries, childSettings, sessionManager, childThinkingLevels, creationStarted: creationStarted.promise,
 		get created() { return created; }, get disposed() { return disposed; }, get cleanupStarted() { return cleanupStarted; },
 	};
 }
@@ -174,6 +176,20 @@ test("fresh agent guidance includes the capability guide in tool metadata and st
 		assert.equal(f.created, 0, "instructions do not launch work");
 		if (startup === 0) { await f.emit("session_shutdown"); await f.startFreshExtension(); }
 	}
+});
+
+test("model thinking suffix reaches child sessions and an omitted suffix inherits the parent level", { timeout: 15_000 }, async (t) => {
+	const f = await fixture({ reasoning: true });
+	t.after(() => f.close());
+	const explicit = f.call("subagent", "thinking-high", { type: "explore", task: "thinking high", model: "subagent-test/scripted:high" });
+	const inherited = f.call("subagent", "thinking-parent", { type: "explore", task: "thinking parent", model: "subagent-test/scripted" });
+	const unsupported = f.call("subagent", "thinking-unsupported", { type: "explore", task: "thinking unsupported", model: "subagent-test/scripted:xhigh" });
+	await f.requestCount(3);
+	assert.deepEqual(f.childThinkingLevels, ["high", "off", "off"]);
+	f.reply(f.index("thinking high"), "high complete");
+	f.reply(f.index("thinking parent"), "parent complete");
+	f.reply(f.index("thinking unsupported"), "unsupported fell back");
+	await Promise.all([explicit, inherited, unsupported]);
 });
 
 test("workflow-off guidance removes coaching but keeps the joined tool contract", async (t) => {

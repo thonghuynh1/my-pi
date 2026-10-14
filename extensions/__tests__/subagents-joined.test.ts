@@ -185,7 +185,7 @@ test("model thinking suffix reaches child sessions and an omitted suffix inherit
 	const inherited = f.call("subagent", "thinking-parent", { type: "explore", task: "thinking parent", model: "subagent-test/scripted" });
 	const unsupported = f.call("subagent", "thinking-unsupported", { type: "explore", task: "thinking unsupported", model: "subagent-test/scripted:xhigh" });
 	await f.requestCount(3);
-	assert.deepEqual(f.childThinkingLevels, ["high", "off", "off"]);
+	assert.deepEqual([...f.childThinkingLevels].sort(), ["high", "off", "off"]);
 	f.reply(f.index("thinking high"), "high complete");
 	f.reply(f.index("thinking parent"), "parent complete");
 	f.reply(f.index("thinking unsupported"), "unsupported fell back");

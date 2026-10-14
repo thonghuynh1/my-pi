@@ -326,6 +326,7 @@ interface RunningSubagentStatus {
 	cwd: string;
 	tools: string[];
 	model?: string;
+	thinkingLevel?: string;
 	startedAt: number;
 	turns: number;
 	toolCalls: Array<{ name: string; args: unknown; isError?: boolean }>;
@@ -1313,7 +1314,7 @@ function renderSubagentBox(status: RunningSubagentStatus, theme: Theme, frame: s
 	const line2 = theme.fg("warning", `ctx ${ctxTok}/${ctxWin} ${ctxPct}`);
 	// Show model name (strip provider prefix if present)
 	const modelDisplay = status.model ? (status.model.includes("/") ? status.model.split("/")[1] : status.model) : "?";
-	const line3 = theme.fg("muted", modelDisplay);
+	const line3 = theme.fg("muted", status.thinkingLevel ? `${modelDisplay} (${status.thinkingLevel})` : modelDisplay);
 	const line4 = theme.fg("success", formatMoney(status.cost));
 	const current = status.currentTool
 		? `→ ${status.currentTool}`
@@ -1525,8 +1526,10 @@ async function runSubagent(
 			},
 		} satisfies ToolDefinition<any, unknown> : undefined;
 		const configuredThinkingLevel = splitModelThinking(config.model ?? "").thinkingLevel;
-		const createChildSession = (model: ActiveModel) =>
-			sdk.createSession({
+		const createChildSession = (model: ActiveModel) => {
+			const thinkingLevel = resolveSubagentThinkingLevel(control?.config.thinkingLevel ?? configuredThinkingLevel, model, pi.getThinkingLevel());
+			liveStatus.thinkingLevel = thinkingLevel;
+			return sdk.createSession({
 				services,
 				sessionManager: control?.plan.kind === "reopen" ? SessionManager.open(control.plan.transcript) : durableDirectory ? SessionManager.create(cwd, durableDirectory) : SessionManager.inMemory(cwd),
 				model,
@@ -1534,8 +1537,9 @@ async function runSubagent(
 					? (runtimeState && reportToolsOnly(runtimeState) ? ["report_verification"] : [...config.tools, "report_verification"])
 					: config.tools,
 				customTools: reportTool ? [reportTool] : undefined,
-				thinkingLevel: resolveSubagentThinkingLevel(control?.config.thinkingLevel ?? configuredThinkingLevel, model, pi.getThinkingLevel()),
+				thinkingLevel,
 			});
+		};
 		let created: Awaited<ReturnType<typeof createAgentSessionFromServices>>;
 		try {
 			if (termination !== "completed") throw new Error(`Subagent ${termination} before session creation.`);

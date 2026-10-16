@@ -1,8 +1,10 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text, matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { ProviderUsageMonitor } from "./lib/provider-usage/monitor.ts";
+import { detailText, footerRows } from "./lib/provider-usage/model.ts";
 import {
   createManagedExtension,
   loadCapabilityVisibilitySettings,
-  type CapabilityVisibilitySettings,
 } from "./lib/capability-visibility.ts";
 
 type AssistantUsage = {
@@ -49,23 +51,22 @@ function formatMoney(value: number): string {
   return `$${value.toFixed(4)}`;
 }
 
-function truncateToWidth(text: string, width: number): string {
-  if (width <= 0) return "";
-  if (text.length <= width) return text;
-  if (width <= 1) return "…";
-  return `${text.slice(0, width - 1)}…`;
+function padRight(left: string, right: string, width: number): string {
+  const available = width - visibleWidth(right) - (left ? 1 : 0);
+  if (available < 0) return truncateToWidth(right, width);
+  const rendered = truncateToWidth(left, available);
+  return rendered + " ".repeat(Math.max(0, width - visibleWidth(rendered) - visibleWidth(right))) + right;
 }
 
-function padRight(left: string, right: string, width: number): string {
-  if (!right) return truncateToWidth(left, width);
-
-  const minimumGap = 1;
-  const availableLeft = width - right.length - minimumGap;
-  if (availableLeft <= 0) return truncateToWidth(right, width);
-
-  const renderedLeft = truncateToWidth(left, availableLeft);
-  const padding = " ".repeat(Math.max(minimumGap, width - renderedLeft.length - right.length));
-  return `${renderedLeft}${padding}${right}`;
+export function layoutUsageLines(left: string[], model: string, providers: string[], width: number): string[] {
+  if (width <= 0) return [];
+  const right = [model, ...providers];
+  const widestLeft = Math.max(0, ...left.map(visibleWidth));
+  const widestRight = Math.max(0, ...right.map(visibleWidth));
+  if (widestLeft + widestRight + 2 > width) {
+    return [padRight("", model, width), ...left.map((line) => truncateToWidth(line, width)), ...providers.map((line) => truncateToWidth(line, width))];
+  }
+  return Array.from({ length: Math.max(left.length, right.length) }, (_, index) => padRight(left[index] ?? "", right[index] ?? "", width));
 }
 
 function getSubagentTotals(): {
@@ -169,91 +170,115 @@ function getModelLine(pi: ExtensionAPI, ctx: ExtensionContext): string {
   return `model ${model.provider}/${model.id} (${thinkingLevel})`;
 }
 
-function getSubagentLine(): string {
-  const s = (globalThis as { __subagent?: { enabled?: boolean; active?: number; label?: string } })
-    .__subagent;
-  if (!s) return "";
-  const label = s.label
-    ? String(s.label)
-    : s.enabled
-      ? s.active && s.active > 0
-        ? `on · ${s.active} running`
-        : "on"
-      : "off";
-  return `subagent ${label}`;
+export function installUsageFooter(pi: ExtensionAPI, ctx: ExtensionContext, monitor: ProviderUsageMonitor): void {
+  if (!isTui(ctx)) return;
+  ctx.ui.setFooter((tui, theme) => {
+    const unsubscribe = monitor.subscribe(() => tui.requestRender());
+    return {
+      dispose: unsubscribe,
+      invalidate() {},
+      render(width: number): string[] {
+        const totals = getTokenTotals(ctx);
+        const cost = totals.subCost > 0
+          ? `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)} (${formatMoney(totals.parentCost)} + ${formatMoney(totals.subCost)} sub)`
+          : `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)}`;
+        const left = [getContextLine(ctx),
+          `in ${compactNumber(totals.input)} · out ${compactNumber(totals.output)} · cache ${compactNumber(totals.cache)}`, cost];
+        return layoutUsageLines(left.map((line) => theme.fg("warning", line)),
+          theme.fg("accent", getModelLine(pi, ctx)),
+          footerRows(monitor.snapshot()).map((line) => theme.fg("accent", line)), width);
+      },
+    };
+  });
 }
 
-function installUsageFooter(pi: ExtensionAPI, ctx: ExtensionContext): void {
-  if (!ctx.hasUI) return;
+function isTui(ctx: ExtensionContext): boolean { return ctx.mode === "tui" && ctx.hasUI; }
 
-  ctx.ui.setFooter((_tui, theme) => ({
-    dispose() {},
-    invalidate() {},
-    render(width: number): string[] {
-      const model = getModelLine(pi, ctx);
-      const totals = getTokenTotals(ctx);
-      const subagent = getSubagentLine();
-
-      const line1 = padRight(getContextLine(ctx), model, width);
-      const line2 = truncateToWidth(
-        `in ${compactNumber(totals.input)} · out ${compactNumber(totals.output)} · cache ${compactNumber(totals.cache)}`,
-        width,
-      );
-      const line3Left = totals.subCost > 0
-        ? `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)} (${formatMoney(totals.parentCost)} + ${formatMoney(totals.subCost)} sub)`
-        : `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)}`;
-      const line3 = subagent
-        ? padRight(line3Left, subagent, width)
-        : truncateToWidth(line3Left, width);
-
-      const modelStart = Math.max(0, line1.length - model.length);
-      const leftPart = line1.slice(0, modelStart);
-      const rightPart = line1.slice(modelStart);
-
-      const subagentStart = subagent ? Math.max(0, line3.length - subagent.length) : line3.length;
-      const line3Left2 = line3.slice(0, subagentStart);
-      const line3Right = line3.slice(subagentStart);
-
-      return [
-        theme.fg("warning", leftPart) + theme.fg("accent", rightPart),
-        theme.fg("warning", line2),
-        theme.fg("warning", line3Left2) + theme.fg("accent", line3Right),
-      ];
+export function usageDetailPanel(monitor: ProviderUsageMonitor, requestRender: () => void, close: () => void, height: () => number): Component & { dispose(): void } {
+  const text = new Text("", 0, 0);
+  let offset = 0;
+  let disposed = false;
+  const unsubscribe = monitor.subscribe(() => { if (!disposed) requestRender(); });
+  return {
+    dispose() { disposed = true; unsubscribe(); },
+    invalidate() { text.invalidate(); },
+    handleInput(data: string) {
+      if (matchesKey(data, "escape") || matchesKey(data, "q")) { close(); return; }
+      if (matchesKey(data, "r")) { void monitor.refresh(); return; }
+      if (matchesKey(data, "up")) offset = Math.max(0, offset - 1);
+      else if (matchesKey(data, "down")) offset++;
+      else if (matchesKey(data, "pageUp")) offset = Math.max(0, offset - 10);
+      else if (matchesKey(data, "pageDown")) offset += 10;
+      requestRender();
     },
-  }));
+    render(width: number) {
+      text.setText(detailText(monitor.snapshot()));
+      const lines = text.render(Math.max(1, width));
+      const size = Math.max(1, height() - 4);
+      offset = Math.max(0, Math.min(offset, lines.length - size));
+      return lines.slice(offset, offset + size).map((line) => truncateToWidth(line, width));
+    },
+  };
 }
 
 export const piExtension = { id: "usage-footer" };
 
-export default function usageFooter(pi: ExtensionAPI) {
-  pi.on("session_start", async (_event, ctx) => installUsageFooter(pi, ctx));
-  pi.on("model_select", async (_event, ctx) => installUsageFooter(pi, ctx));
-  pi.on("thinking_level_select", async (_event, ctx) => installUsageFooter(pi, ctx));
-  pi.on("agent_start", async (_event, ctx) => installUsageFooter(pi, ctx));
-  pi.on("turn_end", async (_event, ctx) => installUsageFooter(pi, ctx));
-  pi.on("agent_end", async (_event, ctx) => installUsageFooter(pi, ctx));
+export default function usageFooter(pi: ExtensionAPI, monitor = new ProviderUsageMonitor()) {
+  let enabled = true;
+  let closeDetails: (() => void) | undefined;
+  const install = (ctx: ExtensionContext) => {
+    if (enabled && isTui(ctx)) installUsageFooter(pi, ctx, monitor);
+  };
+  pi.on("session_start", (_event, ctx) => {
+    closeDetails?.();
+    monitor.stop();
+    install(ctx);
+    if (enabled && isTui(ctx)) monitor.start();
+  });
+  pi.on("session_shutdown", () => { closeDetails?.(); monitor.stop(); });
+  pi.on("model_select", (_event, ctx) => install(ctx));
+  pi.on("thinking_level_select", (_event, ctx) => install(ctx));
+  pi.on("agent_start", (_event, ctx) => install(ctx));
+  pi.on("turn_end", (_event, ctx) => install(ctx));
+  pi.on("agent_end", (_event, ctx) => install(ctx));
 
-  let piSettings: CapabilityVisibilitySettings = {};
   const visibilityResult = loadCapabilityVisibilitySettings();
   for (const warning of visibilityResult.warnings) {
     console.warn(`[usage-footer] capability-visibility: ${warning.message}`);
   }
-  piSettings = visibilityResult.settings;
-  const managed = createManagedExtension(pi, { id: piExtension.id, visibility: piSettings });
+  const managed = createManagedExtension(pi, { id: piExtension.id, visibility: visibilityResult.settings });
 
   managed.registerCommand("usage-footer", {
     description: "Enable or disable the custom usage footer. Usage: /usage-footer [on|off]",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
+      if (!isTui(ctx)) return;
       const action = args.trim().toLowerCase();
       if (!action || action === "on") {
-        installUsageFooter(pi, ctx);
+        enabled = true;
+        install(ctx);
+        monitor.start();
         ctx.ui.notify("Usage footer installed", "info");
       } else if (action === "off") {
+        enabled = false;
         ctx.ui.setFooter(undefined);
+        monitor.stop();
         ctx.ui.notify("Default footer restored", "info");
       } else {
         ctx.ui.notify("Usage: /usage-footer [on|off]", "info");
       }
+    },
+  });
+  managed.registerCommand("provider-usage", {
+    description: "Provider account usage details (r refresh, Esc/q close)",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      if (!isTui(ctx)) return;
+      await ctx.ui.custom<void>((tui, _theme, _keys, done) => {
+        const close = () => { panel.dispose(); if (closeDetails === close) closeDetails = undefined; done(); };
+        const panel = usageDetailPanel(monitor, () => tui.requestRender(), close, () => tui.terminal.rows);
+        closeDetails = close;
+        void monitor.refresh();
+        return panel;
+      });
     },
   });
 }

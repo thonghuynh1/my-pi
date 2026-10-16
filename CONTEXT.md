@@ -80,7 +80,22 @@ The 50,000-token minimum enforced by human Accordion budget controls. `Accordion
 
 An optional, source-agnostic structured input that gives a Subagent known facts, code anchors, claims to verify, and bounded investigation guidance; callers that omit it retain the existing prose-task behavior.
 
+## Provider Account Usage
+
+Provider-reported account consumption or quota data, distinct from Pi-session token counts and estimated costs.
+
+## Provider Quota Window
+
+A provider-defined allowance period with its own usage measurement and optional reset timestamp, such as a five-hour or weekly window.
+
+## Copilot Credits Consumed
+
+GitHub-reported AI credits used by the signed-in Copilot account, not an inferred remaining balance or monetary cost.
+
 ## Relationships
+
+- **Provider Account Usage** may contain multiple independent **Provider Quota Windows**, including separate Antigravity model groups.
+- **Copilot Credits Consumed** is one kind of **Provider Account Usage**, independent of Pi-session totals.
 
 - An indexed discovery tool such as aiKnow may supply findings that the parent converts into a **Subagent Evidence Packet**.
 - A Subagent may receive zero or one **Subagent Evidence Packet**; the packet never makes aiKnow a prerequisite for delegation.

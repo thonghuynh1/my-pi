@@ -1,0 +1,65 @@
+ █▀ █ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+
+[Context]
+  ~\.pi\agent\APPEND_SYSTEM.md
+
+[Extensions]
+  usage-footer.ts
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Provider account usage
+r refresh · ↑/↓ scroll · Esc/q close
+
+Codex
+  available · last refresh: 10/16/2026, 8:58:59 AM
+  Last success: 10/16/2026, 8:59:01 AM
+  Codex
+    Five-hour window (5h): 69% used · resets: 10/16/2026, 10:14:40 AM
+    Weekly window (week): 16% used · resets: 10/22/2026, 3:36:35 PM
+
+Antigravity
+  available · last refresh: 10/16/2026, 8:58:59 AM
+  Last success: 10/16/2026, 8:59:13 AM
+  Gemini Models
+    Five-hour window (5h): 0% used · resets: 10/16/2026, 1:59:12 PM
+    Weekly window (week): 0% used · resets: 10/23/2026, 8:59:12 AM
+  Claude and GPT models
+    Five-hour window (5h): 0% used · resets: 10/16/2026, 1:59:12 PM
+    Weekly window (week): 48.3% used · resets: 10/21/2026, 10:04:23 PM
+
+GitHub Copilot (experimental internal API)
+  available · last refresh: 10/16/2026, 8:58:59 AM
+  Last success: 10/16/2026, 8:59:02 AM
+  54,792 credits consumed
+  Resets: 11/1/2026, 1:00:00 AM
+
+ctx 0/1.1m 0.0%                                                                  model github-copilot/gpt-6.1-sol (high)
+in 0 · out 0 · cache 0                                                                      Codex 5h 69% · week 16% used
+total 0 · $0.0000                                                                         AG Gemini 5h 0% · week 0% used
+                                                                                   AG Claude/GPT 5h 0% · week 48.3% used
+                                                                                             Copilot 54,792 credits used

@@ -1,0 +1,126 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { parseCodex, parseAntigravity, parseCopilot, footerRows, detailText, type ProviderState } from "../lib/provider-usage/model.ts";
+
+process.env.TZ = "UTC";
+
+const codex = {
+  rateLimits: {
+    primary: { usedPercent: 69, windowDurationMins: 300, resetsAt: 1792138480 },
+    secondary: { usedPercent: 16, windowDurationMins: 10080, resetsAt: 1792676195 },
+    credits: { balance: "private" }, accountId: "private",
+  },
+};
+const ag = {
+  status: "SUCCESS", command: { name: "usage", data: { groups: [
+    { name: "Gemini Models", buckets: [
+      { id: "gemini-weekly", window: "weekly", remaining_fraction: 1, reset_time: "2026-10-23T06:34:38Z" },
+      { id: "gemini-5h", window: "5h", remaining_fraction: 1, reset_time: "2026-10-16T11:34:38Z" },
+    ] },
+    { name: "Claude and GPT models", buckets: [
+      { id: "3p-weekly", window: "weekly", remaining_fraction: 0.5174307823181152, reset_time: "2026-10-21T20:04:23Z" },
+      { id: "3p-5h", window: "5h", remaining_fraction: 1, reset_time: "2026-10-16T11:34:38Z" },
+    ] },
+  ] } }, usage: { input_tokens: 0 }, response: "do not parse rounded text",
+};
+
+test("Codex literal fixture preserves window identity and epoch seconds, not account/credit inventory", () => {
+  assert.deepEqual(parseCodex(codex), { kind: "quota", groups: [{ id: "codex", name: "Codex", shortName: "Codex", windows: [
+    { id: "5h", label: "5h", usedPercent: 69, resetsAt: 1792138480000 },
+    { id: "week", label: "week", usedPercent: 16, resetsAt: 1792676195000 },
+  ] }] });
+  assert(!JSON.stringify(parseCodex(codex)).includes("private"));
+  assert.deepEqual(parseCodex({ rateLimits: { primary: codex.rateLimits.secondary, secondary: codex.rateLimits.primary } }), parseCodex(codex));
+  assert.deepEqual(parseCodex({ ...codex, rateLimitsByLimitId: { codex: codex.rateLimits, unrelated: { primary: { usedPercent: 99, windowDurationMins: 300 } } } }), parseCodex(codex));
+});
+
+test("missing secondary is not zero; unknown windows are not relabeled; zero is real", () => {
+  const value = parseCodex({ rateLimits: { primary: { usedPercent: 0, windowDurationMins: 300, resetsAt: -1 } } });
+  assert(value.kind === "quota");
+  assert.deepEqual(value.groups[0].windows, [{ id: "5h", label: "5h", usedPercent: 0, resetsAt: undefined }]);
+  const text = detailText([{ id: "codex", name: "Codex", status: "available", value }]);
+  assert.match(text, /Weekly window [(]week[)]: unavailable \/ not applicable/);
+  assert(!text.includes("Weekly window (week): 0%"));
+  const other = parseCodex({ rateLimits: { primary: { usedPercent: 12, windowDurationMins: 60 } } });
+  assert(other.kind === "quota");
+  assert.equal(other.groups[0].windows[0].id, "60m");
+});
+
+test("invalid or missing quota fields never invent usage or reset dates", () => {
+  for (const usedPercent of [undefined, null, "0", NaN, Infinity, -1, 101]) {
+    assert.throws(() => parseCodex({ rateLimits: { primary: { usedPercent, windowDurationMins: 300 } } }));
+  }
+  for (const windowDurationMins of [undefined, null, 0, -1, Infinity]) {
+    assert.throws(() => parseCodex({ rateLimits: { primary: { usedPercent: 0, windowDurationMins } } }));
+  }
+  assert.throws(() => parseCodex({}));
+  assert.throws(() => parseAntigravity({ status: "SUCCESS", usage: { input_tokens: 0 } }));
+});
+
+test("Antigravity separate Gemini and third-party groups with independent resets", () => {
+  const value = parseAntigravity(ag);
+  assert(value.kind === "quota");
+  assert.equal(value.groups.length, 2);
+  assert.deepEqual(value.groups[0], { id: "gemini", name: "Gemini Models", shortName: "AG Gemini", windows: [
+    { id: "5h", label: "5h", usedPercent: 0, resetsAt: Date.parse("2026-10-16T11:34:38Z") },
+    { id: "week", label: "week", usedPercent: 0, resetsAt: Date.parse("2026-10-23T06:34:38Z") },
+  ] });
+  assert.equal(value.groups[1].name, "Claude and GPT models");
+  assert.equal(value.groups[1].windows[1].usedPercent, (1 - 0.5174307823181152) * 100);
+  assert.equal(value.groups[1].windows[1].resetsAt, Date.parse("2026-10-21T20:04:23Z"));
+  assert.deepEqual(footerRows([{ id: "antigravity", name: "Antigravity", status: "available", value }]), [
+    "AG Gemini 5h 0% · week 0% used · 5h reset 11:34", "AG Claude/GPT 5h 0% · week 48.3% used · 5h reset 11:34",
+  ]);
+});
+
+test("Antigravity rejects invalid fractions and ignores extra/duplicate buckets", () => {
+  const fixture = structuredClone(ag);
+  fixture.command.data.groups[0].buckets.push({ id: "other", window: "monthly", remaining_fraction: 0, reset_time: "bad" });
+  fixture.command.data.groups[0].buckets.push({ id: "duplicate", window: "5h", remaining_fraction: 0, reset_time: "bad" });
+  assert.deepEqual(parseAntigravity(fixture), parseAntigravity(ag));
+  for (const fraction of [undefined, null, "0", -0.1, 1.1, NaN, Infinity]) {
+    assert.throws(() => parseAntigravity({ status: "SUCCESS", command: { name: "usage", data: { groups: [
+      { name: "Gemini Models", buckets: [{ window: "5h", remaining_fraction: fraction }] },
+    ] } } }));
+  }
+});
+
+test("Copilot unlimited enterprise consumes credits, not remaining percentage, money or tokens", () => {
+  const value = parseCopilot({ token_based_billing: true, quota_snapshots: { premium_interactions: {
+    credits_used: 54386, unlimited: true, entitlement: 0, percent_remaining: 100,
+  } }, quota_reset_date_utc: "2026-11-01T00:00:00.000Z" });
+  assert.deepEqual(value, { kind: "credits", consumed: 54386, resetsAt: Date.parse("2026-11-01T00:00:00.000Z") });
+  const state: ProviderState = { id: "copilot", name: "GitHub Copilot", experimental: true, status: "available", value };
+  assert.deepEqual(footerRows([state]), ["Copilot 54,386 credits used"]);
+  const text = detailText([state]);
+  assert.match(text, /experimental internal API/);
+  assert.match(text, /54,386 credits consumed/);
+  assert(!text.includes("remaining") && !text.includes("$"));
+  assert.deepEqual(parseCopilot({ quota_snapshots: { premium_interactions: { credits_used: 0 } }, quota_reset_date_utc: "bad" }), { kind: "credits", consumed: 0, resetsAt: undefined });
+  for (const credits_used of [undefined, null, "0", -1, NaN, Infinity]) {
+    assert.throws(() => parseCopilot({ quota_snapshots: { premium_interactions: { credits_used, percent_remaining: 100, unlimited: true } } }));
+  }
+});
+
+test("footer shows the local five-hour reset only, never the weekly reset or an invented time", () => {
+  const state: ProviderState = { id: "codex", name: "Codex", status: "available", value: parseCodex(codex) };
+  assert.deepEqual(footerRows([state]), ["Codex 5h 69% · week 16% used · 5h reset 08:14"]);
+  state.value = parseCodex({ rateLimits: { primary: { usedPercent: 25, windowDurationMins: 300 } } });
+  assert.deepEqual(footerRows([state]), ["Codex 5h 25% used"]);
+  state.value = parseCodex({ rateLimits: { secondary: codex.rateLimits.secondary } });
+  assert.deepEqual(footerRows([state]), ["Codex week 16% used"]);
+});
+
+test("initial errors omitted from footer; stale successes kept with safe details and localized dates", () => {
+  const states: ProviderState[] = [
+    { id: "antigravity", name: "Antigravity", status: "error", error: "CLI not installed or not on PATH" },
+    { id: "codex", name: "Codex", status: "error", error: "Read timed out (30 seconds)", value: parseCodex(codex), lastAttempt: 1792138480000, lastSuccess: 1792138400000 },
+  ];
+  assert.deepEqual(footerRows(states), ["Codex 5h 69% · week 16% used · 5h reset 08:14 · stale"]);
+  const text = detailText(states);
+  assert(text.includes(new Date(1792138480000).toLocaleString()));
+  assert(text.includes(new Date(1792138400000).toLocaleString()));
+  assert.match(text, /CLI not installed/);
+  assert.match(text, /stale/);
+  assert.match(text, /Read timed out/);
+});

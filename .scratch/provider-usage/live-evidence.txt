@@ -1,0 +1,50 @@
+Provider account usage
+r refresh · ↑/↓ scroll · Esc/q close
+
+Codex
+  available · last refresh: 10/16/2026, 9:25:49 AM
+  Last success: 10/16/2026, 9:25:51 AM
+  Codex
+    Five-hour window (5h): 69% used · resets: 10/16/2026, 10:14:40 AM
+    Weekly window (week): 16% used · resets: 10/22/2026, 3:36:35 PM
+
+Antigravity
+  available · last refresh: 10/16/2026, 9:25:49 AM
+  Last success: 10/16/2026, 9:25:57 AM
+  Gemini Models
+    Five-hour window (5h): 0% used · resets: 10/16/2026, 2:25:53 PM
+    Weekly window (week): 0% used · resets: 10/23/2026, 9:25:53 AM
+  Claude and GPT models
+    Five-hour window (5h): 0% used · resets: 10/16/2026, 2:25:53 PM
+    Weekly window (week): 48.3% used · resets: 10/21/2026, 10:04:23 PM
+
+GitHub Copilot (experimental internal API)
+  available · last refresh: 10/16/2026, 9:25:49 AM
+  Last success: 10/16/2026, 9:25:52 AM
+  55,610 credits consumed
+  Resets: 11/1/2026, 1:00:00 AM
+
+
+FOOTER width=160
+ctx example                                                                                                                               model (layout example)
+in example · out example                                                                                           Codex 5h 69% · week 16% used · 5h reset 10:14
+total example                                                                                                    AG Gemini 5h 0% · week 0% used · 5h reset 14:25
+                                                                                                          AG Claude/GPT 5h 0% · week 48.3% used · 5h reset 14:25
+                                                                                                                                     Copilot 55,610 credits used
+
+FOOTER width=80
+ctx example                                               model (layout example)
+in example · out example           Codex 5h 69% · week 16% used · 5h reset 10:14
+total example                    AG Gemini 5h 0% · week 0% used · 5h reset 14:25
+                          AG Claude/GPT 5h 0% · week 48.3% used · 5h reset 14:25
+                                                     Copilot 55,610 credits used
+
+FOOTER width=40
+                  model (layout example)
+ctx example
+in example · out example
+total example
+Codex 5h 69% · week 16% used · 5h res[0m...[0m
+AG Gemini 5h 0% · week 0% used · 5h r[0m...[0m
+AG Claude/GPT 5h 0% · week 48.3% used[0m...[0m
+Copilot 55,610 credits used

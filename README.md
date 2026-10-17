@@ -19,6 +19,12 @@ Restart Pi or run `/reload`.
 
 The `postinstall` script handles Accordion build automatically.
 
+## Provider account usage
+
+The footer stays **three lines** tall: session totals on the left, model on the top right, Codex/Antigravity on the second right row, and Copilot/Cursor on the third. Connected accounts are shown independently of the selected Pi model. Summary labels: `wk` = weekly, `AG-G` = Antigravity Gemini, `AG-C/G` = Antigravity Claude/GPT, Copilot dollars = credits ÷ 100 rounded to whole dollars (user-requested equivalent, not a verified bill; raw credits remain in details), Cursor `M` = overall monthly included usage and `A` = Auto. Percentages are rounded; `*` marks stale data. Narrow terminals truncate summaries instead of adding rows. Use `/provider-usage` for reset dates, errors and manual refresh. Automatic refresh runs every five minutes while the footer is enabled.
+
+Cursor is experimental: it uses the internal Cursor usage API and the existing **Cursor Agent CLI file-store login** (Windows/Linux; macOS requires the CLI's file store). It reads the current access token in memory only; it does not store credentials, refresh tokens or start a login. If the token expires, renew the login in Cursor Agent, then refresh. IDE-only/Keychain logins are not supported. Cursor shows monthly **included-plan percentage**, plus separate **Auto** and **API** percentages when reported. These categories are not additive; missing categories are omitted, not assumed zero. Billing-cycle end is shown in details, without inventing per-category reset schedules. These are not session tokens or on-demand spending. Missing usage is omitted from the footer; failed refreshes retain the last successful value marked stale.
+
 ## Accordion
 
 This repo owns First-Party Accordion under `extensions/accordion/` and registers its stable Pi entry automatically.

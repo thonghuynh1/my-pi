@@ -1,4 +1,4 @@
-export type ProviderId = "codex" | "antigravity" | "copilot";
+export type ProviderId = "codex" | "antigravity" | "copilot" | "cursor";
 export type QuotaWindow = { id: string; label: string; usedPercent: number; resetsAt?: number };
 export type QuotaGroup = { id: string; name: string; shortName: string; windows: QuotaWindow[] };
 export type UsageMetric =
@@ -69,6 +69,28 @@ export function parseCopilot(raw: unknown): UsageMetric {
   return { kind: "credits", consumed: used, resetsAt: reset(data.quota_reset_date_utc) };
 }
 
+// Cursor reports an included-plan billing-cycle percentage, not on-demand spend.
+export function parseCursor(raw: unknown): UsageMetric {
+  const data = record(raw);
+  const plan = record(data.planUsage);
+  let used = plan.totalPercentUsed;
+  if (used === undefined && finite(plan.includedSpend) && plan.includedSpend >= 0 && finite(plan.limit) && plan.limit > 0) {
+    used = plan.includedSpend / plan.limit * 100;
+  }
+  // Overages can exceed 100%; never clamp the provider's measurement.
+  if (!finite(used) || used < 0) return unavailable();
+  const end = typeof data.billingCycleEnd === "string" && /^\d+$/.test(data.billingCycleEnd)
+    ? Number(data.billingCycleEnd) : data.billingCycleEnd;
+  const resetsAt = finite(end) && Number.isSafeInteger(end) && end > 0 && end <= 8.64e15 ? end : undefined;
+  const windows: QuotaWindow[] = [{ id: "month", label: "month", usedPercent: used, resetsAt }];
+  // These are provider-reported categories, not additive percentages or inferred balances.
+  for (const [id, label, field] of [["auto", "Auto", "autoPercentUsed"], ["api", "API", "apiPercentUsed"]]) {
+    const value = plan[field];
+    if (finite(value) && value >= 0) windows.push({ id, label, usedPercent: value });
+  }
+  return { kind: "quota", groups: [{ id: "cursor", name: "Cursor included plan", shortName: "Cursor", windows }] };
+}
+
 const percent = (n: number): string => `${Number(n.toFixed(1))}%`;
 export function footerRows(states: readonly ProviderState[]): string[] {
   return states.flatMap((state) => {
@@ -82,6 +104,30 @@ export function footerRows(states: readonly ProviderState[]): string[] {
     });
   });
 }
+// Two summary rows beneath the model. Full precision and reset times stay in details.
+export function compactFooterRows(states: readonly ProviderState[]): string[] {
+  const quota: string[] = [];
+  const accounts: string[] = [];
+  const pct = (n: number) => n > 0 && n < 1 ? "<1%" : `${Math.round(n)}%`;
+  for (const state of states) {
+    if (!state.value) continue;
+    const stale = state.error ? "*" : "";
+    if (state.value.kind === "credits") {
+      // User-requested credit-equivalent display, not a verified billing amount.
+      accounts.push(`Copilot $${Math.round(state.value.consumed / 100).toLocaleString("en-US")}${stale}`);
+      continue;
+    }
+    for (const g of state.value.groups) {
+      const name = g.id === "gemini" ? "AG-G" : g.id === "third-party" ? "AG-C/G" : g.shortName;
+      const windows = g.windows.map((w) => {
+        const label = w.id === "week" ? "wk" : w.id === "month" ? "M" : w.id === "auto" ? "A" : w.label;
+        return `${label}-${pct(w.usedPercent)}`;
+      }).join(" ");
+      (state.id === "cursor" ? accounts : quota).push(`${name} ${windows}${stale}`);
+    }
+  }
+  return [quota.join(" · "), accounts.join(" · ")];
+}
 const localized = (timestamp: number | undefined): string => timestamp === undefined ? "unavailable" : new Date(timestamp).toLocaleString();
 export function detailText(states: readonly ProviderState[]): string {
   return ["Provider account usage", "r refresh · ↑/↓ scroll · Esc/q close", "", ...states.flatMap((state) => {
@@ -90,11 +136,16 @@ export function detailText(states: readonly ProviderState[]): string {
       `  Last success: ${localized(state.lastSuccess)}`];
     if (state.error) lines.push(`  Reason: ${state.error}`);
     if (!state.value) lines.push("  Usage unavailable (no successful read)");
-    else if (state.value.kind === "credits") lines.push(`  ${state.value.consumed.toLocaleString("en-US")} credits consumed`, `  Resets: ${localized(state.value.resetsAt)}`);
+    else if (state.value.kind === "credits") lines.push(`  ${state.value.consumed.toLocaleString("en-US")} credits consumed`, "  Footer converts 100 credits = $1, rounded to whole dollars; not a verified bill.", `  Resets: ${localized(state.value.resetsAt)}`);
     else for (const g of state.value.groups) {
       lines.push(`  ${g.name}`);
+      if (state.id === "cursor") {
+        lines.push("    Auto/API are provider-reported categories; percentages are not additive.");
+        for (const w of g.windows) lines.push(`    ${w.id === "month" ? "Monthly included plan (month)" : w.label}: ${percent(w.usedPercent)} used${w.id === "month" ? ` · billing-cycle end: ${localized(w.resetsAt)}` : ""}`);
+        continue;
+      }
       for (const id of ["5h", "week"]) if (!g.windows.some((w) => w.id === id)) lines.push(`    ${id === "5h" ? "Five-hour window (5h)" : "Weekly window (week)"}: unavailable / not applicable`);
-      for (const w of g.windows) lines.push(`    ${w.id === "5h" ? "Five-hour window (5h)" : w.id === "week" ? "Weekly window (week)" : w.label}: ${percent(w.usedPercent)} used · resets: ${localized(w.resetsAt)}`);
+      for (const w of g.windows) lines.push(`    ${w.id === "5h" ? "Five-hour window (5h)" : w.id === "week" ? "Weekly window (week)" : w.id === "month" ? "Monthly included plan (month)" : w.label}: ${percent(w.usedPercent)} used · resets: ${localized(w.resetsAt)}`);
     }
     return [...lines, ""];
   })].join("\n");

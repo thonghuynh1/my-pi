@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseCodex, parseAntigravity, parseCopilot, footerRows, detailText, type ProviderState } from "../lib/provider-usage/model.ts";
+import { parseCodex, parseAntigravity, parseCopilot, parseCursor, footerRows, compactFooterRows, detailText, type ProviderState } from "../lib/provider-usage/model.ts";
 
 process.env.TZ = "UTC";
 
@@ -95,10 +95,66 @@ test("Copilot unlimited enterprise consumes credits, not remaining percentage, m
   const text = detailText([state]);
   assert.match(text, /experimental internal API/);
   assert.match(text, /54,386 credits consumed/);
-  assert(!text.includes("remaining") && !text.includes("$"));
+  assert(!text.includes("remaining"));
+  assert.match(text, /100 credits = \$1/);
+  assert.match(text, /not a verified bill/);
   assert.deepEqual(parseCopilot({ quota_snapshots: { premium_interactions: { credits_used: 0 } }, quota_reset_date_utc: "bad" }), { kind: "credits", consumed: 0, resetsAt: undefined });
   for (const credits_used of [undefined, null, "0", -1, NaN, Infinity]) {
     assert.throws(() => parseCopilot({ quota_snapshots: { premium_interactions: { credits_used, percent_remaining: 100, unlimited: true } } }));
+  }
+});
+
+test("Cursor monthly included plan preserves percentage and millisecond billing reset", () => {
+  const value = parseCursor({ planUsage: { totalPercentUsed: 42.25 }, billingCycleEnd: "1802600000000", accountId: "private" });
+  assert(value.kind === "quota");
+  assert.deepEqual(value.groups[0].windows, [{ id: "month", label: "month", usedPercent: 42.25, resetsAt: 1802600000000 }]);
+  const state: ProviderState = { id: "cursor", name: "Cursor", experimental: true, status: "available", value };
+  assert.deepEqual(footerRows([state]), ["Cursor month 42.3% used"]);
+  const text = detailText([state]);
+  assert.match(text, /Monthly included plan [(]month[)]: 42.3% used/);
+  assert(text.includes(new Date(1802600000000).toLocaleString()));
+  assert(!/Five-hour|Weekly|private|credits/.test(text));
+  assert.match(footerRows([{ ...state, status: "error", error: "unavailable" }])[0], /stale/);
+  assert.deepEqual(footerRows([{ ...state, value: undefined, status: "error" }]), []);
+});
+
+test("Cursor exposes independently reported Auto/API categories without zero defaults or adding percentages", () => {
+  const value = parseCursor({ billingCycleEnd: "1802600000000", planUsage: {
+    totalPercentUsed: 44.81058201058201, autoPercentUsed: 42.044444444444444, apiPercentUsed: 100,
+  } });
+  assert(value.kind === "quota");
+  assert.deepEqual(value.groups[0].windows.map(({ id, usedPercent }) => ({ id, usedPercent })), [
+    { id: "month", usedPercent: 44.81058201058201 },
+    { id: "auto", usedPercent: 42.044444444444444 }, { id: "api", usedPercent: 100 },
+  ]);
+  const state: ProviderState = { id: "cursor", name: "Cursor", status: "available", value };
+  assert.deepEqual(footerRows([state]), ["Cursor month 44.8% · Auto 42% · API 100% used"]);
+  const text = detailText([state]);
+  assert.match(text, /Auto: 42% used/); assert.match(text, /API: 100% used/);
+  assert.match(text, /not additive/); assert.match(text, /billing-cycle end:/);
+  for (const invalid of [undefined, null, "0", -1, Infinity, NaN]) {
+    const partial = parseCursor({ planUsage: { totalPercentUsed: 44, autoPercentUsed: invalid, apiPercentUsed: 0 } });
+    assert(partial.kind === "quota");
+    assert.deepEqual(partial.groups[0].windows.map((w) => w.id), ["month", "api"]);
+    assert.equal(partial.groups[0].windows[1].usedPercent, 0);
+  }
+});
+
+test("Cursor accepts real zero, explicit overage and verified ratio, never absent quota", () => {
+  for (const [planUsage, expected] of [
+    [{ totalPercentUsed: 0 }, 0], [{ totalPercentUsed: 125 }, 125],
+    [{ includedSpend: 300, limit: 2000 }, 15],
+  ] as const) {
+    const value = parseCursor({ planUsage, billingCycleEnd: "bad" });
+    assert(value.kind === "quota");
+    assert.equal(value.groups[0].windows[0].usedPercent, expected);
+    assert.equal(value.groups[0].windows[0].resetsAt, undefined);
+  }
+  for (const totalPercentUsed of [null, "0", -1, NaN, Infinity]) {
+    assert.throws(() => parseCursor({ planUsage: { totalPercentUsed, includedSpend: 0, limit: 2000 } }));
+  }
+  for (const raw of [{}, { spendLimitUsage: { totalSpend: 1 } }, { planUsage: {} }, { planUsage: { limit: 0, includedSpend: 0 } }, { planUsage: { limit: 20 } }]) {
+    assert.throws(() => parseCursor(raw));
   }
 });
 
@@ -109,6 +165,32 @@ test("footer shows the local five-hour reset only, never the weekly reset or an 
   assert.deepEqual(footerRows([state]), ["Codex 5h 25% used"]);
   state.value = parseCodex({ rateLimits: { secondary: codex.rateLimits.secondary } });
   assert.deepEqual(footerRows([state]), ["Codex week 16% used"]);
+});
+
+test("compact footer uses two provider rows, short labels, rounded values and stale markers", () => {
+  const states: ProviderState[] = [
+    { id: "codex", name: "Codex", status: "available", value: parseCodex(codex) },
+    { id: "antigravity", name: "Antigravity", status: "available", value: parseAntigravity(ag) },
+    { id: "copilot", name: "GitHub Copilot", status: "available", value: parseCopilot({ quota_snapshots: { premium_interactions: { credits_used: 29416 } } }) },
+    { id: "cursor", name: "Cursor", status: "error", error: "unavailable", value: parseCursor({ planUsage: { totalPercentUsed: 46.7, autoPercentUsed: 44, apiPercentUsed: 100 } }) },
+  ];
+  assert.deepEqual(compactFooterRows(states), [
+    "Codex 5h-69% wk-16% · AG-G 5h-0% wk-0% · AG-C/G 5h-0% wk-48%",
+    "Copilot $294 · Cursor M-47% A-44% API-100%*",
+  ]);
+  assert.deepEqual(compactFooterRows([]), ["", ""]);
+  const tiny: ProviderState = { id: "cursor", name: "Cursor", status: "available", value: parseCursor({ planUsage: { totalPercentUsed: 0.1 } }) };
+  assert.deepEqual(compactFooterRows([tiny]), ["", "Cursor M-<1%"]);
+  assert.deepEqual(compactFooterRows([{ ...tiny, value: undefined }]), ["", ""]);
+});
+
+test("Copilot footer converts actual credits to rounded dollar equivalent, preserving raw credits", () => {
+  for (const [consumed, display] of [[0, "$0"], [29500, "$295"], [29549, "$295"], [29550, "$296"], [123456, "$1,235"]] as const) {
+    const state: ProviderState = { id: "copilot", name: "Copilot", status: "available", value: { kind: "credits", consumed } };
+    assert.deepEqual(compactFooterRows([state]), ["", `Copilot ${display}`]);
+    assert(detailText([state]).includes(`${consumed.toLocaleString("en-US")} credits consumed`));
+    assert.deepEqual(compactFooterRows([{ ...state, error: "unavailable" }]), ["", `Copilot ${display}*`]);
+  }
 });
 
 test("initial errors omitted from footer; stale successes kept with safe details and localized dates", () => {

@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { ProviderUsageMonitor } from "./lib/provider-usage/monitor.ts";
-import { detailText, footerRows } from "./lib/provider-usage/model.ts";
+import { detailText, compactFooterRows } from "./lib/provider-usage/model.ts";
 import {
   createManagedExtension,
   loadCapabilityVisibilitySettings,
@@ -60,13 +60,15 @@ function padRight(left: string, right: string, width: number): string {
 
 export function layoutUsageLines(left: string[], model: string, providers: string[], width: number): string[] {
   if (width <= 0) return [];
-  const right = [model, ...providers];
-  const widestLeft = Math.max(0, ...left.map(visibleWidth));
-  const widestRight = Math.max(0, ...right.map(visibleWidth));
-  if (widestLeft + widestRight + 2 > width) {
-    return [padRight("", model, width), ...left.map((line) => truncateToWidth(line, width)), ...providers.map((line) => truncateToWidth(line, width))];
-  }
-  return Array.from({ length: Math.max(left.length, right.length) }, (_, index) => padRight(left[index] ?? "", right[index] ?? "", width));
+  const right = [model, providers[0] ?? "", providers.slice(1).filter(Boolean).join(" · ")];
+  // Never grow vertically: preserve session totals first, truncate the right-hand
+  // summaries on narrow terminals. Full provider data is in /provider-usage.
+  return Array.from({ length: 3 }, (_, index) => {
+    const local = truncateToWidth(left[index] ?? "", width);
+    const available = width - visibleWidth(local) - (local ? 2 : 0);
+    const summary = available > 0 ? truncateToWidth(right[index], available) : "";
+    return summary ? padRight(local, summary, width) : local;
+  });
 }
 
 function getSubagentTotals(): {
@@ -186,7 +188,7 @@ export function installUsageFooter(pi: ExtensionAPI, ctx: ExtensionContext, moni
           `in ${compactNumber(totals.input)} · out ${compactNumber(totals.output)} · cache ${compactNumber(totals.cache)}`, cost];
         return layoutUsageLines(left.map((line) => theme.fg("warning", line)),
           theme.fg("accent", getModelLine(pi, ctx)),
-          footerRows(monitor.snapshot()).map((line) => theme.fg("accent", line)), width);
+          compactFooterRows(monitor.snapshot()).map((line) => theme.fg("accent", line)), width);
       },
     };
   });

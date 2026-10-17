@@ -26,6 +26,7 @@ function fixture(mode = "tui") {
       { id: "week", label: "week", usedPercent: 16, resetsAt: 1792676195000 },
     ] }] }; } },
     { id: "copilot", name: "GitHub Copilot", experimental: true, read: async () => ({ kind: "credits", consumed: 54386 }) },
+    { id: "cursor", name: "Cursor", experimental: true, read: async () => ({ kind: "quota", groups: [{ id: "cursor", name: "Cursor included plan", shortName: "Cursor", windows: [{ id: "month", label: "month", usedPercent: 42 }, { id: "auto", label: "Auto", usedPercent: 20 }, { id: "api", label: "API", usedPercent: 100 }] }] }) },
   ];
   const monitor = new ProviderUsageMonitor(readers, clock);
   const tui = { terminal: { rows: 80 }, requestRender() { renders++; } };
@@ -82,8 +83,10 @@ test("factory has no work; startup refresh is asynchronous and independent of Pi
   assert.equal(f.reads(), 1); assert.equal(f.intervals.size, 1);
   const lines = f.footer()!.render(180);
   assert.match(lines[0], /model test\/模型-wide \(medium\)/);
-  assert.match(lines[1], /Codex 5h 69% · week 16% used · 5h reset \d{2}:\d{2}/);
-  assert.match(lines[2], /Copilot 54,386 credits used/);
+  assert.equal(lines.length, 3);
+  assert.match(lines[1], /Codex 5h-69% wk-16%/);
+  assert.match(lines[2], /Copilot \$544/);
+  assert.match(lines[2], /Cursor M-42% A-20% API-100%/);
   assert(f.renders() > 0);
   f.emit("session_shutdown");
   assert.equal(f.intervals.size, 0); assert.equal(f.timeouts.size, 0);
@@ -127,20 +130,20 @@ test("subagent status removed, but tokens/cache/billed cost breakdown retained",
   } finally { f.emit("session_shutdown"); globals.__subagent = old; }
 });
 
-test("layout uses visible columns for ANSI, CJK and narrow stacking", () => {
+test("layout stays three rows with ANSI, CJK and narrow truncation", () => {
   const left = ["\x1b[33mctx 1/100 1%\x1b[0m", "in 1 · out 2", "total 3 · $1"];
   const model = "\x1b[32mmodel 模型/🦀 (high)\x1b[0m";
-  const providers = ["Codex 5h 69% · week 16% used", "AG Gemini 5h 0% · week 0% used", "AG Claude/GPT 5h 0% · week 48.3% used", "Copilot 54,386 credits used"];
+  const providers = ["Codex 5h 69% · week 16% used", "AG Gemini 5h 0% · week 0% used", "AG Claude/GPT 5h 0% · week 48.3% used", "Copilot 54,386 credits used", "Cursor month 42% · Auto 20% · API 100% used"];
   for (const width of [1, 2, 8, 20, 40, 80, 160]) {
     const lines = layoutUsageLines(left, model, providers, width);
     for (const line of lines) assert(visibleWidth(line) <= width, `width=${width}, ${visibleWidth(line)}: ${line}`);
-    assert(lines.length >= 5);
+    assert.equal(lines.length, 3);
     if (width >= 80) assert(lines[0].endsWith(model));
   }
   const narrow = layoutUsageLines(left, model, providers, 40);
-  assert.equal(narrow.length, 8);
-  assert.match(narrow[1], /ctx 1\/100/); assert.match(narrow[2], /in 1/);
-  assert.match(narrow[3], /total 3/); assert.match(narrow[4], /Codex/);
+  assert.equal(narrow.length, 3);
+  assert.match(narrow[0], /ctx 1\/100/); assert.match(narrow[1], /in 1/);
+  assert.match(narrow[2], /total 3/);
   assert.deepEqual(layoutUsageLines(left, model, providers, 0), []);
 });
 
@@ -153,6 +156,9 @@ test("details share cache, refresh on r while off without polling, close by q or
   const text = f.panel()!.render(100).join("\n");
   assert.match(text, /Provider account usage/);
   assert.match(text, /GitHub Copilot \(experimental internal API\)/);
+  assert.match(text, /Cursor \(experimental internal API\)/);
+  assert.match(text, /Monthly included plan [(]month[)]: 42% used/);
+  assert.match(text, /Auto: 20% used/); assert.match(text, /API: 100% used/);
   assert.match(text, /Five-hour window [(]5h[)]: 69% used/); assert.match(text, /Weekly window [(]week[)]: 16% used/); assert.match(text, /Last success/);
   assert.equal(f.intervals.size, 0);
   const before = f.reads();

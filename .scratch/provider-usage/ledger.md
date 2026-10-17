@@ -37,6 +37,22 @@ Show usage for the current user's configured providers (user examples: Claude, O
 - Accepted D15 (user confirmed full walkthrough): integrate monitor into existing usage-footer owner, not a second footer extension. New helper under extensions/lib/provider-usage/ owns adapters/state and injected process/time seams; existing installUsageFooter consumes immutable cached snapshots. Managed `/provider-usage` command opens detail panel with Refresh and close; no model-callable tool. TUI session lifecycle owns start/stop; capture requestRender from footer factory. node:test fixture/runner/timer/layout tests plus typecheck and live TUI smoke are proof seams. Local helpers/file splitting left to implementer.
 - User confirmed walkthrough and explicitly requested immediate implementation in this session without PRD/issues. Implementation is complete; verification bg-3 passed 48 tests, typecheck and all three production live readers. Actual isolated Pi TUI footer and details verified. See implementation.md/review.md and *-evidence.txt.
 
+## Cursor extension (2026-10-17)
+- User approved adding experimental Cursor internal usage retrieval after being shown monthly included-plan percentage and billing-cycle reset semantics.
+- Uses existing Cursor Agent file-store accessToken in memory only; no writes, token refresh, login or inference. This explicitly extends D12 beyond subprocess-only transport for Cursor.
+- Cursor footer: `Cursor month N% used`; details: monthly included plan, reset and freshness/errors. No on-demand-spend or Pi-session-token inference.
+- IDE-only, default macOS Keychain and memory stores unsupported; expired CLI access token remains unavailable until renewed in Cursor Agent.
+- Evidence and limitations: cursor-account-check.md.
+
+## Compact three-line footer
+- User requested exactly three footer lines after the provider list grew too tall. Supersedes D14 narrow stacking and D11 per-provider rows/reset summaries.
+- Preserve context/tokens/billed costs on the left; model top right, combined Codex/Antigravity second right, Copilot/Cursor third right. Whole-percent and compact credit summaries; stale `*` indicator. Full precision/reset times remain in `/provider-usage`.
+- Narrow widths truncate the summaries, never add rows. Missing providers remain absent, not zero.
+
+## Copilot credit-equivalent format
+- User requested `29.5k` credits be displayed as `$295` in the compact footer: convert actual consumed credits at 100 credits per dollar, then round to whole dollars. This supersedes credits-only summary formatting in D7/D11, not the underlying consumed-credit metric.
+- This is a user-requested dollar equivalent, not verified invoiced spending. Details retain exact reported credits and explain the conversion.
+
 ## Constraints
 - User explicitly superseded planning-only flow: implement now, no PRD/issues. No commits/pushes made.
 - No promise that all providers expose a supported account-usage API.

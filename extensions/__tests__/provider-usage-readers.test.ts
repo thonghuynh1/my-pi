@@ -26,17 +26,17 @@ const signal = () => new AbortController().signal;
 const codexRequest: ProcessRequest = { command: "codex", args: ["app-server"], protocol: "codex" };
 const jsonRequest: ProcessRequest = { command: "agy", args: ["-p", "/usage", "--output-format", "json"] };
 
-test("registry uses only the three verified quota-only CLI commands and selected Copilot fields", async () => {
+test("registry uses verified CLI commands plus the isolated experimental Cursor transport", async () => {
   const requests: ProcessRequest[] = [];
   const readers = providerReaders(async (request) => {
     requests.push(request);
     if (request.command === "codex") return { rateLimits: { primary: { usedPercent: 69, windowDurationMins: 300 } } };
     if (request.command === "agy") return { status: "SUCCESS", command: { name: "usage", data: { groups: [{ name: "Gemini Models", buckets: [{ window: "5h", remaining_fraction: 1 }] }] } } };
     return { quota_snapshots: { premium_interactions: { credits_used: 54386 } } };
-  });
+  }, async () => ({ planUsage: { totalPercentUsed: 42 } }));
   await Promise.all(readers.map((reader) => reader.read(signal())));
   assert.deepEqual(requests, [codexRequest, jsonRequest, { command: "gh", args: ["api", "/copilot_internal/user", "--jq", COPILOT_FIELDS] }]);
-  assert.deepEqual(readers.map((r) => r.id), ["codex", "antigravity", "copilot"]);
+  assert.deepEqual(readers.map((r) => r.id), ["codex", "antigravity", "copilot", "cursor"]);
   assert.equal(readers[2].experimental, true);
 });
 

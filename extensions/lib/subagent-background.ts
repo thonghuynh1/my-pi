@@ -493,10 +493,12 @@ export interface LongTtlRequestContext {
 	api: string | undefined;
 	supportsLongCacheRetention: boolean | undefined;
 	windowActive: boolean;
+	nativeWarmingSupported?: boolean;
 	optOutEnv: string | undefined;
 }
 
 export function shouldApplyLongCacheTtl(context: LongTtlRequestContext): boolean {
+	if (context.nativeWarmingSupported) return false;
 	if (context.api !== "anthropic-messages") return false;
 	if (!context.windowActive) return false;
 	if (isLongCacheOptOut(context.optOutEnv)) return false;

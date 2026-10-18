@@ -5,9 +5,11 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, appendFileSync, mkdir
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-	createAgentSessionServices, createAgentSessionFromServices, ModelRuntime, ModelRegistry, SessionManager,
+	createAgentSessionServices, createAgentSessionFromServices, ModelRuntime, ModelRegistry, SessionManager, createEventBus, VERSION,
 	type ExtensionAPI, type ExtensionContext, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import backgroundJobsExtension from "../background-jobs.ts";
+import { supportsNativeCacheWarming } from "../lib/background-cache-warming.ts";
 import subagents, { type SubagentSdk } from "../subagents.ts";
 import { DurableJobStore, durableSessionDirectory } from "../lib/durable-jobs.ts";
 import { type StoredBackgroundJob } from "../lib/subagent-background.ts";
@@ -28,7 +30,7 @@ function text(result: Awaited<ReturnType<ToolDefinition["execute"]>>): string {
 	return result.content.filter((part) => part.type === "text").map((part) => part.text).join("~");
 }
 
-async function fixture(options: { creationGate?: ReturnType<typeof deferred>; cleanupGate?: ReturnType<typeof deferred>; window?: number; afterDispose?: () => void; workflow?: boolean; reasoning?: boolean } = {}) {
+async function fixture(options: { commandsOrder?: "before" | "after"; creationGate?: ReturnType<typeof deferred>; cleanupGate?: ReturnType<typeof deferred>; window?: number; afterDispose?: () => void; workflow?: boolean; reasoning?: boolean } = {}) {
 	const base = mkdtempSync(join(tmpdir(), "pi-subagent-sdk-"));
 	const prior = process.env.PI_DURABLE_JOBS_DIR;
 	process.env.PI_DURABLE_JOBS_DIR = base;
@@ -84,6 +86,7 @@ async function fixture(options: { creationGate?: ReturnType<typeof deferred>; cl
 		},
 	};
 	const pi = {
+		events: createEventBus(),
 		registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool), registerFlag: () => {}, getFlag: () => options.workflow !== false,
 		registerCommand: () => {}, appendEntry: () => {}, getActiveTools: () => [...tools.keys()], setActiveTools: () => {},
 		getThinkingLevel: () => "off", sendUserMessage: (message: string) => deliveries.push(message), sendMessage: () => {},
@@ -98,7 +101,9 @@ async function fixture(options: { creationGate?: ReturnType<typeof deferred>; cl
 	}
 	async function startFreshExtension() {
 		tools.clear(); handlers.clear();
+		if (options.commandsOrder === "before") backgroundJobsExtension(pi);
 		subagents({ ...pi }, sdk);
+		if (options.commandsOrder === "after") backgroundJobsExtension(pi);
 		await emit("session_start");
 		await emit("agent_start");
 	}
@@ -519,6 +524,9 @@ test("shutdown fences delayed child callbacks and retains interrupted job withou
 	await f.call("subagent", "old-generation", { type: "explore", task: "delayed", mode: "detached" });
 	await f.creationStarted;
 	const shuttingDown = f.emit("session_shutdown");
+	// Lifecycle dispatch awaits earlier handlers (including cache-policy cleanup).
+	// Observe the shutdown transition rather than assuming synchronous dispatch.
+	await tick();
 	assert.equal(f.store.load()!.jobs[0].status, "interrupted");
 	await assert.rejects(f.call("subagent", "new-generation-too-early", { type: "explore", task: "new" }), /still cleaning up/);
 	creationGate.resolve();
@@ -603,4 +611,65 @@ test("cancellation before SDK construction returns without creating or prompting
 	assert.equal(f.disposed, 0);
 	assert.equal(f.requests.length, 0);
 	assert.equal(f.store.load()!.jobs[0].status, "cancelled");
+});
+
+for (const mode of ["joined", "detached"] as const) {
+  for (const commandsOrder of ["before", "after"] as const) {
+    test(`native cache policy includes ${mode} children with commands loaded ${commandsOrder}`, {
+      skip: !supportsNativeCacheWarming(VERSION),
+    }, async (t) => {
+      const previous = process.env.PI_BACKGROUND_CACHE_WARMING;
+      delete process.env.PI_BACKGROUND_CACHE_WARMING;
+      const gate = deferred();
+      const f = await fixture({ creationGate: gate, commandsOrder });
+      t.after(async () => {
+        try { await f.close(); } finally {
+          if (previous === undefined) delete process.env.PI_BACKGROUND_CACHE_WARMING;
+          else process.env.PI_BACKGROUND_CACHE_WARMING = previous;
+        }
+      });
+      const event = { type: "cache_warming_decision", action: "stop", warmCost: 0.02, missCost: 0.2, continuationProbability: 0.15 };
+      assert.deepEqual(await f.emit("cache_warming_decision", event), [undefined], "one owner, no work yet");
+      const child = f.call("subagent", "warming-child", { type: "explore", task: "gated local child", mode });
+      await f.creationStarted;
+      assert.deepEqual(await f.emit("cache_warming_decision", event), [{ action: "warm" }]);
+      assert.deepEqual(await f.emit("cache_warming_decision", { ...event, warmCost: 0.19 }), [undefined]);
+      process.env.PI_BACKGROUND_CACHE_WARMING = "0";
+      assert.deepEqual(await f.emit("cache_warming_decision", event), [undefined]);
+      delete process.env.PI_BACKGROUND_CACHE_WARMING;
+      const payload = { system: [{ type: "text", text: "parent", cache_control: { type: "ephemeral" } }] };
+      assert.deepEqual(await f.emit("before_provider_request", { payload }), [undefined], "native hosts never auto-upgrade TTL");
+      const stopping = f.emit("session_shutdown");
+      assert.deepEqual(await f.emit("cache_warming_decision", event), [undefined], "cleared before child cleanup finishes");
+      gate.resolve();
+      await stopping;
+      await child;
+      assert.deepEqual(await f.emit("cache_warming_decision", event), [undefined]);
+      assert.equal(f.requests.length, 0, "decision handling never issues provider requests");
+    });
+  }
+}
+
+test("native warming stops when a detached child finishes, before its notification is delivered", {
+  skip: !supportsNativeCacheWarming(VERSION), timeout: 15_000,
+}, async (t) => {
+  const old = process.env.PI_BACKGROUND_CACHE_WARMING;
+  delete process.env.PI_BACKGROUND_CACHE_WARMING;
+  const f = await fixture();
+  t.after(async () => {
+    try { await f.close(); } finally {
+      if (old === undefined) delete process.env.PI_BACKGROUND_CACHE_WARMING;
+      else process.env.PI_BACKGROUND_CACHE_WARMING = old;
+    }
+  });
+  const event = { type: "cache_warming_decision", action: "stop", warmCost: 0.02, missCost: 0.2 };
+  await f.call("subagent", "finish", { type: "explore", task: "finish locally", mode: "detached" });
+  await f.requestCount(1);
+  assert.deepEqual(await f.emit("cache_warming_decision", event), [{ action: "warm" }]);
+  f.reply(0, "finished");
+  const deadline = Date.now() + 10_000;
+  while (f.store.load()!.jobs[0].status === "running" && Date.now() < deadline) await tick();
+  assert.equal(f.store.load()!.jobs[0].status, "completed");
+  assert.equal(f.deliveries.length, 0, "parent still busy; notification not yet sent");
+  assert.deepEqual(await f.emit("cache_warming_decision", event), [undefined]);
 });

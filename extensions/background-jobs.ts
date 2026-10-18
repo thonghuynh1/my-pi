@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 import { createManagedExtension, loadCapabilityVisibilitySettings } from "./lib/capability-visibility.ts";
 import { DurableJobStore, durableSessionDirectory, hasRecordedUserMessage, readJson, writeAtomicJson } from "./lib/durable-jobs.ts";
 
+import { registerBackgroundCacheWarming, commandExpectsContinuation } from "./lib/background-cache-warming.ts";
+
 export const piExtension = { id: "background-jobs" };
 const WORKER_PATH = fileURLToPath(new URL("./lib/background-job-worker.mjs", import.meta.url));
 const DELIVERY_HEADER = "[Background Job ";
@@ -62,6 +64,8 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
   let deliveryAccepted = false;
   let deliveryMessage: string | undefined;
   let deliveryTimer: NodeJS.Timeout | undefined;
+
+  const cacheWarming = registerBackgroundCacheWarming(pi, () => active && [...jobs.values()].some(commandExpectsContinuation));
 
   function persist(): void { store?.save(counter, [...jobs.values()]); }
   function running(): BackgroundJob[] { return [...jobs.values()].filter((job) => job.status === "running"); }
@@ -165,7 +169,8 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
   }
   function attach(ctx: ExtensionContext): void {
     const directory = durableSessionDirectory(ctx, "background", fallbackSessionId);
-    if (store?.directory === directory && active) return;
+    if (store?.directory === directory && active) { cacheWarming.bind(ctx); return; }
+    cacheWarming.clear();
     stopMonitoring();
     const nextStore = new DurableJobStore<BackgroundJob>(directory);
     const saved = nextStore.load();
@@ -176,6 +181,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
     active = true;
     dirty = false;
     lastContext = ctx;
+    cacheWarming.bind(ctx);
     isAgentBusy = false;
     hasUserTurnPending = false;
     compactionInProgress = false;

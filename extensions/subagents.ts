@@ -1,3 +1,4 @@
+import { registerBackgroundCacheWarming, subagentExpectsContinuation } from "./lib/background-cache-warming.ts";
 import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { DurableJobStore, durableSessionDirectory, hasRecordedUserMessage } from "./lib/durable-jobs.ts";
@@ -1948,17 +1949,20 @@ export default function (pi: ExtensionAPI, sdk: SubagentSdk = defaultSdk) {
 	let backgroundActive = true;
 	const backgroundCheckpoints = new Map<string, () => void>();
 	const childRuns = new Map<BackgroundJob, Promise<void>>();
+	const cacheWarming = registerBackgroundCacheWarming(pi, () => backgroundActive && backgroundJobs.list().some(subagentExpectsContinuation));
 
 	function initializeBackgroundStore(ctx: ExtensionContext): void {
 		const directory = durableSessionDirectory(ctx, "subagents", fallbackSessionId);
 		if (childRuns.size > 0 && (!backgroundActive || backgroundStore?.directory !== directory)) throw new Error("Previous child generation is still cleaning up. Retry after the session transition completes.");
-		if (backgroundStore?.directory === directory && backgroundActive) return;
+		if (backgroundStore?.directory === directory && backgroundActive) { cacheWarming.bind(ctx); return; }
+		cacheWarming.clear();
 		const store = new DurableJobStore<StoredBackgroundJob>(directory);
 		const snapshot = store.load();
 		backgroundStore = store;
 		backgroundJobs = new BackgroundJobRegistry((state) => store.save(state.counter, state.jobs));
 		if (snapshot) backgroundJobs.restore(snapshot);
 		backgroundActive = true;
+		cacheWarming.bind(ctx);
 	}
 	let isAgentBusy = false;
 	let hasUserTurnPending = false;
@@ -2438,11 +2442,12 @@ Optional results will be delivered later. Continue independent work; do not poll
 	pi.on("session_compact", onCompactionEnd);
 	pi.on("session_compact_failed", onCompactionEnd);
 
-	// 1h cache TTL while background subagents run, so the parent's prompt cache
-	// survives the gap between launching jobs and receiving their results.
+	// Old-host fallback only. Warming-capable hosts retain the user/provider TTL
+	// even when native warming is off: consent is not a reason to upgrade to 1h.
 	pi.on("before_provider_request", (event, ctx) => {
 		const model = ctx.model as { api?: string; compat?: { supportsLongCacheRetention?: boolean } } | undefined;
 		const apply = shouldApplyLongCacheTtl({
+			nativeWarmingSupported: cacheWarming.nativeSupported,
 			api: model?.api,
 			supportsLongCacheRetention: model?.compat?.supportsLongCacheRetention,
 			// Decided per request: 1h only while background jobs are running.

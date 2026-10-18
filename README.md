@@ -178,6 +178,16 @@ It returns the saved `.webm` path. The tool requires a bounded duration from
 
 See [ADR 0006](docs/adr/0006-durable-background-work.md) for the recovery contract.
 
+### Parent prompt-cache warming
+
+On **Pi 1.3.0+ (stable)**, background commands and subagents cooperate through one native `cache_warming_decision` hook. Running joined/detached children, and running commands with `notifyOnFinish: true`, imply an expected parent continuation. Completed, cancelled, failed, interrupted, or silent command jobs do not. Eligibility is scoped to the current **session ID**, not the working directory, and is cleared on session replacement/shutdown.
+
+To allow warming **between turns**, explicitly set `"cacheWarming": "idle"` in your **global** Pi `settings.json` (normally `~/.pi/agent/settings.json`). Pi defaults to `"streaming"`; this package never changes that setting or bypasses consent. Use `PI_BACKGROUND_CACHE_WARMING=0` to disable this package's continuation hint (also accepts `false`, `no`, `off`). This does **not** disable Pi's own native warming policy.
+
+The hint assumes continuation probability 1, but still requires at least **$0.05** savings (`missCost - warmCost`); unknown/nonfinite economics and expensive refreshes defer to Pi. Pi alone schedules, replays and bills refreshes, including its retention/replay checks, deadlines and idle safety window. No extension refresh timer or direct paid request is added. Native scheduling is at 90% of TTL (with at least ten seconds of margin): **4m30s for a five-minute TTL**, not an exact four-minute interval. `/session` shows native warming status, decisions and extension overrides; refresh usage stays in native accounting.
+
+On warming-capable hosts the automatic Anthropic **one-hour TTL upgrade is disabled**, even if warming is off; explicit provider/user TTLs remain untouched. Older/unknown hosts keep the previous running-subagent TTL fallback (`PI_SUBAGENT_LONG_CACHE=0` opts out). The repository's 0.84.x SDK lacks the new event types, so a narrow public-event adapter and conservative host-version gate provide compatibility without private Pi imports. Both extensions use a synchronous `pi.events` owner/collection protocol to avoid competing overrides; unrelated third-party decision hooks still follow Pi's normal last-defined-override semantics.
+
 ## Subagents
 
 This package registers a `subagent` tool. It runs child Pi `AgentSession`s in-process (SDK-style, no subprocess) with isolated context.

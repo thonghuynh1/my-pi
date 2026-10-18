@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, after } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -9,7 +9,9 @@ const storage = mkdtempSync(join(tmpdir(), "pi-bg-test-"));
 process.env.PI_DURABLE_JOBS_DIR = storage;
 after(() => rmSync(storage, { recursive: true, force: true }));
 import backgroundJobsExtension, { piExtension } from "../background-jobs.ts";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createEventBus, VERSION, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { supportsNativeCacheWarming } from "../lib/background-cache-warming.ts";
+import { DurableJobStore, durableSessionDirectory } from "../lib/durable-jobs.ts";
 
 interface MockPi {
   tools: Map<string, any>;
@@ -408,3 +410,57 @@ test("unconfirmed completion is redelivered after reopening", async () => {
   assert.ok(resumed.sentMessages.some((message) => message.message.includes(run.details.jobId)));
   await (resumed as any).emit("session_shutdown", {}, ctx);
 });
+
+for (const notifyOnFinish of [true, false]) {
+  test(`native warming follows recovered command notification eligibility (${notifyOnFinish})`, {
+    skip: !supportsNativeCacheWarming(VERSION),
+  }, async () => {
+    const old = process.env.PI_DURABLE_JOBS_DIR;
+    const oldOptOut = process.env.PI_BACKGROUND_CACHE_WARMING;
+    const base = mkdtempSync(join(tmpdir(), "pi-bg-warming-"));
+    process.env.PI_DURABLE_JOBS_DIR = base;
+    delete process.env.PI_BACKGROUND_CACHE_WARMING;
+    const pi = Object.assign(createMockPi(), { events: createEventBus() });
+    const handlers = pi.listeners;
+    pi.sendUserMessage = () => { throw new Error("running/silent jobs cannot deliver a notification"); };
+    const ctx: any = {
+      cwd: base, isIdle: () => false, hasUI: false,
+      sessionManager: { getSessionId: () => "a", getEntries: () => [] },
+    };
+    const store = new DurableJobStore<any>(durableSessionDirectory(ctx, "background", "unused"));
+    store.load();
+    const directory = join(store.directory, "bg-1");
+    mkdirSync(directory, { recursive: true });
+    store.save(1, [{ id: "bg-1", token: "test-token", directory, command: "seeded-not-spawned", cwd: base,
+      status: "running", startedAt: Date.now(), heartbeatAt: Date.now(), supervisorPid: process.pid,
+      logFilePath: join(directory, "output.log"), notifyOnFinish }]);
+    backgroundJobsExtension(pi);
+    async function emit(name: string, event: unknown = {}, context = ctx) {
+      const values = [];
+      for (const handler of handlers.get(name) ?? []) values.push(await handler(event, context));
+      return values;
+    }
+    const event = { type: "cache_warming_decision", action: "stop", warmCost: 0.02, missCost: 0.2 };
+    try {
+      await emit("session_start");
+      assert.deepEqual(await emit("cache_warming_decision", event), [notifyOnFinish ? { action: "warm" } : undefined]);
+      const other = { ...ctx, sessionManager: { ...ctx.sessionManager, getSessionId: () => "b" } };
+      assert.deepEqual(await emit("cache_warming_decision", event, other), [undefined], "same cwd must not share sessions");
+      await emit("agent_start"); // Keep the completed notification undelivered.
+      writeFileSync(join(directory, "state.json"), JSON.stringify({ token: "test-token", status: "completed", endedAt: Date.now(), exitCode: 0 }));
+      await pi.tools.get("bg_status").execute("status", { jobId: "bg-1" }, undefined, undefined, ctx);
+      assert.deepEqual(await emit("cache_warming_decision", event), [undefined], "terminal-undelivered jobs do not keep warming");
+      await emit("session_start", {}, other);
+      assert.deepEqual(await emit("cache_warming_decision", event, other), [undefined], "old registry was replaced");
+      await emit("session_shutdown", {}, other);
+      assert.deepEqual(await emit("cache_warming_decision", event, other), [undefined]);
+    } finally {
+      await emit("session_shutdown");
+      if (old === undefined) delete process.env.PI_DURABLE_JOBS_DIR;
+      else process.env.PI_DURABLE_JOBS_DIR = old;
+      if (oldOptOut === undefined) delete process.env.PI_BACKGROUND_CACHE_WARMING;
+      else process.env.PI_BACKGROUND_CACHE_WARMING = oldOptOut;
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+}

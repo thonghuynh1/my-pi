@@ -149,7 +149,7 @@ async function fixture(options: { commandsOrder?: "before" | "after"; creationGa
 		for (const parent of parents) parent.dispose();
 		await new Promise<void>((done) => server.close(() => done()));
 		if (prior === undefined) delete process.env.PI_DURABLE_JOBS_DIR; else process.env.PI_DURABLE_JOBS_DIR = prior;
-		rmSync(base, { recursive: true, force: true });
+		rmSync(base, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
 	}
 	function fail(index: number) {
 		requests[index].response.writeHead(400, { "content-type": "application/json" });
@@ -423,27 +423,135 @@ test("interrupted custom-agent follow-up keeps its agent name for explicit fresh
 	assert.equal(record(f.store.load()!.jobs[2].resumeParams).customAgent, "memory-owner");
 });
 
-test("bounded native child compaction is enabled independently of main settings and includes summary billing", { timeout: 20_000 }, async (t) => {
+test("joined final answer completes without waiting for SDK post-answer compaction", { timeout: 15_000 }, async (t) => {
+	const f = await fixture(); t.after(() => f.close());
+	const run = f.call("subagent", "final-before-compaction", { type: "explore", task: "Return the final evidence report", timeoutSeconds: 600 });
+	await f.requestCount(1);
+	const finalAnswer = "FINAL_EVIDENCE ".repeat(9000);
+	f.reply(0, finalAnswer, 55_000, 100);
+	let watchdog: ReturnType<typeof setTimeout> | undefined;
+	try {
+		const result = await Promise.race([
+			run,
+			new Promise<never>((_, reject) => {
+				watchdog = setTimeout(() => {
+					if (f.requests.length > 1) f.reply(1, "Release unwanted post-answer compaction for cleanup", 500, 50);
+					reject(new Error(`Final answer did not complete promptly; provider requests: ${f.requests.length}`));
+				}, 3_000);
+			}),
+		]);
+		const details = record(result.details);
+		assert.equal(details.status, "completed");
+		assert.equal(details.output, finalAnswer.trimEnd());
+		assert.equal(record(details.usage).inputTokens, 55_000);
+		assert.equal(record(details.usage).outputTokens, 100);
+		assert.equal(record(details.usage).totalTokens, 55_100);
+		assert.equal(f.requests.length, 1);
+		assert.equal(f.disposed, 1);
+	} finally {
+		if (watchdog !== undefined) clearTimeout(watchdog);
+	}
+});
+
+test("detached wait returns the final answer without waiting for SDK post-answer compaction", { timeout: 15_000 }, async (t) => {
+	const f = await fixture(); t.after(() => f.close());
+	const admission = await f.call("subagent", "detached-final", { type: "explore", task: "Return detached final evidence", mode: "detached", timeoutSeconds: 600 });
+	const jobId = record(admission.details).jobId;
+	await f.requestCount(1);
+	const wait = f.call("subagent_wait", "detached-final-wait", { jobIds: [jobId] });
+	const finalAnswer = "FINAL_EVIDENCE ".repeat(9000);
+	f.reply(0, finalAnswer, 55_000, 100);
+	let watchdog: ReturnType<typeof setTimeout> | undefined;
+	try {
+		const result = await Promise.race([
+			wait,
+			new Promise<never>((_, reject) => {
+				watchdog = setTimeout(() => {
+					if (f.requests.length > 1) f.reply(1, "Release unwanted post-answer compaction for cleanup", 500, 50);
+					reject(new Error(`Detached final answer did not complete promptly; provider requests: ${f.requests.length}`));
+				}, 3_000);
+			}),
+		]);
+		const waited = record(result.details);
+		assert.deepEqual(waited.finished, [jobId]);
+		assert.deepEqual(waited.stillRunning, []);
+		assert.ok(Array.isArray(waited.jobs));
+		assert.equal(waited.jobs.length, 1);
+		const details = record(waited.jobs[0]);
+		assert.equal(details.status, "completed");
+		assert.equal(details.output, finalAnswer.trimEnd());
+		assert.equal(record(details.usage).inputTokens, 55_000);
+		assert.equal(record(details.usage).outputTokens, 100);
+		assert.equal(record(details.usage).totalTokens, 55_100);
+		assert.equal(f.requests.length, 1);
+		assert.equal(f.disposed, 1);
+	} finally {
+		if (watchdog !== undefined) clearTimeout(watchdog);
+	}
+});
+
+test("bounded native child compaction is deferred to explicit follow-up and bills only its segment", { timeout: 20_000 }, async (t) => {
 	const f = await fixture(); t.after(() => f.close());
 	writeFileSync(join(f.base, "settings.json"), JSON.stringify({ compaction: { enabled: false, keepRecentTokens: 99_000 } }));
-	const run = f.call("subagent", "compact", { type: "explore", task: "Preserve ORIGINAL_GOAL" });
+	const run = f.call("subagent", "compact", { type: "explore", task: "Preserve ORIGINAL_GOAL", timeoutSeconds: 600 });
 	await f.requestCount(1);
 	assert.deepEqual(f.childSettings[0], { enabled: true, reserveTokens: 50_000, keepRecentTokens: 12_000 });
-	f.reply(0, "evidence ".repeat(9000), 55_000, 100);
-	await f.requestCount(2);
-	f.reply(1, "Goal: ORIGINAL_GOAL; evidence remains in audit transcript", 500, 50);
-	const details = record((await run).details);
+	const finalAnswer = "evidence ".repeat(9000);
+	f.reply(0, finalAnswer, 55_000, 100);
+	let watchdog: ReturnType<typeof setTimeout> | undefined;
+	let details: Record<string, unknown>;
+	try {
+		const result = await Promise.race([
+			run,
+			new Promise<never>((_, reject) => {
+				watchdog = setTimeout(() => {
+					if (f.requests.length > 1) f.reply(1, "Release unwanted post-answer compaction for cleanup", 500, 50);
+					reject(new Error(`Final answer did not complete promptly; provider requests: ${f.requests.length}`));
+				}, 3_000);
+			}),
+		]);
+		details = record(result.details);
+	} finally {
+		if (watchdog !== undefined) clearTimeout(watchdog);
+	}
 	assert.equal(details.status, "completed");
-	assert.equal(record(details.usage).inputTokens, 55_500);
-	assert.equal(record(details.usage).outputTokens, 150);
-	assert.equal(record(details.context).tokens, null, "post-compaction context is unknown, not false zero");
-	assert.equal(record(details.context).budget, 50_000);
-	assert.match(readFileSync(String(details.transcript), "utf8"), /"type":"compaction"/);
+	assert.equal(details.output, finalAnswer.trimEnd());
+	assert.equal(record(details.usage).inputTokens, 55_000);
+	assert.equal(record(details.usage).outputTokens, 100);
+	assert.equal(record(details.usage).totalTokens, 55_100);
+	const context = record(details.context);
+	assert.equal(context.budget, 50_000);
+	assert.equal(typeof context.tokens, "number");
+	assert.ok(Number(context.tokens) > Number(context.budget), "known over-budget context is retained for explicit follow-up");
+	assert.equal(f.requests.length, 1);
+	assert.equal(f.disposed, 1);
+	assert.doesNotMatch(readFileSync(String(details.transcript), "utf8"), /"type":"compaction"/);
+
 	const next = f.call("subagent_followup", "after-compact", { jobId: details.jobId, task: "Next explicit assignment" });
+	await f.requestCount(2);
+	assert.deepEqual(f.childSettings[1], { enabled: true, reserveTokens: 50_000, keepRecentTokens: 12_000 });
+	assert.match(JSON.stringify(f.requests[1].body), /ORIGINAL_GOAL/);
+	assert.doesNotMatch(JSON.stringify(f.requests[1].body), /Next explicit assignment|Fresh-session handoff, NOT full conversation memory/);
+	f.reply(1, "Goal: ORIGINAL_GOAL; evidence remains in audit transcript", 500, 50);
 	await f.requestCount(3);
-	assert.match(JSON.stringify(f.requests[2].body), /Fresh-session handoff, NOT full conversation memory/);
-	f.reply(2, "Fresh reviewed report");
-	assert.equal(record(record((await next).details).context).reset, "unsafe-context");
+	assert.match(JSON.stringify(f.requests[2].body), /Goal: ORIGINAL_GOAL; evidence remains in audit transcript/);
+	assert.match(JSON.stringify(f.requests[2].body), /Next explicit assignment/);
+	assert.doesNotMatch(JSON.stringify(f.requests[2].body), /Fresh-session handoff, NOT full conversation memory/);
+	f.reply(2, "Next assignment completed with ORIGINAL_GOAL preserved", 100, 10);
+	const followup = record((await next).details);
+	assert.equal(followup.status, "completed");
+	assert.equal(followup.transcript, details.transcript);
+	assert.equal(followup.followedFrom, details.jobId);
+	assert.equal(record(followup.context).reset, "none");
+	assert.equal(record(followup.usage).inputTokens, 600);
+	assert.equal(record(followup.usage).outputTokens, 60);
+	assert.equal(record(followup.usage).totalTokens, 660);
+	assert.equal(record(followup.reuse).originalGoal, "Preserve ORIGINAL_GOAL");
+	const transcript = readFileSync(String(followup.transcript), "utf8");
+	assert.match(transcript, /"type":"compaction"/);
+	assert.match(transcript, /Goal: ORIGINAL_GOAL; evidence remains in audit transcript/);
+	assert.equal(f.requests.length, 3);
+	assert.equal(f.disposed, 2);
 	assert.deepEqual(childContextPolicy(2048), { budget: 1536, compaction: { enabled: true, reserveTokens: 512, keepRecentTokens: 384 } });
 });
 
@@ -567,13 +675,22 @@ test("failed normal children and failed compaction are visible, cleaned up, neve
 	await assert.rejects(f.call("subagent_followup", "failed-reuse", { jobId: error.jobId, task: "x" }), /Only successful/);
 	const compact = f.call("subagent", "compact-fail", { type: "explore", task: "Critical original goal" });
 	await f.requestCount(2); f.reply(1, "evidence ".repeat(9000), 55_000, 100);
-	await f.requestCount(3); f.fail(2);
-	const details = record((await compact).details);
-	assert.equal(details.status, "error");
-	assert.match(String(record(details.context).compactionError), /compaction failed/i);
-	assert.equal(f.requests.length, 3);
+	const initial = record((await compact).details);
+	assert.equal(initial.status, "completed");
+	assert.equal(f.requests.length, 2);
 	assert.equal(f.disposed, 2);
+	const followup = f.call("subagent_followup", "compact-fails-on-followup", { jobId: initial.jobId, task: "Continue the original goal" });
+	await f.requestCount(3); f.fail(2);
+	const details = record((await followup).details);
+	assert.equal(details.status, "error");
+	assert.match(String(details.error), /Child compaction failed; explicit fresh handoff required/i);
+	assert.equal(f.requests.length, 3);
+	assert.equal(f.disposed, 3);
 	await assert.rejects(f.call("subagent_followup", "compaction-reuse", { jobId: details.jobId, task: "x" }), /Only successful/);
+	await assert.rejects(f.call("subagent_followup", "compaction-ancestor-reuse", { jobId: initial.jobId, task: "x" }), /latest.*failed.*new child.*reviewed handoff/i);
+	assert.equal(f.requests.length, 3, "failed compaction and rejected reuse never silently retry");
+	assert.equal(f.created, 3);
+	assert.equal(f.disposed, 3);
 });
 
 test("real parent SDK requests its next answer only after both joined child reports settle", { timeout: 20_000 }, async (t) => {

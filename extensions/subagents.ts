@@ -1688,6 +1688,11 @@ async function runSubagent(
 					break;
 				}
 				case "agent_end": {
+					const lastAssistant = [...event.messages].reverse().find((message) => message.role === "assistant");
+					if (lastAssistant?.role === "assistant" && lastAssistant.stopReason === "stop") {
+						// Defer compaction of a successful final answer until an explicit follow-up.
+						services.settingsManager.applyOverrides({ compaction: { enabled: false } });
+					}
 					readSegmentUsage();
 					liveStatus.preview = "finalizing...";
 					publishStatus(true);
@@ -1702,6 +1707,7 @@ async function runSubagent(
 
 		const prompt = packet ? `${buildEvidencePacketPrompt(packet, effectiveLimits)}\n\nParent task: ${params.task}` : `Task: ${params.task}\n\nReturn only the useful findings for the parent agent.`;
 		const runPrompt = async (promptText: string) => {
+			services.settingsManager.applyOverrides({ compaction: childContextPolicy(resolvedModel.contextWindow).compaction });
 			const signals = [ctx.signal, signal, timeoutController.signal].filter((value): value is AbortSignal => Boolean(value));
 			let rejectCancelled: (reason: Error) => void = () => {};
 			const cancelled = new Promise<never>((_, reject) => { rejectCancelled = reject; });

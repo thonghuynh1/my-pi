@@ -1,9 +1,11 @@
-export type ProviderId = "codex" | "antigravity" | "copilot" | "cursor";
+export type ProviderId = "codex" | "antigravity" | "copilot" | "cursor" | "claude";
 export type QuotaWindow = { id: string; label: string; usedPercent: number; resetsAt?: number };
 export type QuotaGroup = { id: string; name: string; shortName: string; windows: QuotaWindow[] };
 export type UsageMetric =
   | { kind: "quota"; groups: QuotaGroup[] }
-  | { kind: "credits"; consumed: number; resetsAt?: number };
+  | { kind: "credits"; consumed: number; resetsAt?: number }
+  // Claude usage-credit spend (money) plus any subscription quota windows; fetchedAt is Claude Code's own cache time.
+  | { kind: "spend"; spend?: { used: number; limit?: number; currency: string; usedPercent?: number; severity?: string }; windows: QuotaWindow[]; fetchedAt?: number };
 export type ProviderState = {
   id: ProviderId;
   name: string;
@@ -91,12 +93,58 @@ export function parseCursor(raw: unknown): UsageMetric {
   return { kind: "quota", groups: [{ id: "cursor", name: "Cursor included plan", shortName: "Cursor", windows }] };
 }
 
+function money(value: unknown, exponent: unknown): number | undefined {
+  const amount = record(value).amount_minor ?? value;
+  if (!finite(amount) || amount < 0 || !finite(exponent) || !Number.isInteger(exponent) || exponent < 0 || exponent > 6) return undefined;
+  return amount / 10 ** exponent;
+}
+// Source: Claude Code's own cachedUsageUtilization (undocumented), refreshed by `claude -p /usage`.
+export function parseClaude(raw: unknown): UsageMetric {
+  const data = record(raw);
+  const usage = record(data.utilization);
+  const windows: QuotaWindow[] = [];
+  for (const [key, id] of [["five_hour", "5h"], ["seven_day", "week"]]) {
+    const w = record(usage[key]);
+    const used = w.utilization ?? w.used_percentage;
+    if (!finite(used) || used < 0) continue;
+    windows.push({ id, label: id, usedPercent: used, resetsAt: finite(w.resets_at) ? reset(w.resets_at, true) : reset(w.resets_at) });
+  }
+  let spend: { used: number; limit?: number; currency: string; usedPercent?: number; severity?: string } | undefined;
+  const s = record(usage.spend);
+  const extra = record(usage.extra_usage);
+  if (s.enabled === true) {
+    const usedRecord = record(s.used);
+    const used = money(usedRecord, usedRecord.exponent);
+    const limitRecord = record(s.limit);
+    const limit = money(limitRecord, limitRecord.exponent);
+    if (used !== undefined) spend = { used, limit, currency: typeof usedRecord.currency === "string" ? usedRecord.currency : "USD",
+      usedPercent: finite(s.percent) && s.percent >= 0 ? s.percent : undefined, severity: typeof s.severity === "string" ? s.severity : undefined };
+  } else if (s.enabled === undefined && extra.is_enabled === true) {
+    const used = money(extra.used_credits, extra.decimal_places);
+    const limit = money(extra.monthly_limit, extra.decimal_places);
+    if (used !== undefined) spend = { used, limit, currency: typeof extra.currency === "string" ? extra.currency : "USD",
+      usedPercent: finite(extra.utilization) && extra.utilization >= 0 ? extra.utilization : undefined };
+  }
+  if (spend && spend.limit !== undefined && spend.limit > 0) spend.usedPercent = spend.used / spend.limit * 100;
+  if (!spend && !windows.length) return unavailable();
+  const fetchedAt = finite(data.fetchedAtMs) && data.fetchedAtMs > 0 && data.fetchedAtMs <= 8.64e15 ? data.fetchedAtMs : undefined;
+  return { kind: "spend", spend, windows, fetchedAt };
+}
+
 const percent = (n: number): string => `${Number(n.toFixed(1))}%`;
+const dollars = (n: number, currency: string, digits = 2): string =>
+  `${currency === "USD" ? "$" : currency + " "}${n.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 export function footerRows(states: readonly ProviderState[]): string[] {
   return states.flatMap((state) => {
     if (!state.value) return [];
     const stale = state.error && state.value ? " · stale" : "";
     if (state.value.kind === "credits") return [`Copilot ${state.value.consumed.toLocaleString("en-US")} credits used${stale}`];
+    if (state.value.kind === "spend") {
+      const { spend, windows } = state.value;
+      const parts = windows.map((w) => `${w.label} ${percent(w.usedPercent)}`);
+      if (spend) parts.push(`${dollars(spend.used, spend.currency)}${spend.limit !== undefined ? ` / ${dollars(spend.limit, spend.currency)}` : ""}${spend.usedPercent !== undefined ? ` (${percent(spend.usedPercent)})` : ""}`);
+      return [`Claude ${parts.join(" · ")} used${stale}`];
+    }
     return state.value.groups.map((g) => {
       const resetsAt = g.windows.find((w) => w.id === "5h")?.resetsAt;
       const resetTime = resetsAt === undefined ? "" : ` · 5h reset ${new Date(resetsAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
@@ -115,6 +163,15 @@ export function compactFooterRows(states: readonly ProviderState[]): string[] {
     if (state.value.kind === "credits") {
       // User-requested credit-equivalent display, not a verified billing amount.
       accounts.push(`Copilot $${Math.round(state.value.consumed / 100).toLocaleString("en-US")}${stale}`);
+      continue;
+    }
+    if (state.value.kind === "spend") {
+      const { spend, windows } = state.value;
+      if (windows.length) quota.push(`Claude ${windows.map((w) => `${w.id === "week" ? "wk" : w.label}-${pct(w.usedPercent)}`).join(" ")}${stale}`);
+      if (spend) {
+        const amount = `${dollars(spend.used, spend.currency, 0)}${spend.limit !== undefined ? `/${dollars(spend.limit, spend.currency, 0)}` : ""}`;
+        accounts.push(`Claude ${amount}${spend.usedPercent !== undefined ? ` ${pct(spend.usedPercent)}` : ""}${stale}`);
+      }
       continue;
     }
     for (const g of state.value.groups) {
@@ -136,6 +193,15 @@ export function detailText(states: readonly ProviderState[]): string {
       `  Last success: ${localized(state.lastSuccess)}`];
     if (state.error) lines.push(`  Reason: ${state.error}`);
     if (!state.value) lines.push("  Usage unavailable (no successful read)");
+    else if (state.value.kind === "spend") {
+      const { spend, windows, fetchedAt } = state.value;
+      for (const w of windows) lines.push(`  ${w.id === "5h" ? "Five-hour window (5h)" : "Weekly window (week)"}: ${percent(w.usedPercent)} used · resets: ${localized(w.resetsAt)}`);
+      if (spend) {
+        lines.push(`  Usage credits: ${dollars(spend.used, spend.currency)} used${spend.limit !== undefined ? ` of ${dollars(spend.limit, spend.currency)} limit` : " (no personal limit)"}${spend.usedPercent !== undefined ? ` · ${percent(spend.usedPercent)}` : ""}${spend.severity ? ` · ${spend.severity}` : ""}`);
+        lines.push("  Spend period/reset not reported by Claude Code.");
+      }
+      lines.push(`  Claude Code cache fetched: ${localized(fetchedAt)}`);
+    }
     else if (state.value.kind === "credits") lines.push(`  ${state.value.consumed.toLocaleString("en-US")} credits consumed`, "  Footer converts 100 credits = $1, rounded to whole dollars; not a verified bill.", `  Resets: ${localized(state.value.resetsAt)}`);
     else for (const g of state.value.groups) {
       lines.push(`  ${g.name}`);

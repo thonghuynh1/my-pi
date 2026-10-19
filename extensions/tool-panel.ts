@@ -3,10 +3,7 @@
  * main chat view only shows AI thinking and final responses.
  *
  * Features:
- *  - Live "tool activity" widget rendered above the editor showing the
- *    most recent N tool invocations, their status, and a short summary.
  *  - `/tools` command opens a scrollable full-history overlay with details.
- *  - `/tool-panel` command toggles the widget on/off.
  *  - Built-in tool renderers (read/bash/edit/write/grep/find/ls) are
  *    overridden with minimal renderers so tool calls/results are quiet
  *    inside the chat scrollback — the chat keeps only assistant thinking
@@ -15,7 +12,6 @@
  * Drop-in: this file is auto-discovered because the project's package.json
  * registers `./extensions` under `pi.extensions`. After install:
  *   /reload    (or restart pi)
- *   /tool-panel       to toggle the widget
  *   /tools            to open the full history overlay
  */
 
@@ -89,11 +85,6 @@ type AssistantUsage = {
 const records: ToolRecord[] = [];
 const recordById = new Map<string, ToolRecord>();
 const MAX_RECORDS = 500; // cap memory across long sessions
-const PANEL_VISIBLE_ROWS = 6; // most-recent N shown in widget
-
-let panelEnabled = true;
-let activeSubagentCount = 0;
-const WIDGET_ID = "tool-panel";
 
 // Real-billing tracking -----------------------------------------------
 // Number of assistant messages already attributed in the current branch.
@@ -107,7 +98,7 @@ const pendingRegularTools: ToolRecord[] = [];
 // is non-empty.
 let pendingCallingTurnCost = 0;
 let pendingCallingTurnTokens = 0;
-// Stashed for sessionTotals() so the widget renderer can read the real
+// Stashed for sessionTotals() so the history overlay can read the real
 // session branch (same source the footer uses) without being passed ctx.
 let currentCtx: ExtensionContext | undefined;
 
@@ -354,89 +345,12 @@ function attributePendingTools(ctx: ExtensionContext): void {
 export const piExtension = { id: "tool-panel" };
 
 export default function (pi: ExtensionAPI) {
-	let tuiRef: { requestRender: () => void } | undefined;
-
-	// ----- widget renderer -----------------------------------------------
-	const renderWidget = () => {
-		return (tui: any, theme: Theme) => {
-			tuiRef = tui;
-			return {
-				render(width: number): string[] {
-					const lines: string[] = [];
-					const totals = sessionTotals();
-					const header =
-						theme.fg("toolTitle", theme.bold("◆ Tool activity")) +
-						theme.fg(
-							"dim",
-							`  ${records.length} calls · ~${fmtTokens(totals.tokens)} tok · ${fmtCost(totals.costUsd)}` +
-								`  (/tools for history)`,
-						);
-					lines.push(truncateToWidth(header, width));
-
-					if (records.length === 0) {
-						lines.push(theme.fg("dim", "  (no tools used yet)"));
-						return lines;
-					}
-
-					const recent = records.slice(-PANEL_VISIBLE_ROWS);
-					for (const rec of recent) {
-						const glyph = statusGlyph(rec.status, theme);
-						const elapsed = fmtElapsed(rec);
-						const tokens = (rec.inputTokens ?? 0) + (rec.outputTokens ?? 0);
-						const meta = theme.fg(
-							"dim",
-							`${elapsed.padStart(5)}  ${fmtTokens(tokens).padStart(5)}t  ${fmtRecCost(rec).padStart(7)}`,
-						);
-						// reserve width for the right-aligned meta block so the summary truncates cleanly
-						const metaWidth = visibleWidth(meta);
-						const leftBudget = Math.max(10, width - metaWidth - 6);
-						const body =
-							theme.fg("accent", rec.name) +
-							" " +
-							theme.fg(
-								"toolOutput",
-								clip(rec.summary, Math.max(10, leftBudget - rec.name.length - 4)),
-							);
-						const left = `  ${glyph} ${body}`;
-						const leftPadded =
-							left +
-							" ".repeat(Math.max(1, width - visibleWidth(left) - metaWidth));
-						lines.push(truncateToWidth(leftPadded + meta, width));
-					}
-
-					if (records.length > PANEL_VISIBLE_ROWS) {
-						const more = records.length - PANEL_VISIBLE_ROWS;
-						lines.push(theme.fg("dim", `  … ${more} earlier hidden`));
-					}
-					return lines;
-				},
-				invalidate() {},
-			};
-		};
-	};
-
-	const refreshWidget = (ctx: { ui: any; hasUI: boolean }) => {
-		if (!ctx.hasUI) return;
-		// Hide the tool-panel widget while one or more subagents are running so
-		// the screen real estate is freed up for the subagent status widget.
-		// It reappears automatically when the last subagent finishes.
-		if (!panelEnabled || activeSubagentCount > 0) {
-			ctx.ui.setWidget(WIDGET_ID, undefined);
-			return;
-		}
-		ctx.ui.setWidget(WIDGET_ID, renderWidget(), { placement: "aboveEditor" });
-		tuiRef?.requestRender();
-	};
-
 	pi.on("session_start", (_event, ctx) => {
-		activeSubagentCount = 0;
 		currentCtx = ctx;
 		processedAssistantCount = 0;
 		pendingRegularTools.length = 0;
 		pendingCallingTurnCost = 0;
 		pendingCallingTurnTokens = 0;
-		if (!ctx.hasUI) return;
-		refreshWidget(ctx);
 	});
 
 	// After every assistant turn, price the tools that ran since the
@@ -444,20 +358,16 @@ export default function (pi: ExtensionAPI) {
 	pi.on("turn_end", (_event, ctx) => {
 		currentCtx = ctx;
 		attributePendingTools(ctx);
-		refreshWidget(ctx);
 	});
 	pi.on("agent_end", (_event, ctx) => {
 		currentCtx = ctx;
 		attributePendingTools(ctx);
-		refreshWidget(ctx);
 	});
 
 	// ----- track tool lifecycle ------------------------------------------
 	pi.on("tool_execution_start", (event, ctx) => {
 		currentCtx = ctx;
 		if (event.toolName === "subagent") {
-			activeSubagentCount += 1;
-			refreshWidget(ctx);
 			return; // skip recording until the subagent finishes
 		}
 		const rec: ToolRecord = {
@@ -469,24 +379,20 @@ export default function (pi: ExtensionAPI) {
 			summary: summarize(event.toolName, event.args),
 		};
 		pushRecord(rec);
-		refreshWidget(ctx);
 	});
 
-	pi.on("tool_execution_update", (event, ctx) => {
+	pi.on("tool_execution_update", (event) => {
 		const rec = recordById.get(event.toolCallId);
 		if (!rec) return;
 		// refresh args+summary in case they grew during streaming
 		rec.args = event.args ?? rec.args;
 		rec.summary = summarize(rec.name, rec.args);
-		refreshWidget(ctx);
 	});
 
 	pi.on("tool_execution_end", (event, ctx) => {
 		currentCtx = ctx;
 		if (event.toolName === "subagent") {
-			activeSubagentCount = Math.max(0, activeSubagentCount - 1);
-			// Record the subagent call now (so its row appears once it's done
-			// and the panel becomes visible again).
+			// Record the subagent call once its usage is available.
 			const details = event.result?.details;
 			const subagentUsage = details?.usage;
 			const args = (details && { type: details.type, name: details.name, task: details.task }) ?? {};
@@ -514,7 +420,6 @@ export default function (pi: ExtensionAPI) {
 			// for it as input. Queue it for proportional attribution too
 			// — but mark it already-priced so we don't overwrite the real
 			// child-session cost. We track it via fullResultLen only.
-			refreshWidget(ctx);
 			return;
 		}
 		const rec = recordById.get(event.toolCallId);
@@ -534,7 +439,6 @@ export default function (pi: ExtensionAPI) {
 		rec.modelId = ctx.model?.id;
 		rec.costAttributed = false;
 		pendingRegularTools.push(rec);
-		refreshWidget(ctx);
 	});
 
 	// ----- commands ------------------------------------------------------
@@ -545,15 +449,6 @@ export default function (pi: ExtensionAPI) {
 	}
 	piSettings = visibilityResult.settings;
 	const managed = createManagedExtension(pi, { id: piExtension.id, visibility: piSettings });
-
-	managed.registerCommand("tool-panel", {
-		description: "Toggle the tool activity panel above the editor",
-		handler: async (_args: string, ctx: ExtensionCommandContext) => {
-			panelEnabled = !panelEnabled;
-			refreshWidget(ctx);
-			ctx.ui.notify(`Tool panel ${panelEnabled ? "enabled" : "disabled"}`, "info");
-		},
-	});
 
 	managed.registerCommand("tools", {
 		description: "Open the full tool-usage history in an overlay",

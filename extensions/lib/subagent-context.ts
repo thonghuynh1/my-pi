@@ -1,7 +1,7 @@
 import type { ExtensionAPI, CompactionSettings } from "@earendil-works/pi-coding-agent";
 import type { EffectiveRoutingConfig } from "./routing-policy.ts";
 
-export const CHILD_CONTEXT_BUDGET = 50_000;
+export const CHILD_CONTEXT_BUDGET = 150_000;
 export const CHILD_MAX_ASSIGNMENTS = 3;
 export const CHILD_MAX_TRANSCRIPT_BYTES = 1024 * 1024;
 export const CHILD_HANDOFF_REPORT_CHARS = 8_000;

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { CLAUDE_USAGE_REQUEST, readClaudeUsage } from "../lib/provider-usage/claude.ts";
 import { CODEX_INITIALIZE, COPILOT_FIELDS, createProcessRunner, createTreeTerminator, providerReaders, resolveLaunch, type ProcessRequest } from "../lib/provider-usage/readers.ts";
 
 function processFixture(options: { timeoutMs?: number; maxOutputBytes?: number } = {}) {
@@ -32,11 +33,14 @@ test("registry uses verified CLI commands plus the isolated experimental Cursor 
     requests.push(request);
     if (request.command === "codex") return { rateLimits: { primary: { usedPercent: 69, windowDurationMins: 300 } } };
     if (request.command === "agy") return { status: "SUCCESS", command: { name: "usage", data: { groups: [{ name: "Gemini Models", buckets: [{ window: "5h", remaining_fraction: 1 }] }] } } };
+    if (request.command === "claude") return { type: "result", is_error: false, local_command: "usage", num_turns: 0 };
     return { quota_snapshots: { premium_interactions: { credits_used: 54386 } } };
-  }, async () => ({ planUsage: { totalPercentUsed: 42 } }));
+  }, async () => ({ planUsage: { totalPercentUsed: 42 } }), (run, s) => readClaudeUsage(run, s, {
+    home: "/home/u", env: {}, readFile: async () => JSON.stringify({ cachedUsageUtilization: { fetchedAtMs: 1, utilization: { spend: { enabled: true, used: { amount_minor: 1, exponent: 2 } } } } }),
+  }));
   await Promise.all(readers.map((reader) => reader.read(signal())));
-  assert.deepEqual(requests, [codexRequest, jsonRequest, { command: "gh", args: ["api", "/copilot_internal/user", "--jq", COPILOT_FIELDS] }]);
-  assert.deepEqual(readers.map((r) => r.id), ["codex", "antigravity", "copilot", "cursor"]);
+  assert.deepEqual(requests, [codexRequest, jsonRequest, { command: "gh", args: ["api", "/copilot_internal/user", "--jq", COPILOT_FIELDS] }, CLAUDE_USAGE_REQUEST]);
+  assert.deepEqual(readers.map((r) => r.id), ["codex", "antigravity", "copilot", "cursor", "claude"]);
   assert.equal(readers[2].experimental, true);
 });
 

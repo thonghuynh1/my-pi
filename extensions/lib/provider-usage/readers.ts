@@ -2,15 +2,16 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { readCursorUsage } from "./cursor.ts";
-import { parseAntigravity, parseCodex, parseCopilot, parseCursor, type ProviderId, type UsageMetric } from "./model.ts";
+import { ClaudeUsageError, readClaudeUsage } from "./claude.ts";
+import { parseAntigravity, parseClaude, parseCodex, parseCopilot, parseCursor, type ProviderId, type UsageMetric } from "./model.ts";
 
 export class UsageReadError extends Error {}
-export type ProcessRequest = { command: "codex" | "agy" | "gh"; args: readonly string[]; protocol?: "codex" };
+export type ProcessRequest = { command: "codex" | "agy" | "gh" | "claude"; args: readonly string[]; protocol?: "codex" };
 export type ProcessRunner = (request: ProcessRequest, signal: AbortSignal) => Promise<unknown>;
 export type ProviderReader = { id: ProviderId; name: string; experimental?: boolean; read(signal: AbortSignal): Promise<UsageMetric> };
 export const CODEX_INITIALIZE = { id: 1, method: "initialize", params: { clientInfo: { name: "provider_usage", title: "Provider Usage", version: "0.1.0" } } };
 export const COPILOT_FIELDS = "{quota_snapshots: {premium_interactions: {credits_used: .quota_snapshots.premium_interactions.credits_used}}, quota_reset_date_utc: .quota_reset_date_utc}";
-export function providerReaders(run: ProcessRunner = runProcess, cursorRead = readCursorUsage): ProviderReader[] {
+export function providerReaders(run: ProcessRunner = runProcess, cursorRead = readCursorUsage, claudeRead = readClaudeUsage): ProviderReader[] {
   return [
     { id: "codex", name: "Codex", read: async (signal) => parseCodex(await run({ command: "codex", args: ["app-server"], protocol: "codex" }, signal)) },
     { id: "antigravity", name: "Antigravity", read: async (signal) => parseAntigravity(await run({ command: "agy", args: ["-p", "/usage", "--output-format", "json"] }, signal)) },
@@ -20,6 +21,15 @@ export function providerReaders(run: ProcessRunner = runProcess, cursorRead = re
       try { raw = await cursorRead(signal); }
       catch { throw new UsageReadError("Cursor usage unavailable; check existing CLI login (file store required)"); }
       return parseCursor(raw);
+    } },
+    { id: "claude", name: "Claude", experimental: true, read: async (signal) => {
+      let raw: unknown;
+      try { raw = await claudeRead(run, signal); }
+      catch (error) {
+        if (error instanceof UsageReadError) throw error;
+        throw new UsageReadError(error instanceof ClaudeUsageError ? error.message : "Claude usage unavailable");
+      }
+      return parseClaude(raw);
     } },
   ];
 }

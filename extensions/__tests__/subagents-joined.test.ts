@@ -171,7 +171,7 @@ test("fresh agent guidance includes the capability guide in tool metadata and st
 		const guide = tool.promptGuidelines?.join("\n") ?? "";
 		for (const contract of [
 			/mode=joined/, /mode=detached/, /subagent_followup/, /latest.*job ID/, /Promise\.all/,
-			/shared filesystem/, /no extensions/, /50k.*target.*not.*ceiling/, /6.*slots/, /subagent_resume.*user/,
+			/shared filesystem/, /no extensions/, /150k.*target.*not.*ceiling/, /6.*slots/, /subagent_resume.*user/,
 		]) assert.match(guide, contract);
 		const [injected] = await f.emit("before_agent_start", { systemPrompt: "PARENT_BASE" });
 		const prompt = record(injected).systemPrompt;
@@ -491,13 +491,13 @@ test("detached wait returns the final answer without waiting for SDK post-answer
 });
 
 test("bounded native child compaction is deferred to explicit follow-up and bills only its segment", { timeout: 20_000 }, async (t) => {
-	const f = await fixture(); t.after(() => f.close());
+	const f = await fixture({ window: 200_000 }); t.after(() => f.close());
 	writeFileSync(join(f.base, "settings.json"), JSON.stringify({ compaction: { enabled: false, keepRecentTokens: 99_000 } }));
 	const run = f.call("subagent", "compact", { type: "explore", task: "Preserve ORIGINAL_GOAL", timeoutSeconds: 600 });
 	await f.requestCount(1);
 	assert.deepEqual(f.childSettings[0], { enabled: true, reserveTokens: 50_000, keepRecentTokens: 12_000 });
 	const finalAnswer = "evidence ".repeat(9000);
-	f.reply(0, finalAnswer, 55_000, 100);
+	f.reply(0, finalAnswer, 155_000, 100);
 	let watchdog: ReturnType<typeof setTimeout> | undefined;
 	let details: Record<string, unknown>;
 	try {
@@ -516,11 +516,11 @@ test("bounded native child compaction is deferred to explicit follow-up and bill
 	}
 	assert.equal(details.status, "completed");
 	assert.equal(details.output, finalAnswer.trimEnd());
-	assert.equal(record(details.usage).inputTokens, 55_000);
+	assert.equal(record(details.usage).inputTokens, 155_000);
 	assert.equal(record(details.usage).outputTokens, 100);
-	assert.equal(record(details.usage).totalTokens, 55_100);
+	assert.equal(record(details.usage).totalTokens, 155_100);
 	const context = record(details.context);
-	assert.equal(context.budget, 50_000);
+	assert.equal(context.budget, 150_000);
 	assert.equal(typeof context.tokens, "number");
 	assert.ok(Number(context.tokens) > Number(context.budget), "known over-budget context is retained for explicit follow-up");
 	assert.equal(f.requests.length, 1);
@@ -552,6 +552,7 @@ test("bounded native child compaction is deferred to explicit follow-up and bill
 	assert.match(transcript, /Goal: ORIGINAL_GOAL; evidence remains in audit transcript/);
 	assert.equal(f.requests.length, 3);
 	assert.equal(f.disposed, 2);
+	assert.deepEqual(childContextPolicy(100_000), { budget: 91_808, compaction: { enabled: true, reserveTokens: 8192, keepRecentTokens: 12_000 } });
 	assert.deepEqual(childContextPolicy(2048), { budget: 1536, compaction: { enabled: true, reserveTokens: 512, keepRecentTokens: 384 } });
 });
 
@@ -674,7 +675,7 @@ test("failed normal children and failed compaction are visible, cleaned up, neve
 	assert.equal(error.status, "error");
 	await assert.rejects(f.call("subagent_followup", "failed-reuse", { jobId: error.jobId, task: "x" }), /Only successful/);
 	const compact = f.call("subagent", "compact-fail", { type: "explore", task: "Critical original goal" });
-	await f.requestCount(2); f.reply(1, "evidence ".repeat(9000), 55_000, 100);
+	await f.requestCount(2); f.reply(1, "evidence ".repeat(9000), 95_000, 100);
 	const initial = record((await compact).details);
 	assert.equal(initial.status, "completed");
 	assert.equal(f.requests.length, 2);

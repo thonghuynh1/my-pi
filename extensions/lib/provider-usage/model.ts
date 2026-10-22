@@ -1,4 +1,4 @@
-export type ProviderId = "codex" | "antigravity" | "copilot" | "cursor" | "claude";
+export type ProviderId = "codex" | "antigravity" | "copilot" | "cursor" | "claude-work" | "claude-personal";
 export type QuotaWindow = { id: string; label: string; usedPercent: number; resetsAt?: number };
 export type QuotaGroup = { id: string; name: string; shortName: string; windows: QuotaWindow[] };
 export type UsageMetric =
@@ -131,6 +131,9 @@ export function parseClaude(raw: unknown): UsageMetric {
   return { kind: "spend", spend, windows, fetchedAt };
 }
 
+const claudeFull = (state: ProviderState): string => state.name || "Claude";
+const claudeShort = (state: ProviderState): string =>
+  state.id === "claude-work" ? "Claude-W" : state.id === "claude-personal" ? "Claude-P" : state.name || "Claude";
 const percent = (n: number): string => `${Number(n.toFixed(1))}%`;
 const dollars = (n: number, currency: string, digits = 2): string =>
   `${currency === "USD" ? "$" : currency + " "}${n.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
@@ -143,7 +146,7 @@ export function footerRows(states: readonly ProviderState[]): string[] {
       const { spend, windows } = state.value;
       const parts = windows.map((w) => `${w.label} ${percent(w.usedPercent)}`);
       if (spend) parts.push(`${dollars(spend.used, spend.currency)}${spend.limit !== undefined ? ` / ${dollars(spend.limit, spend.currency)}` : ""}${spend.usedPercent !== undefined ? ` (${percent(spend.usedPercent)})` : ""}`);
-      return [`Claude ${parts.join(" · ")} used${stale}`];
+      return [`${claudeFull(state)} ${parts.join(" · ")} used${stale}`];
     }
     return state.value.groups.map((g) => {
       const resetsAt = g.windows.find((w) => w.id === "5h")?.resetsAt;
@@ -167,10 +170,10 @@ export function compactFooterRows(states: readonly ProviderState[]): string[] {
     }
     if (state.value.kind === "spend") {
       const { spend, windows } = state.value;
-      if (windows.length) quota.push(`Claude ${windows.map((w) => `${w.id === "week" ? "wk" : w.label}-${pct(w.usedPercent)}`).join(" ")}${stale}`);
+      if (windows.length) quota.push(`${claudeShort(state)} ${windows.map((w) => `${w.id === "week" ? "wk" : w.label}-${pct(w.usedPercent)}`).join(" ")}${stale}`);
       if (spend) {
         const amount = `${dollars(spend.used, spend.currency, 0)}${spend.limit !== undefined ? `/${dollars(spend.limit, spend.currency, 0)}` : ""}`;
-        accounts.push(`Claude ${amount}${spend.usedPercent !== undefined ? ` ${pct(spend.usedPercent)}` : ""}${stale}`);
+        accounts.push(`${claudeShort(state)} ${amount}${spend.usedPercent !== undefined ? ` ${pct(spend.usedPercent)}` : ""}${stale}`);
       }
       continue;
     }

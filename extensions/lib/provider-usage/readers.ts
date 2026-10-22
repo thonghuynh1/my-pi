@@ -2,16 +2,29 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { readCursorUsage } from "./cursor.ts";
-import { ClaudeUsageError, readClaudeUsage } from "./claude.ts";
+import { ClaudeUsageError, readClaudeUsageAt } from "./claude.ts";
+import { claudeProfiles, type ClaudeProfileMap } from "../claude-profiles.ts";
 import { parseAntigravity, parseClaude, parseCodex, parseCopilot, parseCursor, type ProviderId, type UsageMetric } from "./model.ts";
 
 export class UsageReadError extends Error {}
-export type ProcessRequest = { command: "codex" | "agy" | "gh" | "claude"; args: readonly string[]; protocol?: "codex" };
+export type ProcessRequest = { command: "codex" | "agy" | "gh" | "claude"; args: readonly string[]; protocol?: "codex"; env?: Record<string, string | undefined> };
 export type ProcessRunner = (request: ProcessRequest, signal: AbortSignal) => Promise<unknown>;
 export type ProviderReader = { id: ProviderId; name: string; experimental?: boolean; read(signal: AbortSignal): Promise<UsageMetric> };
 export const CODEX_INITIALIZE = { id: 1, method: "initialize", params: { clientInfo: { name: "provider_usage", title: "Provider Usage", version: "0.1.0" } } };
 export const COPILOT_FIELDS = "{quota_snapshots: {premium_interactions: {credits_used: .quota_snapshots.premium_interactions.credits_used}}, quota_reset_date_utc: .quota_reset_date_utc}";
-export function providerReaders(run: ProcessRunner = runProcess, cursorRead = readCursorUsage, claudeRead = readClaudeUsage): ProviderReader[] {
+export type ClaudeUsageAtReader = (run: ProcessRunner, signal: AbortSignal, configDir: string) => Promise<unknown>;
+export function providerReaders(run: ProcessRunner = runProcess, cursorRead = readCursorUsage, claudeReadAt: ClaudeUsageAtReader = readClaudeUsageAt, profiles: ClaudeProfileMap = claudeProfiles()): ProviderReader[] {
+  const claudeReader = (id: "claude-work" | "claude-personal", name: string, configDir: string): ProviderReader => ({
+    id, name, experimental: true, read: async (signal) => {
+      try {
+        return parseClaude(await claudeReadAt(run, signal, configDir));
+      } catch (error) {
+        if (error instanceof UsageReadError) throw error;
+        if (error instanceof ClaudeUsageError) throw new UsageReadError(error.message);
+        throw new UsageReadError(`${name} usage unavailable`);
+      }
+    },
+  });
   return [
     { id: "codex", name: "Codex", read: async (signal) => parseCodex(await run({ command: "codex", args: ["app-server"], protocol: "codex" }, signal)) },
     { id: "antigravity", name: "Antigravity", read: async (signal) => parseAntigravity(await run({ command: "agy", args: ["-p", "/usage", "--output-format", "json"] }, signal)) },
@@ -22,15 +35,8 @@ export function providerReaders(run: ProcessRunner = runProcess, cursorRead = re
       catch { throw new UsageReadError("Cursor usage unavailable; check existing CLI login (file store required)"); }
       return parseCursor(raw);
     } },
-    { id: "claude", name: "Claude", experimental: true, read: async (signal) => {
-      let raw: unknown;
-      try { raw = await claudeRead(run, signal); }
-      catch (error) {
-        if (error instanceof UsageReadError) throw error;
-        throw new UsageReadError(error instanceof ClaudeUsageError ? error.message : "Claude usage unavailable");
-      }
-      return parseClaude(raw);
-    } },
+    claudeReader("claude-work", profiles.work.name, profiles.work.configDir),
+    claudeReader("claude-personal", profiles.personal.name, profiles.personal.configDir),
   ];
 }
 
@@ -100,6 +106,14 @@ export function createTreeTerminator(deps: TreeDependencies = {}): (child: Child
     }
   };
 }
+function mergeRequestEnv(overlay: Record<string, string | undefined>): NodeJS.ProcessEnv {
+  const next = { ...process.env };
+  for (const [key, value] of Object.entries(overlay)) {
+    if (value === undefined) delete next[key];
+    else next[key] = value;
+  }
+  return next;
+}
 const terminateTree = createTreeTerminator();
 export function createProcessRunner(deps: ProcessDependencies = {}): ProcessRunner {
   return async (request, signal) => {
@@ -110,6 +124,7 @@ export function createProcessRunner(deps: ProcessDependencies = {}): ProcessRunn
       child = deps.spawn ? deps.spawn(launch) : spawn(launch.file, launch.args, {
         windowsHide: true, windowsVerbatimArguments: launch.windowsVerbatimArguments,
         detached: process.platform !== "win32", stdio: "pipe",
+        ...(request.env === undefined ? {} : { env: mergeRequestEnv(request.env) }),
       });
     } catch (error) {
       throw error instanceof UsageReadError ? error : new UsageReadError("CLI could not be started");

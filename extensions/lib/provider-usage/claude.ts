@@ -27,6 +27,14 @@ async function boundedRead(file: string): Promise<string> {
   return readFile(file, "utf8");
 }
 // Returns only the usage cache fields; the config file also holds account identity we must not retain.
+function snapshotUsage(config: unknown): { fetchedAtMs: unknown; utilization: Record<string, unknown> } {
+  const cache = record(record(config).cachedUsageUtilization);
+  const usage = record(cache.utilization);
+  return {
+    fetchedAtMs: cache.fetchedAtMs,
+    utilization: { five_hour: usage.five_hour, seven_day: usage.seven_day, spend: usage.spend, extra_usage: usage.extra_usage },
+  };
+}
 export async function readClaudeUsage(run: ProcessRunner, signal: AbortSignal, deps: ClaudeUsageDependencies = {}): Promise<unknown> {
   const result = record(await run(CLAUDE_USAGE_REQUEST, signal));
   if (result.is_error === true || result.local_command !== "usage") throw new ClaudeUsageError("Claude /usage did not run as a local command; check CLI login");
@@ -36,10 +44,20 @@ export async function readClaudeUsage(run: ProcessRunner, signal: AbortSignal, d
   catch { throw new ClaudeUsageError("Claude usage cache unavailable"); }
   let config: unknown;
   try { config = JSON.parse(text); } catch { throw new ClaudeUsageError("Claude usage cache unreadable"); }
-  const cache = record(record(config).cachedUsageUtilization);
-  const usage = record(cache.utilization);
-  return {
-    fetchedAtMs: cache.fetchedAtMs,
-    utilization: { five_hour: usage.five_hour, seven_day: usage.seven_day, spend: usage.spend, extra_usage: usage.extra_usage },
-  };
+  return snapshotUsage(config);
+}
+// Per-profile read for dual-subscription display: probes `claude -p /usage`
+// with CLAUDE_CONFIG_DIR pinned to the profile dir and ANTHROPIC_API_KEY
+// removed so a work API key never shadows the profile's OAuth login.
+// Returns only usage-cache fields; identity material is dropped.
+export async function readClaudeUsageAt(run: ProcessRunner, signal: AbortSignal, configDir: string, deps: ClaudeUsageDependencies = {}): Promise<unknown> {
+  const result = record(await run({ ...CLAUDE_USAGE_REQUEST, env: { CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_API_KEY: undefined } }, signal));
+  if (result.is_error === true || result.local_command !== "usage") throw new ClaudeUsageError("Claude /usage did not run as a local command; check CLI login");
+  signal.throwIfAborted();
+  let text: string;
+  try { text = await (deps.readFile ?? boundedRead)(path.join(configDir, ".claude.json")); }
+  catch { throw new ClaudeUsageError("Claude usage cache unavailable"); }
+  let config: unknown;
+  try { config = JSON.parse(text); } catch { throw new ClaudeUsageError("Claude usage cache unreadable"); }
+  return snapshotUsage(config);
 }

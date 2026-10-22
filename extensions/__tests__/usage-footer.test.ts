@@ -130,6 +130,58 @@ test("subagent status removed, but tokens/cache/billed cost breakdown retained",
   } finally { f.emit("session_shutdown"); globals.__subagent = old; }
 });
 
+test("subscription provider turns show as plan-covered, not metered cost", async () => {
+  const f = fixture();
+  const branch = [
+    { type: "message", message: { role: "assistant", provider: "test", usage: {
+      input: 10, output: 20, cacheRead: 30, cacheWrite: 40, totalTokens: 100,
+      cost: { total: 1 },
+    } } },
+    { type: "message", message: { role: "assistant", provider: "claude-bridge", usage: {
+      input: 100, output: 200, cacheRead: 300, cacheWrite: 400, totalTokens: 1000,
+      cost: { total: 4.5 },
+    } } },
+  ];
+  (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => branch;
+  f.emit("session_start"); await flush();
+  const output = f.footer()!.render(200).join("\n");
+  assert.match(output, /total 1\.1k · \$1\.000 \(\+\$4\.500 plan\)/);
+  f.emit("session_shutdown");
+});
+
+test("plan bucket falls back to tokens when the provider reports no prices", async () => {
+  const f = fixture();
+  const branch = [
+    { type: "message", message: { role: "assistant", provider: "claude-bridge", usage: {
+      input: 100, output: 200, cacheRead: 300, cacheWrite: 400, totalTokens: 1000,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    } } },
+  ];
+  (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => branch;
+  f.emit("session_start"); await flush();
+  const output = f.footer()!.render(200).join("\n");
+  assert.match(output, /total 1\.0k · \$0\.0000 \(\+1\.0k plan\)/);
+  f.emit("session_shutdown");
+});
+
+test("plan bucket estimates list-price dollars for known Claude families", async () => {
+  const f = fixture();
+  const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+  const branch = [
+    { type: "message", message: { role: "assistant", provider: "claude-bridge", model: "claude-opus-5-5", usage: {
+      input: 100000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 100000, cost: zeroCost,
+    } } },
+    { type: "message", message: { role: "assistant", provider: "claude-bridge", model: "claude-fable-5", usage: {
+      input: 1000, output: 500, cacheRead: 300, cacheWrite: 200, totalTokens: 2000, cost: zeroCost,
+    } } },
+  ];
+  (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => branch;
+  f.emit("session_start"); await flush();
+  const output = f.footer()!.render(200).join("\n");
+  assert.match(output, /total 102\.0k · \$0\.0000 \(\+~\$1\.500 \+ 2\.0k plan\)/);
+  f.emit("session_shutdown");
+});
+
 test("layout stays three rows with ANSI, CJK and narrow truncation", () => {
   const left = ["\x1b[33mctx 1/100 1%\x1b[0m", "in 1 · out 2", "total 3 · $1"];
   const model = "\x1b[32mmodel 模型/🦀 (high)\x1b[0m";

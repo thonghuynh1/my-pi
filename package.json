@@ -23,12 +23,13 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@narumitw/pi-file-context": "^0.54.2",
     "@ogulcancelik/pi-herdr": "^0.2.5",
+    "pi-claude-bridge": "^0.9.3",
     "playwright-core": "^1.61.0",
     "ws": "^8.21.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
     "@types/node": "^20.0.0",
     "typescript": "^5.0.0"
   },
@@ -42,6 +43,7 @@
     "extensions": [
       "./node_modules/@ogulcancelik/pi-herdr/index.ts",
       "./node_modules/@narumitw/pi-file-context/dist/index.ts",
+      "./node_modules/pi-claude-bridge/src/index.ts",
       "./extensions"
     ],
     "prompts": [

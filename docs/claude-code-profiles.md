@@ -10,7 +10,7 @@ both subscriptions shows in the footer.
 
 | Piece | What it does |
 |---|---|
-| `npm:pi-claude-bridge` (installed) | Registers provider `claude-bridge` (full Anthropic catalog). Keeps one persistent Claude Code session per Pi session via the Agent SDK, so steady turns hit prompt cache. |
+| `pi-claude-bridge` (bundled via `my-pi` dependencies) | Registers provider `claude-bridge` (full Anthropic catalog). Keeps one persistent Claude Code session per Pi session via the Agent SDK, so steady turns hit prompt cache. |
 | `extensions/claude-profile.ts` | `/claude-profile` picker: shows only logged-in profiles, hides the rest behind `+ Set up ...`, and can save profile folders for you. |
 | `extensions/lib/claude-profiles.ts` | Profile registry: precedence is env var > saved file > default. |
 | `extensions/lib/provider-usage/` | Footer rows `Claude-W` / `Claude-P` plus `/provider-usage` detail. A profile with no readable login simply shows no row. |
@@ -104,11 +104,12 @@ in `~/.pi/agent/claude-bridge.log` if you want to verify.
 (Retired: `npm:claude-code-pi` spawned a fresh `claude -p` per turn with no
 session, so every turn paid full input. Removed in favor of the bridge.)
 
-Session dollars: the bridge reports token counts with zeroed prices, so the
-metered `$` stays `$0` on pure-bridge sessions. The plan suffix fills in from
-Anthropic list rates for known families — `(+~$2.10 plan)`, `~` marks the
-estimate, standard-context rates only — and raw tokens otherwise
-(`(+38.1k plan)`). Provider-reported costs, when present, show without `~`.
+Session dollars appear in the main `$` total, just like Codex. Positive
+provider-reported costs take precedence. When the bridge reports zero prices,
+known Claude model IDs use Pi's installed Anthropic catalog and pricing tiers.
+Unknown model IDs contribute tokens but no estimated dollars.
+These dollars represent API-equivalent usage, not an additional subscription
+charge. There is no separate plan suffix.
 
 If your plan is Max (or needs 1M context gating), copy the sample config to
 `~/.pi/agent/claude-bridge.json` and set `provider.plan` (see the bridge

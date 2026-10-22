@@ -4,6 +4,7 @@ Personal Pi package that bundles:
 
 - Pi built-in MCP configuration (no `pi-mcp-adapter`; uses `builtin:mcp`)
 - `@narumitw/pi-file-context` (`/file-context` in-TUI file browser; Tab inserts `@path`)
+- `pi-claude-bridge` (Claude Code subscription as `claude-bridge/*` models via Agent SDK — no separate `pi install` needed)
 - `usage-footer.ts` footer/status extension showing model and context usage
 - `subagents.ts` in-process subagent tool with `explore`, `shell`, and `custom` modes
 

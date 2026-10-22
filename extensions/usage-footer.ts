@@ -1,3 +1,5 @@
+import { calculateCost } from "@earendil-works/pi-ai";
+import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { ProviderUsageMonitor } from "./lib/provider-usage/monitor.ts";
@@ -12,6 +14,7 @@ type AssistantUsage = {
   output?: number;
   cacheRead?: number;
   cacheWrite?: number;
+  cacheWrite1h?: number;
   totalTokens?: number;
   cost?: {
     input?: number;
@@ -96,36 +99,31 @@ function getSubagentTotals(): {
   };
 }
 
-// Providers whose turns draw from a flat subscription instead of metered
-// billing. Their list-price estimates must not inflate the headline session
-// cost; they are reported separately as plan-covered.
+// Subscription providers contribute reported dollars to the session total,
+// or Claude list-price estimates when reported dollars are nonpositive.
 const SUBSCRIPTION_PROVIDERS = new Set(["claude-bridge", "claude-code-cli"]);
 
-// ponytail: Anthropic list prices, standard context; re-check if a new Claude
-// generation reprices. Families without published rates (fable) fall back to
-// token counts instead of inventing prices.
-const CLAUDE_LIST_RATES: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
-  opus: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
-  sonnet: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-  haiku: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
-};
+// Bridge models deliberately have zero prices; estimate from Anthropic's exact catalog IDs.
+const CLAUDE_LIST_MODELS = new Map(getBuiltinModels("anthropic").map((model) => [model.id, model]));
 
-function estimateClaudePlanCost(
-  usage: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number },
-  model: unknown,
-): number | undefined {
+function estimateClaudePlanCost(usage: AssistantUsage, model: unknown): number | undefined {
   if (typeof model !== "string") return undefined;
-  const family = Object.keys(CLAUDE_LIST_RATES).find((name) => model.toLowerCase().includes(name));
-  if (!family) return undefined;
-  const rates = CLAUDE_LIST_RATES[family];
-  if (!rates) return undefined;
-  return (
-    (rates.input * (usage.input ?? 0) +
-      rates.output * (usage.output ?? 0) +
-      rates.cacheRead * (usage.cacheRead ?? 0) +
-      rates.cacheWrite * (usage.cacheWrite ?? 0)) /
-    1_000_000
-  );
+  const catalogModel = CLAUDE_LIST_MODELS.get(model);
+  if (!catalogModel) return undefined;
+  const input = usage.input ?? 0;
+  const output = usage.output ?? 0;
+  const cacheRead = usage.cacheRead ?? 0;
+  const cacheWrite = usage.cacheWrite ?? 0;
+  // calculateCost mutates its usage argument, never the session's recorded usage.
+  return calculateCost(catalogModel, {
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    cacheWrite1h: usage.cacheWrite1h,
+    totalTokens: usage.totalTokens ?? input + output + cacheRead + cacheWrite,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  }).total;
 }
 
 function getTokenTotals(ctx: ExtensionContext): {
@@ -135,9 +133,6 @@ function getTokenTotals(ctx: ExtensionContext): {
   total: number;
   cost: number;
   parentCost: number;
-  planCost: number;
-  planTokens: number;
-  planEstimate: number;
   subCost: number;
   subTokens: number;
 } {
@@ -146,9 +141,6 @@ function getTokenTotals(ctx: ExtensionContext): {
   let cache = 0;
   let total = 0;
   let parentCost = 0;
-  let planCost = 0;
-  let planTokens = 0;
-  let planEstimate = 0;
 
   for (const entry of ctx.sessionManager.getBranch()) {
     if (entry.type !== "message" || entry.message.role !== "assistant") continue;
@@ -167,22 +159,17 @@ function getTokenTotals(ctx: ExtensionContext): {
     cache += messageCache;
     total += usage.totalTokens ?? messageInput + messageOutput + messageCache;
     const provider = (entry.message as { provider?: unknown }).provider;
-    if (typeof provider === "string" && SUBSCRIPTION_PROVIDERS.has(provider)) {
-      const reported = totalCostOf(usage);
-      if (reported > 0) planCost += reported;
-      else {
-        const model = (entry.message as { model?: unknown }).model;
-        const estimated = estimateClaudePlanCost(usage, model);
-        if (estimated === undefined) planTokens += usage.totalTokens ?? messageInput + messageOutput + messageCache;
-        else planEstimate += estimated;
-      }
-    } else parentCost += totalCostOf(usage);
+    const reported = totalCostOf(usage);
+    if (typeof provider === "string" && SUBSCRIPTION_PROVIDERS.has(provider) && reported <= 0) {
+      const model = (entry.message as { model?: unknown }).model;
+      parentCost += estimateClaudePlanCost(usage, model) ?? 0;
+    } else parentCost += reported;
   }
 
   // Subagents run in their own in-memory sessions and never appear in the
-  // parent branch above, so their real billed cost/tokens are missing from
-  // the loop. Add them on top so the footer matches what we're actually
-  // being charged (and matches the tool-panel's session total).
+  // parent branch above, so their reported cost/tokens are missing from
+  // the loop. Add them once to the parent's reported or estimated dollars
+  // so the footer includes both sessions (as does the tool-panel total).
   const sub = getSubagentTotals();
   input += sub.input;
   output += sub.output;
@@ -196,9 +183,6 @@ function getTokenTotals(ctx: ExtensionContext): {
     total,
     cost: parentCost + sub.cost,
     parentCost,
-    planCost,
-    planTokens,
-    planEstimate,
     subCost: sub.cost,
     subTokens: sub.tokens,
   };
@@ -232,16 +216,9 @@ export function installUsageFooter(pi: ExtensionAPI, ctx: ExtensionContext, moni
       invalidate() {},
       render(width: number): string[] {
         const totals = getTokenTotals(ctx);
-        // Some subscription providers (pi-claude-bridge) report token counts
-        // with zeroed prices, so plan burn shows as tokens, not dollars.
-        const planParts: string[] = [];
-        if (totals.planCost > 0) planParts.push(formatMoney(totals.planCost));
-        if (totals.planEstimate > 0) planParts.push(`~${formatMoney(totals.planEstimate)}`);
-        if (totals.planTokens > 0) planParts.push(compactNumber(totals.planTokens));
-        const plan = planParts.length > 0 ? ` (+${planParts.join(" + ")} plan)` : "";
         const cost = totals.subCost > 0
-          ? `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)} (${formatMoney(totals.parentCost)} + ${formatMoney(totals.subCost)} sub)${plan}`
-          : `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)}${plan}`;
+          ? `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)} (${formatMoney(totals.parentCost)} + ${formatMoney(totals.subCost)} sub)`
+          : `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)}`;
         const left = [getContextLine(ctx),
           `in ${compactNumber(totals.input)} · out ${compactNumber(totals.output)} · cache ${compactNumber(totals.cache)}`, cost];
         return layoutUsageLines(left.map((line) => theme.fg("warning", line)),

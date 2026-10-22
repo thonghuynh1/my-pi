@@ -115,7 +115,7 @@ test("off persists; repeated installs/on never duplicate timers or subscriptions
   f.emit("session_shutdown");
 });
 
-test("subagent status removed, but tokens/cache/billed cost breakdown retained", async () => {
+test("subagent status removed, but tokens/cache/session cost breakdown retained", async () => {
   const globals = globalThis as { __subagent?: unknown };
   const old = globals.__subagent;
   globals.__subagent = { enabled: true, active: 3, label: "on · 3 running", totalCostUsd: 2, totalTokens: 800,
@@ -130,7 +130,7 @@ test("subagent status removed, but tokens/cache/billed cost breakdown retained",
   } finally { f.emit("session_shutdown"); globals.__subagent = old; }
 });
 
-test("subscription provider turns show as plan-covered, not metered cost", async () => {
+test("reported subscription dollars contribute to the main session total", async () => {
   const f = fixture();
   const branch = [
     { type: "message", message: { role: "assistant", provider: "test", usage: {
@@ -145,11 +145,12 @@ test("subscription provider turns show as plan-covered, not metered cost", async
   (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => branch;
   f.emit("session_start"); await flush();
   const output = f.footer()!.render(200).join("\n");
-  assert.match(output, /total 1\.1k · \$1\.000 \(\+\$4\.500 plan\)/);
+  assert.match(output, /total 1\.1k · \$5\.500/);
+  assert.doesNotMatch(output, /plan|~/);
   f.emit("session_shutdown");
 });
 
-test("plan bucket falls back to tokens when the provider reports no prices", async () => {
+test("unknown subscription models retain tokens but add no estimated dollars", async () => {
   const f = fixture();
   const branch = [
     { type: "message", message: { role: "assistant", provider: "claude-bridge", usage: {
@@ -160,26 +161,178 @@ test("plan bucket falls back to tokens when the provider reports no prices", asy
   (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => branch;
   f.emit("session_start"); await flush();
   const output = f.footer()!.render(200).join("\n");
-  assert.match(output, /total 1\.0k · \$0\.0000 \(\+1\.0k plan\)/);
+  assert.match(output, /total 1\.0k · \$0\.0000/);
+  assert.doesNotMatch(output, /plan|~/);
   f.emit("session_shutdown");
 });
 
-test("plan bucket estimates list-price dollars for known Claude families", async () => {
+test("known subscription models add estimated dollars to the main session total", async () => {
   const f = fixture();
   const zeroCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
   const branch = [
     { type: "message", message: { role: "assistant", provider: "claude-bridge", model: "claude-opus-5-5", usage: {
       input: 100000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 100000, cost: zeroCost,
     } } },
-    { type: "message", message: { role: "assistant", provider: "claude-bridge", model: "claude-fable-5", usage: {
+    { type: "message", message: { role: "assistant", provider: "claude-bridge", model: "claude-unknown-future", usage: {
       input: 1000, output: 500, cacheRead: 300, cacheWrite: 200, totalTokens: 2000, cost: zeroCost,
     } } },
   ];
   (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => branch;
   f.emit("session_start"); await flush();
   const output = f.footer()!.render(200).join("\n");
-  assert.match(output, /total 102\.0k · \$0\.0000 \(\+~\$1\.500 \+ 2\.0k plan\)/);
+  assert.match(output, /total 102\.0k · \$0\.4000/);
+  assert.doesNotMatch(output, /plan|~/);
   f.emit("session_shutdown");
+});
+
+test("claude-code-cli uses reported dollars when positive and estimates otherwise", async () => {
+  for (const reported of [0, -1, 2]) {
+    const f = fixture();
+    (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => [
+      { type: "message", message: { role: "assistant", provider: "claude-code-cli", model: "claude-opus-5-5", usage: {
+        input: 100000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 100000,
+        cost: { total: reported },
+      } } },
+    ];
+    try {
+      f.emit("session_start"); await flush();
+      const output = f.footer()!.render(200).join("\n");
+      assert(output.includes(`total 100.0k · $${reported > 0 ? "2.000" : "0.4000"}`));
+      assert.doesNotMatch(output, /plan|~/);
+    } finally { f.emit("session_shutdown"); }
+  }
+});
+
+test("Sonnet subscription estimate includes input, output, cache read and cache write", async () => {
+  const f = fixture();
+  (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => [
+    { type: "message", message: { role: "assistant", provider: "claude-bridge", model: "claude-sonnet-4-6", usage: {
+      input: 1000000, output: 1000000, cacheRead: 1000000, cacheWrite: 1000000,
+      totalTokens: 4000000, cost: { total: 0 },
+    } } },
+  ];
+  try {
+    f.emit("session_start"); await flush();
+    const output = f.footer()!.render(200).join("\n");
+    assert.match(output, /in 1\.0m · out 1\.0m · cache 2\.0m/);
+    assert.match(output, /total 4\.0m · \$22\.050/);
+    assert.doesNotMatch(output, /plan|~/);
+  } finally { f.emit("session_shutdown"); }
+});
+
+test("subscription estimates use exact model prices rather than Claude family prices", async () => {
+  for (const [model, dollars] of [
+    ["claude-opus-4-6", "0.5000"],
+    ["claude-opus-5-5", "0.4000"],
+    ["claude-fable-5", "1.000"],
+  ]) {
+    const f = fixture();
+    (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => [
+      { type: "message", message: { role: "assistant", provider: "claude-bridge", model, usage: {
+        input: 100000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 100000,
+        cost: { total: 0 },
+      } } },
+    ];
+    try {
+      f.emit("session_start"); await flush();
+      const output = f.footer()!.render(200).join("\n");
+      assert(output.includes(`total 100.0k · $${dollars}`), `${model}: ${output}`);
+    } finally { f.emit("session_shutdown"); }
+  }
+});
+
+test("Sonnet 5.5 subscription estimate uses its exact cache prices", async () => {
+  const f = fixture();
+  (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => [
+    { type: "message", message: { role: "assistant", provider: "claude-bridge", model: "claude-sonnet-5-5", usage: {
+      input: 1000000, output: 1000000, cacheRead: 1000000, cacheWrite: 1000000,
+      totalTokens: 4000000, cost: { total: 0 },
+    } } },
+  ];
+  try {
+    f.emit("session_start"); await flush();
+    const output = f.footer()!.render(200).join("\n");
+    // Independently priced: $2 input + $10 output + $0.10 read + $2.50 write.
+    assert.match(output, /total 4\.0m · \$14\.600/);
+  } finally { f.emit("session_shutdown"); }
+});
+
+test("Haiku 5.5 tier changes only above 100000 prompt tokens including caches", async () => {
+  for (const [input, dollars] of [[20000, "0.0079"], [20001, "0.0395"]] as const) {
+    const f = fixture();
+    (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => [
+      { type: "message", message: { role: "assistant", provider: "claude-bridge", model: "claude-haiku-5-5", usage: {
+        input, output: 1000, cacheRead: 40000, cacheWrite: 40000,
+        totalTokens: input + 81000, cost: { total: 0 },
+      } } },
+    ];
+    try {
+      f.emit("session_start"); await flush();
+      const output = f.footer()!.render(200).join("\n");
+      // 100000 prompt: .002 + .0005 + .0004 + .005 = .0079.
+      // 100001 prompt: .0100005 + .0025 + .002 + .025 = .0395005.
+      // Output tokens must not trigger the higher prompt tier at the boundary.
+      assert(output.includes(`total 101.0k · $${dollars}`), `input=${input}: ${output}`);
+    } finally { f.emit("session_shutdown"); }
+  }
+});
+
+test("subscription estimate falls back to exact model pricing when usage.cost is absent", async () => {
+  const f = fixture();
+  (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => [
+    { type: "message", message: { role: "assistant", provider: "claude-code-cli", model: "claude-opus-5-5", usage: {
+      input: 100000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 100000,
+    } } },
+  ];
+  try {
+    f.emit("session_start"); await flush();
+    const output = f.footer()!.render(200).join("\n");
+    assert.match(output, /total 100\.0k · \$0\.4000/);
+  } finally { f.emit("session_shutdown"); }
+});
+
+test("non-subscription providers with Claude models and explicit zero cost are never estimated", async () => {
+  const f = fixture();
+  (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => [
+    { type: "message", message: { role: "assistant", provider: "anthropic", model: "claude-opus-5-5", usage: {
+      input: 100000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 100000,
+      cost: { total: 0 },
+    } } },
+  ];
+  try {
+    f.emit("session_start"); await flush();
+    const output = f.footer()!.render(200).join("\n");
+    assert.match(output, /total 100\.0k · \$0\.0000/);
+    assert.doesNotMatch(output, /plan|~/);
+  } finally { f.emit("session_shutdown"); }
+});
+
+test("mixed subscription, metered and subagent dollars are each counted once", async () => {
+  const globals = globalThis as { __subagent?: unknown };
+  const old = globals.__subagent;
+  globals.__subagent = { totalCostUsd: 2, totalTokens: 800,
+    totalInputTokens: 200, totalOutputTokens: 300, totalCacheTokens: 300 };
+  const f = fixture();
+  (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => [
+    { type: "message", message: { role: "assistant", provider: "test", usage: {
+      input: 10, output: 20, cacheRead: 30, cacheWrite: 40, totalTokens: 100,
+      cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4 },
+    } } },
+    { type: "message", message: { role: "assistant", provider: "claude-bridge", model: "claude-opus-5-5", usage: {
+      input: 100, output: 200, cacheRead: 300, cacheWrite: 400, totalTokens: 1000,
+      cost: { total: 4.5 },
+    } } },
+    { type: "message", message: { role: "assistant", provider: "claude-code-cli", model: "claude-opus-5-5", usage: {
+      input: 100000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 100000,
+      cost: { total: 0 },
+    } } },
+  ];
+  try {
+    f.emit("session_start"); await flush();
+    const output = f.footer()!.render(240).join("\n");
+    assert.match(output, /total 101\.9k · \$7\.900 \(\$5\.900 \+ \$2\.000 sub\)/);
+    assert.doesNotMatch(output, /plan|~/);
+  } finally { f.emit("session_shutdown"); globals.__subagent = old; }
 });
 
 test("layout stays three rows with ANSI, CJK and narrow truncation", () => {

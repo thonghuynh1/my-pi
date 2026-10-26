@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
-import path from "node:path";
 import { test } from "node:test";
-import { CLAUDE_USAGE_REQUEST, claudeConfigFile, readClaudeUsage, readClaudeUsageAt } from "../lib/provider-usage/claude.ts";
+import { CLAUDE_USAGE_REQUEST, ClaudeUsageError, readClaudeUsageAt } from "../lib/provider-usage/claude.ts";
 import { compactFooterRows, detailText, footerRows, parseClaude, type ProviderState } from "../lib/provider-usage/model.ts";
 import { providerReaders, type ProcessRequest } from "../lib/provider-usage/readers.ts";
 
 const signal = () => new AbortController().signal;
-const localUsage = { type: "result", is_error: false, local_command: "usage", num_turns: 0, total_cost_usd: 0 };
-// Sanitized shape of a real enterprise usage-based seat cache.
+// Sanitized enterprise usage-based seat data; legacy timestamps remain parser coverage.
 const enterprise = {
   fetchedAtMs: 1792385880305,
   accountUuid: "secret-account",
@@ -22,31 +20,37 @@ const enterprise = {
     },
   },
 };
-const config = (cache: unknown) => JSON.stringify({ emailAddress: "someone@example.com", oauthAccount: { accessToken: "nope" }, cachedUsageUtilization: cache });
+const liveUsage = { rate_limits_available: true, rate_limits: enterprise.utilization };
 
-test("reader runs local /usage only, then returns just usage fields from Claude Code's cache", async () => {
+test("reader requests live Claude control usage without a user prompt", async () => {
   const requests: ProcessRequest[] = [];
-  const files: string[] = [];
-  const raw = await readClaudeUsage(async (request) => { requests.push(request); return localUsage; }, signal(), {
-    env: {}, home: "/home/u", readFile: async (file) => { files.push(file); return config(enterprise); },
+  const raw = await readClaudeUsageAt(async (request) => { requests.push(request); return liveUsage; }, signal(), "/cfg-work");
+  assert.deepEqual(requests, [{ ...CLAUDE_USAGE_REQUEST, env: { CLAUDE_CONFIG_DIR: "/cfg-work", ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: undefined, DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", DISABLE_AUTOUPDATER: "1" } }]);
+  assert.deepEqual(CLAUDE_USAGE_REQUEST, {
+    command: "claude",
+    args: ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence"],
+    protocol: "claude",
   });
-  assert.deepEqual(requests, [CLAUDE_USAGE_REQUEST]);
-  assert.deepEqual(CLAUDE_USAGE_REQUEST.args, ["-p", "/usage", "--output-format", "json", "--no-session-persistence"]);
-  assert.deepEqual(files, [path.join("/home/u", ".claude.json")]);
-  assert(!JSON.stringify(raw).match(/someone@|secret-account|accessToken|nope/));
-  assert.deepEqual(Object.keys(raw as object), ["fetchedAtMs", "utilization"]);
+  assert.deepEqual(raw, { utilization: {
+    five_hour: null, seven_day: null, spend: enterprise.utilization.spend, extra_usage: enterprise.utilization.extra_usage,
+  } });
 });
 
-test("config location honors CLAUDE_CONFIG_DIR", () => {
-  assert.equal(claudeConfigFile({ CLAUDE_CONFIG_DIR: "/cfg" }, "/home/u"), path.join("/cfg", ".claude.json"));
-});
-
-test("reader refuses a non-local /usage result and a missing or invalid cache", async () => {
-  const deps = { env: {}, home: "/h", readFile: async () => config(enterprise) };
-  await assert.rejects(readClaudeUsage(async () => ({ ...localUsage, local_command: undefined }), signal(), deps), /local command/);
-  await assert.rejects(readClaudeUsage(async () => ({ ...localUsage, is_error: true }), signal(), deps), /local command/);
-  await assert.rejects(readClaudeUsage(async () => localUsage, signal(), { ...deps, readFile: async () => { throw new Error("ENOENT /h/.claude.json"); } }), /cache unavailable/);
-  await assert.rejects(readClaudeUsage(async () => localUsage, signal(), { ...deps, readFile: async () => "{" }), /cache unreadable/);
+test("reader refuses local command text and unavailable or malformed live limits", async () => {
+  for (const response of [
+    { type: "result", is_error: false, local_command: "usage", num_turns: 0 },
+    { rate_limits_available: false, rate_limits: enterprise.utilization },
+    { rate_limits_available: true, rate_limits: null },
+    { rate_limits_available: true, rate_limits: [] },
+    { rate_limits_available: true, rate_limits: "private-data" },
+    { rate_limits_available: true },
+  ]) {
+    await assert.rejects(readClaudeUsageAt(async () => response, signal(), "/cfg-work"), (error: Error) => {
+      assert(error instanceof ClaudeUsageError);
+      assert.equal(error.message, "Claude usage unavailable; check CLI login");
+      return true;
+    });
+  }
 });
 
 test("registry surfaces safe Claude reader errors", async () => {
@@ -117,16 +121,17 @@ test("footer, stale marker and details for enterprise spend", () => {
 
 test("per-profile read pins CLAUDE_CONFIG_DIR, strips the API key and keeps only usage fields", async () => {
   const requests: ProcessRequest[] = [];
-  const raw = await readClaudeUsageAt(async (request) => { requests.push(request); return localUsage; }, signal(), "/cfg-personal", {
-    readFile: async (file) => { assert.equal(file, path.join("/cfg-personal", ".claude.json")); return config(enterprise); },
-  });
-  assert.deepEqual(requests, [{ ...CLAUDE_USAGE_REQUEST, env: { CLAUDE_CONFIG_DIR: "/cfg-personal", ANTHROPIC_API_KEY: undefined } }]);
+  const raw = await readClaudeUsageAt(async (request) => {
+    requests.push(request);
+    return { ...liveUsage, fetchedAtMs: enterprise.fetchedAtMs, accountUuid: "secret-account", accessToken: "nope" };
+  }, signal(), "/cfg-personal");
+  assert.deepEqual(requests, [{ ...CLAUDE_USAGE_REQUEST, env: { CLAUDE_CONFIG_DIR: "/cfg-personal", ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: undefined, DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", DISABLE_AUTOUPDATER: "1" } }]);
   assert(!JSON.stringify(raw).match(/someone@|secret-account|accessToken|nope/));
-  assert.deepEqual(Object.keys(raw as object), ["fetchedAtMs", "utilization"]);
+  assert.deepEqual(Object.keys(raw as object), ["utilization"]);
 });
 
-test("unparseable profile cache surfaces a per-profile safe error", async () => {
-  const readers = providerReaders(async () => localUsage, async () => ({}), async () => ({}));
+test("unparseable profile usage surfaces a per-profile safe error", async () => {
+  const readers = providerReaders(async () => ({ rate_limits_available: true, rate_limits: {} }), async () => ({}));
   const work = readers.find((r) => r.id === "claude-work")!;
   await assert.rejects(work.read(signal()), (e: Error) => e.message === "Claude Work usage unavailable");
 });

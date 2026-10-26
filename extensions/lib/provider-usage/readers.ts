@@ -7,7 +7,7 @@ import { claudeProfiles, type ClaudeProfileMap } from "../claude-profiles.ts";
 import { parseAntigravity, parseClaude, parseCodex, parseCopilot, parseCursor, type ProviderId, type UsageMetric } from "./model.ts";
 
 export class UsageReadError extends Error {}
-export type ProcessRequest = { command: "codex" | "agy" | "gh" | "claude"; args: readonly string[]; protocol?: "codex"; env?: Record<string, string | undefined> };
+export type ProcessRequest = { command: "codex" | "agy" | "gh" | "claude"; args: readonly string[]; protocol?: "codex" | "claude"; env?: Record<string, string | undefined> };
 export type ProcessRunner = (request: ProcessRequest, signal: AbortSignal) => Promise<unknown>;
 export type ProviderReader = { id: ProviderId; name: string; experimental?: boolean; read(signal: AbortSignal): Promise<UsageMetric> };
 export const CODEX_INITIALIZE = { id: 1, method: "initialize", params: { clientInfo: { name: "provider_usage", title: "Provider Usage", version: "0.1.0" } } };
@@ -134,6 +134,7 @@ export function createProcessRunner(deps: ProcessDependencies = {}): ProcessRunn
       let buffer = "";
       let bytes = 0;
       let initialized = false;
+      let claudeStage: "initialize" | "usage" = "initialize";
       const finish = (error?: UsageReadError, value?: unknown) => {
         if (settled) return;
         settled = true;
@@ -158,7 +159,7 @@ export function createProcessRunner(deps: ProcessDependencies = {}): ProcessRunn
         bytes += Buffer.byteLength(chunk);
         if (bytes > (deps.maxOutputBytes ?? 1_048_576)) { finish(new UsageReadError("CLI output exceeded safety limit")); return; }
         buffer += chunk;
-        if (request.protocol !== "codex") return;
+        if (!request.protocol) return;
         let newline: number;
         while (!settled && (newline = buffer.indexOf("\n")) >= 0) {
           const line = buffer.slice(0, newline).trim();
@@ -166,7 +167,26 @@ export function createProcessRunner(deps: ProcessDependencies = {}): ProcessRunn
           if (!line) continue;
           try {
             const message = JSON.parse(line);
-            if (message.id === 1 && !initialized) {
+            if (request.protocol === "claude") {
+              if (message?.type === "control_request" && typeof message.request_id === "string" && message.request?.subtype === "can_use_tool") {
+                send({ type: "control_response", response: {
+                  subtype: "success", request_id: message.request_id,
+                  response: { behavior: "deny", message: "Usage reads do not permit tool execution" },
+                } });
+              } else if (message?.type === "control_response") {
+                const response = message.response;
+                const expectedId = claudeStage === "initialize" ? "usage-init" : "usage-read";
+                if (response?.request_id !== expectedId) continue;
+                if (response.subtype !== "success" || response.response === null || typeof response.response !== "object" || Array.isArray(response.response)) {
+                  finish(new UsageReadError("Claude usage unavailable; check CLI login"));
+                } else if (claudeStage === "initialize") {
+                  claudeStage = "usage";
+                  send({ type: "control_request", request_id: "usage-read", request: { subtype: "get_usage", skip_behaviors: true } });
+                } else {
+                  finish(undefined, response.response);
+                }
+              }
+            } else if (message.id === 1 && !initialized) {
               if (message.error || !message.result) { finish(new UsageReadError("Codex initialization failed; check CLI login")); return; }
               initialized = true;
               send({ method: "initialized" });
@@ -180,11 +200,12 @@ export function createProcessRunner(deps: ProcessDependencies = {}): ProcessRunn
       });
       child.once("close", (code) => {
         if (settled) return;
-        if (code !== 0 || request.protocol === "codex") { finish(new UsageReadError("CLI read failed; check existing CLI login")); return; }
+        if (code !== 0 || request.protocol !== undefined) { finish(new UsageReadError("CLI read failed; check existing CLI login")); return; }
         try { finish(undefined, JSON.parse(buffer)); } catch { finish(new UsageReadError("CLI returned invalid JSON")); }
       });
       if (signal.aborted) abort();
       else if (request.protocol === "codex") send(CODEX_INITIALIZE);
+      else if (request.protocol === "claude") send({ type: "control_request", request_id: "usage-init", request: { subtype: "initialize" } });
       else child.stdin.end();
     });
   };

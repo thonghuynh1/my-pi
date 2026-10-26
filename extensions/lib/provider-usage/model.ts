@@ -203,7 +203,7 @@ export function detailText(states: readonly ProviderState[]): string {
         lines.push(`  Usage credits: ${dollars(spend.used, spend.currency)} used${spend.limit !== undefined ? ` of ${dollars(spend.limit, spend.currency)} limit` : " (no personal limit)"}${spend.usedPercent !== undefined ? ` · ${percent(spend.usedPercent)}` : ""}${spend.severity ? ` · ${spend.severity}` : ""}`);
         lines.push("  Spend period/reset not reported by Claude Code.");
       }
-      lines.push(`  Claude Code cache fetched: ${localized(fetchedAt)}`);
+      if (fetchedAt !== undefined) lines.push(`  Claude Code cache fetched: ${localized(fetchedAt)}`);
     }
     else if (state.value.kind === "credits") lines.push(`  ${state.value.consumed.toLocaleString("en-US")} credits consumed`, "  Footer converts 100 credits = $1, rounded to whole dollars; not a verified bill.", `  Resets: ${localized(state.value.resetsAt)}`);
     else for (const g of state.value.groups) {

@@ -1,0 +1,55 @@
+  available · last refresh: 10/23/2026, 9:39:51 AM
+  Last success: 10/23/2026, 9:39:55 AM
+  Codex
+    Five-hour window (5h): 21% used · resets: 10/23/2026,
+1:55:33 PM
+    Weekly window (week): 11% used · resets: 10/29/2026,
+6:29:15 PM
+
+Antigravity
+  available · last refresh: 10/23/2026, 9:39:51 AM
+  Last success: 10/23/2026, 9:39:58 AM
+  Gemini Models
+    Five-hour window (5h): 2% used · resets: 10/23/2026,
+2:39:35 PM
+    Weekly window (week): 4.3% used · resets: 10/26/2026,
+10:03:40 AM
+  Claude and GPT models
+    Five-hour window (5h): 0% used · resets: 10/23/2026,
+2:39:56 PM
+    Weekly window (week): 0% used · resets: 10/30/2026,
+8:39:56 AM
+
+GitHub Copilot (experimental internal API)
+  available · last refresh: 10/23/2026, 9:39:51 AM
+  Last success: 10/23/2026, 9:39:54 AM
+  86,951 credits consumed
+  Footer converts 100 credits = $1, rounded to whole
+dollars; not a verified bill.
+  Resets: 11/1/2026, 1:00:00 AM
+
+Cursor (experimental internal API)
+  error · last refresh: 10/23/2026, 9:39:51 AM
+  Last success: unavailable
+  Reason: Cursor usage unavailable; check existing CLI
+login (file store required)
+  Usage unavailable (no successful read)
+
+Claude Work (experimental internal API)
+  available · last refresh: 10/23/2026, 9:39:51 AM
+  Last success: 10/23/2026, 9:39:55 AM
+  Usage credits: $500.00 used of $500.00 limit · 100% ·
+critical
+  Spend period/reset not reported by Claude Code.
+
+Claude Personal (experimental internal API)
+  available · last refresh: 10/23/2026, 9:39:51 AM
+  Last success: 10/23/2026, 9:39:58 AM
+  Five-hour window (5h): 7% used · resets: 10/23/2026,
+2:30:00 PM
+  Weekly window (week): 10% used · resets: 10/29/2026,
+2:00:00 AM
+
+ctx 0/500.0k 0.0%     model openai-codex/gpt-6.1-sol (high)
+in 0 · out 0 · cache 0  Codex 5h-21% wk-11% · AG-G 5h-2%...
+total 0 · $0.0000    Copilot $870 · Claude-W $500/$500 100%

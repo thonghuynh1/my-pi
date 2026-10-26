@@ -1,0 +1,20 @@
+Production Claude control reader
+2026-10-23T07:39:07.236Z
+Provider account usage
+r refresh · ↑/↓ scroll · Esc/q close
+
+Claude Work
+  available · last refresh: 10/23/2026, 9:38:46 AM
+  Last success: 10/23/2026, 9:38:56 AM
+  Usage credits: $500.00 used of $500.00 limit · 100% · critical
+  Spend period/reset not reported by Claude Code.
+
+Claude Personal
+  available · last refresh: 10/23/2026, 9:38:56 AM
+  Last success: 10/23/2026, 9:39:07 AM
+  Five-hour window (5h): 6% used · resets: 10/23/2026, 2:29:59 PM
+  Weekly window (week): 10% used · resets: 10/29/2026, 1:59:59 AM
+
+FOOTER
+Claude-P 5h-6% wk-10%
+Claude-W $500/$500 100%

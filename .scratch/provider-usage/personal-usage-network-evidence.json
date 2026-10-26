@@ -1,0 +1,25 @@
+{
+  "verifiedAt": "2026-10-23T07:38:44.159Z",
+  "parentTrafficRestriction": "1",
+  "value": {
+    "kind": "spend",
+    "windows": [
+      {
+        "id": "5h",
+        "label": "5h",
+        "usedPercent": 5,
+        "resetsAt": 1792758599516
+      },
+      {
+        "id": "week",
+        "label": "week",
+        "usedPercent": 10,
+        "resetsAt": 1793235599516
+      }
+    ]
+  },
+  "diagnostics": [
+    "2026-10-23T07:38:41.498Z [DEBUG] fetchUtilization: GET /api/oauth/usage (attempt 1)",
+    "2026-10-23T07:38:43.350Z [DEBUG] fetchUtilization: 200 after 1 attempt(s)"
+  ]
+}

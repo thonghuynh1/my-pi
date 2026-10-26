@@ -33,18 +33,16 @@ test("registry uses verified CLI commands plus the isolated experimental Cursor 
     requests.push(request);
     if (request.command === "codex") return { rateLimits: { primary: { usedPercent: 69, windowDurationMins: 300 } } };
     if (request.command === "agy") return { status: "SUCCESS", command: { name: "usage", data: { groups: [{ name: "Gemini Models", buckets: [{ window: "5h", remaining_fraction: 1 }] }] } } };
-    if (request.command === "claude") return { type: "result", is_error: false, local_command: "usage", num_turns: 0 };
+    if (request.command === "claude") return { rate_limits_available: true, rate_limits: { spend: { enabled: true, used: { amount_minor: 1, exponent: 2 } } } };
     return { quota_snapshots: { premium_interactions: { credits_used: 54386 } } };
-  }, async () => ({ planUsage: { totalPercentUsed: 42 } }), (run, s, dir) => readClaudeUsageAt(run, s, dir, {
-    readFile: async () => JSON.stringify({ cachedUsageUtilization: { fetchedAtMs: 1, utilization: { spend: { enabled: true, used: { amount_minor: 1, exponent: 2 } } } } }),
-  }), {
+  }, async () => ({ planUsage: { totalPercentUsed: 42 } }), readClaudeUsageAt, {
     work: { id: "work", name: "Claude Work", shortName: "Claude-W", configDir: "/cfg-work" },
     personal: { id: "personal", name: "Claude Personal", shortName: "Claude-P", configDir: "/cfg-personal" },
   });
   await Promise.all(readers.map((reader) => reader.read(signal())));
   assert.deepEqual(requests, [codexRequest, jsonRequest, { command: "gh", args: ["api", "/copilot_internal/user", "--jq", COPILOT_FIELDS] },
-    { ...CLAUDE_USAGE_REQUEST, env: { CLAUDE_CONFIG_DIR: "/cfg-work", ANTHROPIC_API_KEY: undefined } },
-    { ...CLAUDE_USAGE_REQUEST, env: { CLAUDE_CONFIG_DIR: "/cfg-personal", ANTHROPIC_API_KEY: undefined } }]);
+    { ...CLAUDE_USAGE_REQUEST, env: { CLAUDE_CONFIG_DIR: "/cfg-work", ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: undefined, DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", DISABLE_AUTOUPDATER: "1" } },
+    { ...CLAUDE_USAGE_REQUEST, env: { CLAUDE_CONFIG_DIR: "/cfg-personal", ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: undefined, DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", DISABLE_AUTOUPDATER: "1" } }]);
   assert.deepEqual(readers.map((r) => r.id), ["codex", "antigravity", "copilot", "cursor", "claude-work", "claude-personal"]);
   assert.equal(readers[2].experimental, true);
 });

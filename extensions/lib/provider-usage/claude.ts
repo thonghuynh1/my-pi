@@ -1,8 +1,9 @@
 import type { ProcessRequest, ProcessRunner } from "./readers.ts";
 
+// Native diagnostics prove freshness: get_usage success alone can contain cached quotas.
 export const CLAUDE_USAGE_REQUEST: ProcessRequest = {
   command: "claude",
-  args: ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence"],
+  args: ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--debug-to-stderr"],
   protocol: "claude",
 };
 const record = (v: unknown): Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};

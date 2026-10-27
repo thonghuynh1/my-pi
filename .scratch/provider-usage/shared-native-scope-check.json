@@ -1,0 +1,38 @@
+[
+  {
+    "provider": "codex",
+    "identity": "known",
+    "validScope": true,
+    "mutex": "ok"
+  },
+  {
+    "provider": "antigravity",
+    "identity": "opaque",
+    "validScope": true,
+    "mutex": "ok"
+  },
+  {
+    "provider": "copilot",
+    "identity": "known",
+    "validScope": true,
+    "mutex": "ok"
+  },
+  {
+    "provider": "cursor",
+    "identity": "opaque",
+    "validScope": true,
+    "mutex": "ok"
+  },
+  {
+    "provider": "claude-work",
+    "identity": "known",
+    "validScope": true,
+    "mutex": "ok"
+  },
+  {
+    "provider": "claude-personal",
+    "identity": "known",
+    "validScope": true,
+    "mutex": "ok"
+  }
+]

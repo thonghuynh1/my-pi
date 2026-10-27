@@ -1,0 +1,136 @@
+TAP version 13
+# Subtest: all six scopes are deterministic opaque hashes and never contain credential or directory values
+ok 1 - all six scopes are deterministic opaque hashes and never contain credential or directory values
+  ---
+  duration_ms: 4.7579
+  type: 'test'
+  ...
+# Subtest: same-size, same-time credential replacement changes generation while keeping stable unknown-account lock namespace
+ok 2 - same-size, same-time credential replacement changes generation while keeping stable unknown-account lock namespace
+  ---
+  duration_ms: 20.5497
+  type: 'test'
+  ...
+# Subtest: Claude uses fixed actual profile dirs and identity only, not mutable .claude.json usage
+ok 3 - Claude uses fixed actual profile dirs and identity only, not mutable .claude.json usage
+  ---
+  duration_ms: 1.3857
+  type: 'test'
+  ...
+# Subtest: auth override VALUES, not presence, distinguish namespaces across every provider
+ok 4 - auth override VALUES, not presence, distinguish namespaces across every provider
+  ---
+  duration_ms: 1.2627
+  type: 'test'
+  ...
+# Subtest: Codex hashes selected home auth/config and identity-file overrides
+ok 5 - Codex hashes selected home auth/config and identity-file overrides
+  ---
+  duration_ms: 0.7624
+  type: 'test'
+  ...
+# Subtest: Cursor exact platform auth paths stay separate from config-root override; active teams are distinct
+ok 6 - Cursor exact platform auth paths stay separate from config-root override; active teams are distinct
+  ---
+  duration_ms: 1.3083
+  type: 'test'
+  ...
+# Subtest: GitHub config root precedence and host selectors use independent namespaces
+ok 7 - GitHub config root precedence and host selectors use independent namespaces
+  ---
+  duration_ms: 0.9814
+  type: 'test'
+  ...
+# Subtest: Antigravity fingerprints observed native fallback files and all selectors without treating AGY_ACCOUNT as subscription identity
+ok 8 - Antigravity fingerprints observed native fallback files and all selectors without treating AGY_ACCOUNT as subscription identity
+  ---
+  duration_ms: 1.3761
+  type: 'test'
+  ...
+# Subtest: production registry attaches all six scope resolvers with fixed Claude profiles
+ok 9 - production registry attaches all six scope resolvers with fixed Claude profiles
+  ---
+  duration_ms: 1.6766
+  type: 'test'
+  ...
+# Subtest: manual rapid reads share TTL, original timestamps, and one refresh at expiry
+ok 10 - manual rapid reads share TTL, original timestamps, and one refresh at expiry
+  ---
+  duration_ms: 154.0128
+  type: 'test'
+  ...
+# Subtest: failure cooldown starts at completion and retains only matching stale value across restart
+ok 11 - failure cooldown starts at completion and retains only matching stale value across restart
+  ---
+  duration_ms: 47.2399
+  type: 'test'
+  ...
+# Subtest: structured retry hints and exact Claude rate-limit reason survive shared restart
+ok 12 - structured retry hints and exact Claude rate-limit reason survive shared restart
+  ---
+  duration_ms: 13.3351
+  type: 'test'
+  ...
+# Subtest: real separate processes coalesce through the public sample boundary and restart failure cooldown
+ok 13 - real separate processes coalesce through the public sample boundary and restart failure cooldown
+  ---
+  duration_ms: 8037.3645
+  type: 'test'
+  ...
+# Subtest: paused owner is never stolen even after marker expiry; canceled follower cannot cancel owner; crash releases OS mutex
+ok 14 - paused owner is never stolen even after marker expiry; canceled follower cannot cancel owner; crash releases OS mutex
+  ---
+  duration_ms: 17158.4938
+  type: 'test'
+  ...
+# Subtest: owner abort holds mutex through underlying cleanup and never publishes late success
+ok 15 - owner abort holds mutex through underlying cleanup and never publishes late success
+  ---
+  duration_ms: 21.6163
+  type: 'test'
+  ...
+# Subtest: scope change during fetch discards result, clears monitor state, and never publishes old-account success
+ok 16 - scope change during fetch discards result, clears monitor state, and never publishes old-account success
+  ---
+  duration_ms: 25.4041
+  type: 'test'
+  ...
+# Subtest: monitor adopts original shared timestamps and shared stale replacement, not local cached value
+ok 17 - monitor adopts original shared timestamps and shared stale replacement, not local cached value
+  ---
+  duration_ms: 0.7837
+  type: 'test'
+  ...
+# Subtest: corrupt, oversized and invalid-schema records rebuild under coordination; only normalized safe data persists
+ok 18 - corrupt, oversized and invalid-schema records rebuild under coordination; only normalized safe data persists
+  ---
+  duration_ms: 145.458
+  type: 'test'
+  ...
+# Subtest: storage failures fail closed without invoking live reader
+ok 19 - storage failures fail closed without invoking live reader
+  ---
+  duration_ms: 5.868
+  type: 'test'
+  ...
+# Subtest: different provider/profile/auth namespaces have independent values and cooldowns
+ok 20 - different provider/profile/auth namespaces have independent values and cooldowns
+  ---
+  duration_ms: 62.2935
+  type: 'test'
+  ...
+# Subtest: scoped startup, five-minute tick, and rapid manual refresh all use the same freshness policy
+ok 21 - scoped startup, five-minute tick, and rapid manual refresh all use the same freshness policy
+  ---
+  duration_ms: 40.4088
+  type: 'test'
+  ...
+1..21
+# tests 21
+# suites 0
+# pass 21
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 68283.4488

@@ -1,0 +1,67 @@
+TAP version 13
+# Subtest: Claude handshake frames fragments, matches IDs, denies permissions and resolves only get_usage
+ok 1 - Claude handshake frames fragments, matches IDs, denies permissions and resolves only get_usage
+  ---
+  duration_ms: 6.6687
+  type: 'test'
+  ...
+# Subtest: profile reader uses live control usage, not yesterday's cache, and projects only four fields
+ok 2 - profile reader uses live control usage, not yesterday's cache, and projects only four fields
+  ---
+  duration_ms: 14.0465
+  type: 'test'
+  ...
+# Subtest: personal usage enables account requests without enabling telemetry or changing the parent environment
+ok 3 - personal usage enables account requests without enabling telemetry or changing the parent environment
+  ---
+  duration_ms: 0.5927
+  type: 'test'
+  ...
+# Subtest: Claude usage child omits the traffic blocker while preserving privacy opt-outs
+ok 4 - Claude usage child omits the traffic blocker while preserving privacy opt-outs
+  ---
+  duration_ms: 1127.9495
+  type: 'test'
+  ...
+# Subtest: unavailable or null Claude rate limits reject safely without falling back to disk
+ok 5 - unavailable or null Claude rate limits reject safely without falling back to disk
+  ---
+  duration_ms: 2.3099
+  type: 'test'
+  ...
+# Subtest: Claude protocol errors, malformed output and EOF without matching usage reject safely
+ok 6 - Claude protocol errors, malformed output and EOF without matching usage reject safely
+  ---
+  duration_ms: 3.3819
+  type: 'test'
+  ...
+# Subtest: Claude rejects cached usage success after stderr reports a rate-limited refresh
+not ok 7 - Claude rejects cached usage success after stderr reports a rate-limited refresh
+  ---
+  duration_ms: 1.4135
+  type: 'test'
+  location: 'C:\\my-pi\\extensions\\__tests__\\provider-usage-claude-control.test.ts:212:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  stack: |-
+    async TestContext.<anonymous> (file:///C:/my-pi/extensions/__tests__/provider-usage-claude-control.test.ts:231:3)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: Claude timeout, cancellation and output limits clean up once and never send later usage requests
+ok 8 - Claude timeout, cancellation and output limits clean up once and never send later usage requests
+  ---
+  duration_ms: 6.2031
+  type: 'test'
+  ...
+1..8
+# tests 8
+# suites 0
+# pass 7
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 4349.341

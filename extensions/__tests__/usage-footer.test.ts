@@ -4,17 +4,18 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { visibleWidth, type Component } from "@earendil-works/pi-tui";
 import usageFooter, { layoutUsageLines } from "../usage-footer.ts";
 import { ProviderUsageMonitor, type MonitorClock } from "../lib/provider-usage/monitor.ts";
-import type { ProviderReader } from "../lib/provider-usage/readers.ts";
+import { UsageReadError, type ProviderReader } from "../lib/provider-usage/readers.ts";
+import { parseClaude } from "../lib/provider-usage/model.ts";
 
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
-function fixture(mode = "tui") {
+function fixture(mode = "tui", options: { readers?: ProviderReader[]; now?: () => number } = {}) {
   const callbacks = new Map<string, ((event: unknown, ctx: ExtensionCommandContext) => void)[]>();
   const commands = new Map<string, { handler(args: string, ctx: ExtensionCommandContext): Promise<void> }>();
   const intervals = new Set<() => void>();
   const timeouts = new Set<() => void>();
   let reads = 0;
   const clock: MonitorClock = {
-    now: () => 1_000,
+    now: options.now ?? (() => 1_000),
     every: (cb) => { intervals.add(cb); return cb; },
     after: (cb) => { timeouts.add(cb); return cb; },
     cancelEvery: (cb) => { intervals.delete(cb as () => void); },
@@ -28,7 +29,7 @@ function fixture(mode = "tui") {
     { id: "copilot", name: "GitHub Copilot", experimental: true, read: async () => ({ kind: "credits", consumed: 54386 }) },
     { id: "cursor", name: "Cursor", experimental: true, read: async () => ({ kind: "quota", groups: [{ id: "cursor", name: "Cursor included plan", shortName: "Cursor", windows: [{ id: "month", label: "month", usedPercent: 42 }, { id: "auto", label: "Auto", usedPercent: 20 }, { id: "api", label: "API", usedPercent: 100 }] }] }) },
   ];
-  const monitor = new ProviderUsageMonitor(readers, clock);
+  const monitor = new ProviderUsageMonitor(options.readers ?? readers, clock);
   const tui = { terminal: { rows: 80 }, requestRender() { renders++; } };
   let renders = 0;
   let component: (Component & { dispose?(): void }) | undefined;
@@ -376,6 +377,92 @@ test("details share cache, refresh on r while off without polling, close by q or
   f.panel()!.handleInput!("\x1b"); await next;
   assert.equal(f.panel(), undefined);
   f.emit("session_shutdown");
+});
+
+test("Claude manual rate-limit refresh preserves stale usage until timer updates the current footer and details", async () => {
+  let now = Date.UTC(2026, 9, 27, 9, 0, 0);
+  let outcome: "initial" | "limited" | "recovered" = "initial";
+  let reads = 0;
+  const reader: ProviderReader = {
+    id: "claude-personal", name: "Claude Personal",
+    read: async () => {
+      reads++;
+      if (outcome === "limited") throw new UsageReadError("Claude usage refresh rate limited");
+      return parseClaude({ utilization: {
+        five_hour: { utilization: outcome === "initial" ? 84 : 100 },
+        seven_day: { utilization: outcome === "initial" ? 74 : 75 },
+      } });
+    },
+  };
+  const f = fixture("tui", { readers: [reader], now: () => now });
+  f.emit("session_start"); await flush();
+  const interaction = f.command("provider-usage"); await flush();
+  const footer = f.footer()!;
+  const panel = f.panel()!;
+  const installs = f.installed.length;
+  const footerRequests = f.installed.at(-1)!;
+  const initial = f.monitor.snapshot()[0];
+  assert.equal(initial.status, "available");
+  assert.equal(initial.lastSuccess, now);
+  assert.match(footer.render(200).join("\n"), /Claude-P 5h-84% wk-74%/);
+  assert.match(panel.render(200).join("\n"), /Five-hour window [(]5h[)]: 84% used/);
+  assert.match(panel.render(200).join("\n"), /Weekly window [(]week[)]: 74% used/);
+  assert(!panel.render(200).join("\n").includes("stale"));
+
+  now += 60_000;
+  outcome = "limited";
+  const beforeManual = reads;
+  const beforeErrorRenders = f.renders();
+  const beforeErrorFooterRenders = footerRequests.renders;
+  panel.handleInput!("r"); await flush();
+  assert.equal(reads, beforeManual + 1);
+  const stale = f.monitor.snapshot()[0];
+  assert.equal(stale.status, "error");
+  assert.equal(stale.value, initial.value);
+  assert.equal(stale.lastSuccess, initial.lastSuccess);
+  assert.equal(stale.lastAttempt, now);
+  assert.match(stale.error!, /refresh rate limited/);
+  assert.match(footer.render(200).join("\n"), /Claude-P 5h-RL wk-74%\*/);
+  const staleDetails = panel.render(200).join("\n");
+  assert.match(staleDetails, /error \u00b7 stale/);
+  assert.match(staleDetails, /Reason: Claude usage refresh rate limited/);
+  assert.match(staleDetails, /Five-hour window [(]5h[)]: 84% used/);
+  assert.match(staleDetails, /Weekly window [(]week[)]: 74% used/);
+  assert(staleDetails.includes(`Last success: ${new Date(initial.lastSuccess!).toLocaleString()}`));
+  assert(footerRequests.renders > beforeErrorFooterRenders);
+  assert(f.renders() - beforeErrorRenders > footerRequests.renders - beforeErrorFooterRenders);
+
+  now += 300_000;
+  outcome = "recovered";
+  const beforeTimer = reads;
+  const beforeRecoveryRenders = f.renders();
+  const beforeRecoveryFooterRenders = footerRequests.renders;
+  assert.equal(f.intervals.size, 1);
+  for (const tick of f.intervals) tick();
+  await flush();
+  assert.equal(reads, beforeTimer + 1);
+  const recovered = f.monitor.snapshot()[0];
+  assert.equal(recovered.status, "available");
+  assert.equal(recovered.lastSuccess, now);
+  assert.equal(recovered.error, undefined);
+  assert.notEqual(recovered.value, initial.value);
+  const recoveredFooter = footer.render(200).join("\n");
+  assert.match(recoveredFooter, /Claude-P 5h-100% wk-75%/);
+  assert(!recoveredFooter.includes("*"));
+  const recoveredDetails = panel.render(200).join("\n");
+  assert.match(recoveredDetails, /Five-hour window [(]5h[)]: 100% used/);
+  assert.match(recoveredDetails, /Weekly window [(]week[)]: 75% used/);
+  assert(recoveredDetails.includes(`Last success: ${new Date(now).toLocaleString()}`));
+  assert(!/stale|Reason:|rate limited/.test(recoveredDetails));
+  assert(footerRequests.renders > beforeRecoveryFooterRenders);
+  assert(f.renders() - beforeRecoveryRenders > footerRequests.renders - beforeRecoveryFooterRenders);
+  assert.equal(f.footer(), footer);
+  assert.equal(f.panel(), panel);
+  assert.equal(f.installed.length, installs);
+  panel.handleInput!("q"); await interaction;
+  f.emit("session_shutdown");
+  assert.equal(f.intervals.size, 0);
+  assert.equal(f.timeouts.size, 0);
 });
 
 test("shutdown closes details; RPC/print/json never install TUI or read providers", async () => {

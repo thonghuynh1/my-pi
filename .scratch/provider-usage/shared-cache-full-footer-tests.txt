@@ -1,0 +1,248 @@
+TAP version 13
+# Subtest: factory has no work; startup refresh is asynchronous and independent of Pi model
+ok 1 - factory has no work; startup refresh is asynchronous and independent of Pi model
+  ---
+  duration_ms: 12.5075
+  type: 'test'
+  ...
+# Subtest: off persists; repeated installs/on never duplicate timers or subscriptions
+ok 2 - off persists; repeated installs/on never duplicate timers or subscriptions
+  ---
+  duration_ms: 5.1075
+  type: 'test'
+  ...
+# Subtest: subagent status removed, but tokens/cache/session cost breakdown retained
+ok 3 - subagent status removed, but tokens/cache/session cost breakdown retained
+  ---
+  duration_ms: 3.6685
+  type: 'test'
+  ...
+# Subtest: reported subscription dollars contribute to the main session total
+ok 4 - reported subscription dollars contribute to the main session total
+  ---
+  duration_ms: 3.4578
+  type: 'test'
+  ...
+# Subtest: unknown subscription models retain tokens but add no estimated dollars
+ok 5 - unknown subscription models retain tokens but add no estimated dollars
+  ---
+  duration_ms: 4.3604
+  type: 'test'
+  ...
+# Subtest: known subscription models add estimated dollars to the main session total
+not ok 6 - known subscription models add estimated dollars to the main session total
+  ---
+  duration_ms: 4.4175
+  type: 'test'
+  location: 'C:\\my-pi\\extensions\\__tests__\\usage-footer.test.ts:170:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /total 102\.0k · \$0\.4000/. Input:
+    
+    '\x1B[33mctx 500/100.0k 0.5%\x1B[0m                                                                                                                                                        \x1B[33mmodel test/模型-wide (medium)\x1B[0m\n' +
+      '\x1B[33min 101.0k · out 500 · cache 500\x1B[0m                                                                                                                                                      \x1B[33mCodex 5h-69% wk-16%\x1B[0m\n' +
+      '\x1B[33mtotal 102.0k · $0.0000\x1B[0m                                                                                                                                        \x1B[33mCopilot $544 · Cursor M-42% A-20% API-100%\x1B[0m'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    [33mctx 500/100.0k 0.5%[0m                                                                                                                                                        [33mmodel test/模型-wide (medium)[0m
+    [33min 101.0k · out 500 · cache 500[0m                                                                                                                                                      [33mCodex 5h-69% wk-16%[0m
+    [33mtotal 102.0k · $0.0000[0m                                                                                                                                        [33mCopilot $544 · Cursor M-42% A-20% API-100%[0m
+  operator: 'match'
+  stack: |-
+    TestContext.<anonymous> (file:///C:/my-pi/extensions/__tests__/usage-footer.test.ts:184:10)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: claude-code-cli uses reported dollars when positive and estimates otherwise
+not ok 7 - claude-code-cli uses reported dollars when positive and estimates otherwise
+  ---
+  duration_ms: 6.8681
+  type: 'test'
+  location: 'C:\\my-pi\\extensions\\__tests__\\usage-footer.test.ts:189:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The expression evaluated to a falsy value:
+    
+      assert(output.includes(`total 100.0k · $${reported > 0 ? "2.000" : "0.4000"}`))
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: '=='
+  stack: |-
+    TestContext.<anonymous> (file:///C:/my-pi/extensions/__tests__/usage-footer.test.ts:201:7)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: Sonnet subscription estimate includes input, output, cache read and cache write
+ok 8 - Sonnet subscription estimate includes input, output, cache read and cache write
+  ---
+  duration_ms: 4.0438
+  type: 'test'
+  ...
+# Subtest: subscription estimates use exact model prices rather than Claude family prices
+not ok 9 - subscription estimates use exact model prices rather than Claude family prices
+  ---
+  duration_ms: 9.2645
+  type: 'test'
+  location: 'C:\\my-pi\\extensions\\__tests__\\usage-footer.test.ts:224:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    claude-opus-5-5: [33mctx 500/100.0k 0.5%[0m                                                                                                                                                        [33mmodel test/模型-wide (medium)[0m
+    [33min 100.0k · out 0 · cache 0[0m                                                                                                                                                          [33mCodex 5h-69% wk-16%[0m
+    [33mtotal 100.0k · $0.0000[0m                                                                                                                                        [33mCopilot $544 · Cursor M-42% A-20% API-100%[0m
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: '=='
+  stack: |-
+    TestContext.<anonymous> (file:///C:/my-pi/extensions/__tests__/usage-footer.test.ts:240:7)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: Sonnet 5.5 subscription estimate uses its exact cache prices
+not ok 10 - Sonnet 5.5 subscription estimate uses its exact cache prices
+  ---
+  duration_ms: 3.6325
+  type: 'test'
+  location: 'C:\\my-pi\\extensions\\__tests__\\usage-footer.test.ts:245:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /total 4\.0m · \$14\.600/. Input:
+    
+    '\x1B[33mctx 500/100.0k 0.5%\x1B[0m                                                                                                                                                        \x1B[33mmodel test/模型-wide (medium)\x1B[0m\n' +
+      '\x1B[33min 1.0m · out 1.0m · cache 2.0m\x1B[0m                                                                                                                                                      \x1B[33mCodex 5h-69% wk-16%\x1B[0m\n' +
+      '\x1B[33mtotal 4.0m · $0.0000\x1B[0m                                                                                                                                          \x1B[33mCopilot $544 · Cursor M-42% A-20% API-100%\x1B[0m'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    [33mctx 500/100.0k 0.5%[0m                                                                                                                                                        [33mmodel test/模型-wide (medium)[0m
+    [33min 1.0m · out 1.0m · cache 2.0m[0m                                                                                                                                                      [33mCodex 5h-69% wk-16%[0m
+    [33mtotal 4.0m · $0.0000[0m                                                                                                                                          [33mCopilot $544 · Cursor M-42% A-20% API-100%[0m
+  operator: 'match'
+  stack: |-
+    TestContext.<anonymous> (file:///C:/my-pi/extensions/__tests__/usage-footer.test.ts:257:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: Haiku 5.5 tier changes only above 100000 prompt tokens including caches
+not ok 11 - Haiku 5.5 tier changes only above 100000 prompt tokens including caches
+  ---
+  duration_ms: 4.3013
+  type: 'test'
+  location: 'C:\\my-pi\\extensions\\__tests__\\usage-footer.test.ts:261:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    input=20000: [33mctx 500/100.0k 0.5%[0m                                                                                                                                                        [33mmodel test/模型-wide (medium)[0m
+    [33min 20.0k · out 1.0k · cache 80.0k[0m                                                                                                                                                    [33mCodex 5h-69% wk-16%[0m
+    [33mtotal 101.0k · $0.0000[0m                                                                                                                                        [33mCopilot $544 · Cursor M-42% A-20% API-100%[0m
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: '=='
+  stack: |-
+    TestContext.<anonymous> (file:///C:/my-pi/extensions/__tests__/usage-footer.test.ts:276:7)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: subscription estimate falls back to exact model pricing when usage.cost is absent
+not ok 12 - subscription estimate falls back to exact model pricing when usage.cost is absent
+  ---
+  duration_ms: 3.6826
+  type: 'test'
+  location: 'C:\\my-pi\\extensions\\__tests__\\usage-footer.test.ts:281:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /total 100\.0k · \$0\.4000/. Input:
+    
+    '\x1B[33mctx 500/100.0k 0.5%\x1B[0m                                                                                                                                                        \x1B[33mmodel test/模型-wide (medium)\x1B[0m\n' +
+      '\x1B[33min 100.0k · out 0 · cache 0\x1B[0m                                                                                                                                                          \x1B[33mCodex 5h-69% wk-16%\x1B[0m\n' +
+      '\x1B[33mtotal 100.0k · $0.0000\x1B[0m                                                                                                                                        \x1B[33mCopilot $544 · Cursor M-42% A-20% API-100%\x1B[0m'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    [33mctx 500/100.0k 0.5%[0m                                                                                                                                                        [33mmodel test/模型-wide (medium)[0m
+    [33min 100.0k · out 0 · cache 0[0m                                                                                                                                                          [33mCodex 5h-69% wk-16%[0m
+    [33mtotal 100.0k · $0.0000[0m                                                                                                                                        [33mCopilot $544 · Cursor M-42% A-20% API-100%[0m
+  operator: 'match'
+  stack: |-
+    TestContext.<anonymous> (file:///C:/my-pi/extensions/__tests__/usage-footer.test.ts:291:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: non-subscription providers with Claude models and explicit zero cost are never estimated
+ok 13 - non-subscription providers with Claude models and explicit zero cost are never estimated
+  ---
+  duration_ms: 3.0717
+  type: 'test'
+  ...
+# Subtest: mixed subscription, metered and subagent dollars are each counted once
+not ok 14 - mixed subscription, metered and subagent dollars are each counted once
+  ---
+  duration_ms: 2.9924
+  type: 'test'
+  location: 'C:\\my-pi\\extensions\\__tests__\\usage-footer.test.ts:311:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    The input did not match the regular expression /total 101\.9k · \$7\.900 \(\$5\.900 \+ \$2\.000 sub\)/. Input:
+    
+    '\x1B[33mctx 500/100.0k 0.5%\x1B[0m                                                                                                                                                                                                \x1B[33mmodel test/模型-wide (medium)\x1B[0m\n' +
+      '\x1B[33min 100.3k · out 520 · cache 1.1k\x1B[0m                                                                                                                                                                                             \x1B[33mCodex 5h-69% wk-16%\x1B[0m\n' +
+      '\x1B[33mtotal 101.9k · $7.500 ($5.500 + $2.000 sub)\x1B[0m                                                                                                                                                           \x1B[33mCopilot $544 · Cursor M-42% A-20% API-100%\x1B[0m'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  actual: |-
+    [33mctx 500/100.0k 0.5%[0m                                                                                                                                                                                                [33mmodel test/模型-wide (medium)[0m
+    [33min 100.3k · out 520 · cache 1.1k[0m                                                                                                                                                                                             [33mCodex 5h-69% wk-16%[0m
+    [33mtotal 101.9k · $7.500 ($5.500 + $2.000 sub)[0m                                                                                                                                                           [33mCopilot $544 · Cursor M-42% A-20% API-100%[0m
+  operator: 'match'
+  stack: |-
+    TestContext.<anonymous> (file:///C:/my-pi/extensions/__tests__/usage-footer.test.ts:334:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: layout stays three rows with ANSI, CJK and narrow truncation
+ok 15 - layout stays three rows with ANSI, CJK and narrow truncation
+  ---
+  duration_ms: 19.4965
+  type: 'test'
+  ...
+# Subtest: details share cache, refresh on r while off without polling, close by q or Escape
+ok 16 - details share cache, refresh on r while off without polling, close by q or Escape
+  ---
+  duration_ms: 15.0543
+  type: 'test'
+  ...
+# Subtest: Claude manual rate-limit refresh preserves stale usage until timer updates the current footer and details
+ok 17 - Claude manual rate-limit refresh preserves stale usage until timer updates the current footer and details
+  ---
+  duration_ms: 7.7483
+  type: 'test'
+  ...
+# Subtest: shutdown closes details; RPC/print/json never install TUI or read providers
+ok 18 - shutdown closes details; RPC/print/json never install TUI or read providers
+  ---
+  duration_ms: 9.2828
+  type: 'test'
+  ...
+1..18
+# tests 18
+# suites 0
+# pass 11
+# fail 7
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 4942.3839

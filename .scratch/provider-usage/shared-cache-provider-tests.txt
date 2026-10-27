@@ -1,0 +1,616 @@
+TAP version 13
+# Subtest: Claude handshake frames fragments, matches IDs, denies permissions and resolves only get_usage
+ok 1 - Claude handshake frames fragments, matches IDs, denies permissions and resolves only get_usage
+  ---
+  duration_ms: 11.836
+  type: 'test'
+  ...
+# Subtest: profile reader uses live control usage, not yesterday's cache, and projects only four fields
+ok 2 - profile reader uses live control usage, not yesterday's cache, and projects only four fields
+  ---
+  duration_ms: 32.3845
+  type: 'test'
+  ...
+# Subtest: personal usage enables account requests without enabling telemetry or changing the parent environment
+ok 3 - personal usage enables account requests without enabling telemetry or changing the parent environment
+  ---
+  duration_ms: 4.0354
+  type: 'test'
+  ...
+# Subtest: Claude usage child omits the traffic blocker while preserving privacy opt-outs
+ok 4 - Claude usage child omits the traffic blocker while preserving privacy opt-outs
+  ---
+  duration_ms: 1180.1442
+  type: 'test'
+  ...
+# Subtest: unavailable or null Claude rate limits reject safely without falling back to disk
+ok 5 - unavailable or null Claude rate limits reject safely without falling back to disk
+  ---
+  duration_ms: 2.5813
+  type: 'test'
+  ...
+# Subtest: Claude protocol errors, malformed output and EOF without matching usage reject safely
+ok 6 - Claude protocol errors, malformed output and EOF without matching usage reject safely
+  ---
+  duration_ms: 5.1424
+  type: 'test'
+  ...
+# Subtest: Claude rejects cached usage success after stderr reports a rate-limited refresh
+ok 7 - Claude rejects cached usage success after stderr reports a rate-limited refresh
+  ---
+  duration_ms: 1.5162
+  type: 'test'
+  ...
+# Subtest: Claude freshness combines matching usage and endpoint success in either stream order
+ok 8 - Claude freshness combines matching usage and endpoint success in either stream order
+  ---
+  duration_ms: 3.1596
+  type: 'test'
+  ...
+# Subtest: Claude accepts a successful usage fetch after an OAuth refresh retry
+ok 9 - Claude accepts a successful usage fetch after an OAuth refresh retry
+  ---
+  duration_ms: 1.5685
+  type: 'test'
+  ...
+# Subtest: Claude freshness parses split diagnostic lines and CRLF without retaining raw diagnostics
+ok 10 - Claude freshness parses split diagnostic lines and CRLF without retaining raw diagnostics
+  ---
+  duration_ms: 2.2426
+  type: 'test'
+  ...
+# Subtest: Claude rate-limit failures and replayed cooldown reject cached success in either stream order
+ok 11 - Claude rate-limit failures and replayed cooldown reject cached success in either stream order
+  ---
+  duration_ms: 3.234
+  type: 'test'
+  ...
+# Subtest: Claude usage failures dominate 200 in the same chunk and while draining stderr
+ok 12 - Claude usage failures dominate 200 in the same chunk and while draining stderr
+  ---
+  duration_ms: 3.6674
+  type: 'test'
+  ...
+# Subtest: Claude ignores unrelated HTTP errors and pre-request diagnostics when verifying usage
+ok 13 - Claude ignores unrelated HTTP errors and pre-request diagnostics when verifying usage
+  ---
+  duration_ms: 0.7792
+  type: 'test'
+  ...
+# Subtest: Claude missing, unknown or unpaired freshness evidence waits for cancellation
+ok 14 - Claude missing, unknown or unpaired freshness evidence waits for cancellation
+  ---
+  duration_ms: 2.5258
+  type: 'test'
+  ...
+# Subtest: Claude missing freshness evidence remains bounded by the existing timeout
+ok 15 - Claude missing freshness evidence remains bounded by the existing timeout
+  ---
+  duration_ms: 7.4287
+  type: 'test'
+  ...
+# Subtest: Claude accepts only explicit snapshots at most sixty seconds old
+ok 16 - Claude accepts only explicit snapshots at most sixty seconds old
+  ---
+  duration_ms: 4.2704
+  type: 'test'
+  ...
+# Subtest: Claude unavailable and null quotas reach the adapter login error without freshness proof
+ok 17 - Claude unavailable and null quotas reach the adapter login error without freshness proof
+  ---
+  duration_ms: 1.3442
+  type: 'test'
+  ...
+# Subtest: Claude diagnostic line bounds fail safely without changing the combined output limit
+ok 18 - Claude diagnostic line bounds fail safely without changing the combined output limit
+  ---
+  duration_ms: 0.8711
+  type: 'test'
+  ...
+# Subtest: Claude timeout, cancellation and output limits clean up once and never send later usage requests
+ok 19 - Claude timeout, cancellation and output limits clean up once and never send later usage requests
+  ---
+  duration_ms: 5.0677
+  type: 'test'
+  ...
+# Subtest: reader requests live Claude control usage without a user prompt
+ok 20 - reader requests live Claude control usage without a user prompt
+  ---
+  duration_ms: 3.8503
+  type: 'test'
+  ...
+# Subtest: reader refuses local command text and unavailable or malformed live limits
+ok 21 - reader refuses local command text and unavailable or malformed live limits
+  ---
+  duration_ms: 1.3895
+  type: 'test'
+  ...
+# Subtest: registry surfaces safe Claude reader errors
+ok 22 - registry surfaces safe Claude reader errors
+  ---
+  duration_ms: 2.1712
+  type: 'test'
+  ...
+# Subtest: enterprise usage credits parse to dollars against the seat limit
+ok 23 - enterprise usage credits parse to dollars against the seat limit
+  ---
+  duration_ms: 0.81
+  type: 'test'
+  ...
+# Subtest: legacy extra_usage shape is used only when spend is absent; disabled spend is not zero
+ok 24 - legacy extra_usage shape is used only when spend is absent; disabled spend is not zero
+  ---
+  duration_ms: 2.1718
+  type: 'test'
+  ...
+# Subtest: spend without a personal limit keeps the amount and invents no limit or percentage
+ok 25 - spend without a personal limit keeps the amount and invents no limit or percentage
+  ---
+  duration_ms: 7.2666
+  type: 'test'
+  ...
+# Subtest: Pro/Max subscription windows map to 5h/week with resets; spend optional
+ok 26 - Pro/Max subscription windows map to 5h/week with resets; spend optional
+  ---
+  duration_ms: 0.8504
+  type: 'test'
+  ...
+# Subtest: footer, stale marker and details for enterprise spend
+ok 27 - footer, stale marker and details for enterprise spend
+  ---
+  duration_ms: 10.9837
+  type: 'test'
+  ...
+# Subtest: per-profile read pins CLAUDE_CONFIG_DIR, strips the API key and keeps only usage fields
+ok 28 - per-profile read pins CLAUDE_CONFIG_DIR, strips the API key and keeps only usage fields
+  ---
+  duration_ms: 1.1538
+  type: 'test'
+  ...
+# Subtest: unparseable profile usage surfaces a per-profile safe error
+ok 29 - unparseable profile usage surfaces a per-profile safe error
+  ---
+  duration_ms: 4.3534
+  type: 'test'
+  ...
+# Subtest: Cursor reads provider-owned existing accessToken and POSTs only empty Connect JSON
+ok 30 - Cursor reads provider-owned existing accessToken and POSTs only empty Connect JSON
+  ---
+  duration_ms: 44.2323
+  type: 'test'
+  ...
+# Subtest: Cursor platform paths and config overrides follow CLI source, not credential config overrides
+ok 31 - Cursor platform paths and config overrides follow CLI source, not credential config overrides
+  ---
+  duration_ms: 6.4059
+  type: 'test'
+  ...
+# Subtest: Cursor never exchanges API keys or refreshes malformed/missing/expired tokens
+ok 32 - Cursor never exchanges API keys or refreshes malformed/missing/expired tokens
+  ---
+  duration_ms: 3.089
+  type: 'test'
+  ...
+# Subtest: Cursor fails closed on unreadable config or invalid active team; missing config is optional
+ok 33 - Cursor fails closed on unreadable config or invalid active team; missing config is optional
+  ---
+  duration_ms: 2.7334
+  type: 'test'
+  ...
+# Subtest: Cursor strips messages/identity fields and accepts source-verified spend-limit int64 JSON
+ok 34 - Cursor strips messages/identity fields and accepts source-verified spend-limit int64 JSON
+  ---
+  duration_ms: 1.6247
+  type: 'test'
+  ...
+# Subtest: Cursor rejects unsupported JSON schemas rather than inventing usage for missing messages
+ok 35 - Cursor rejects unsupported JSON schemas rather than inventing usage for missing messages
+  ---
+  duration_ms: 7.6274
+  type: 'test'
+  ...
+# Subtest: Cursor sanitizes filesystem/network/JSON failures and HTTP errors without exposing bodies
+ok 36 - Cursor sanitizes filesystem/network/JSON failures and HTTP errors without exposing bodies
+  ---
+  duration_ms: 5.3683
+  type: 'test'
+  ...
+# Subtest: Cursor bounds both advertised and streamed response bytes and auth input
+ok 37 - Cursor bounds both advertised and streamed response bytes and auth input
+  ---
+  duration_ms: 2.8889
+  type: 'test'
+  ...
+# Subtest: Cursor cancellation and timeout bound even noncooperative injected dependencies
+ok 38 - Cursor cancellation and timeout bound even noncooperative injected dependencies
+  ---
+  duration_ms: 20.2204
+  type: 'test'
+  ...
+# Subtest: Cursor timeout cancels a stalled response stream
+ok 39 - Cursor timeout cancels a stalled response stream
+  ---
+  duration_ms: 15.0802
+  type: 'test'
+  ...
+# Subtest: Cursor zero activeTeamId selects personal/default context without a team header
+ok 40 - Cursor zero activeTeamId selects personal/default context without a team header
+  ---
+  duration_ms: 1.0363
+  type: 'test'
+  ...
+# Subtest: Cursor restores proto3 zero defaults only for present usage messages
+ok 41 - Cursor restores proto3 zero defaults only for present usage messages
+  ---
+  duration_ms: 0.7469
+  type: 'test'
+  ...
+# Subtest: Cursor uses signed int32, int64, and double proto field types without precision loss
+ok 42 - Cursor uses signed int32, int64, and double proto field types without precision loss
+  ---
+  duration_ms: 3.9001
+  type: 'test'
+  ...
+# Subtest: Cursor credential paths preserve the CLI env fallback rules on Windows and macOS
+ok 43 - Cursor credential paths preserve the CLI env fallback rules on Windows and macOS
+  ---
+  duration_ms: 2.7528
+  type: 'test'
+  ...
+# Subtest: Codex literal fixture preserves window identity and epoch seconds, not account/credit inventory
+ok 44 - Codex literal fixture preserves window identity and epoch seconds, not account/credit inventory
+  ---
+  duration_ms: 3.8357
+  type: 'test'
+  ...
+# Subtest: missing secondary is not zero; unknown windows are not relabeled; zero is real
+ok 45 - missing secondary is not zero; unknown windows are not relabeled; zero is real
+  ---
+  duration_ms: 1.5196
+  type: 'test'
+  ...
+# Subtest: invalid or missing quota fields never invent usage or reset dates
+ok 46 - invalid or missing quota fields never invent usage or reset dates
+  ---
+  duration_ms: 1.314
+  type: 'test'
+  ...
+# Subtest: Antigravity separate Gemini and third-party groups with independent resets
+ok 47 - Antigravity separate Gemini and third-party groups with independent resets
+  ---
+  duration_ms: 28.1679
+  type: 'test'
+  ...
+# Subtest: Antigravity rejects invalid fractions and ignores extra/duplicate buckets
+ok 48 - Antigravity rejects invalid fractions and ignores extra/duplicate buckets
+  ---
+  duration_ms: 1.0511
+  type: 'test'
+  ...
+# Subtest: Copilot unlimited enterprise consumes credits, not remaining percentage, money or tokens
+ok 49 - Copilot unlimited enterprise consumes credits, not remaining percentage, money or tokens
+  ---
+  duration_ms: 7.9709
+  type: 'test'
+  ...
+# Subtest: Cursor monthly included plan preserves percentage and millisecond billing reset
+ok 50 - Cursor monthly included plan preserves percentage and millisecond billing reset
+  ---
+  duration_ms: 1.3336
+  type: 'test'
+  ...
+# Subtest: Cursor exposes independently reported Auto/API categories without zero defaults or adding percentages
+ok 51 - Cursor exposes independently reported Auto/API categories without zero defaults or adding percentages
+  ---
+  duration_ms: 1.0646
+  type: 'test'
+  ...
+# Subtest: Cursor accepts real zero, explicit overage and verified ratio, never absent quota
+ok 52 - Cursor accepts real zero, explicit overage and verified ratio, never absent quota
+  ---
+  duration_ms: 1.1266
+  type: 'test'
+  ...
+# Subtest: footer shows the local five-hour reset only, never the weekly reset or an invented time
+ok 53 - footer shows the local five-hour reset only, never the weekly reset or an invented time
+  ---
+  duration_ms: 1.0046
+  type: 'test'
+  ...
+# Subtest: compact footer uses two provider rows, short labels, rounded values and stale markers
+ok 54 - compact footer uses two provider rows, short labels, rounded values and stale markers
+  ---
+  duration_ms: 0.9294
+  type: 'test'
+  ...
+# Subtest: Claude personal footer shows RL with cached weekly usage or an unknown weekly value
+ok 55 - Claude personal footer shows RL with cached weekly usage or an unknown weekly value
+  ---
+  duration_ms: 0.6746
+  type: 'test'
+  ...
+# Subtest: Copilot footer converts actual credits to rounded dollar equivalent, preserving raw credits
+ok 56 - Copilot footer converts actual credits to rounded dollar equivalent, preserving raw credits
+  ---
+  duration_ms: 0.4089
+  type: 'test'
+  ...
+# Subtest: initial errors omitted from footer; stale successes kept with safe details and localized dates
+ok 57 - initial errors omitted from footer; stale successes kept with safe details and localized dates
+  ---
+  duration_ms: 0.5878
+  type: 'test'
+  ...
+# Subtest: no factory resources; initial async refresh, 5-minute cadence and idempotent start/stop
+ok 58 - no factory resources; initial async refresh, 5-minute cadence and idempotent start/stop
+  ---
+  duration_ms: 3.7584
+  type: 'test'
+  ...
+# Subtest: manual refresh and timer refresh share coalesced per-provider work
+ok 59 - manual refresh and timer refresh share coalesced per-provider work
+  ---
+  duration_ms: 1.2766
+  type: 'test'
+  ...
+# Subtest: providers complete independently; failure preserves stale successful value and strips raw errors
+ok 60 - providers complete independently; failure preserves stale successful value and strips raw errors
+  ---
+  duration_ms: 10.5034
+  type: 'test'
+  ...
+# Subtest: 30s deadline aborts hung reader and retains stale data; initial failure remains unavailable
+ok 61 - 30s deadline aborts hung reader and retains stale data; initial failure remains unavailable
+  ---
+  duration_ms: 5.0638
+  type: 'test'
+  ...
+# Subtest: stop/restart invalidates late readers, notifications, and old pending finalizers
+ok 62 - stop/restart invalidates late readers, notifications, and old pending finalizers
+  ---
+  duration_ms: 7.0934
+  type: 'test'
+  ...
+# Subtest: manual refresh while stopped never enables periodic polling
+ok 63 - manual refresh while stopped never enables periodic polling
+  ---
+  duration_ms: 1.4089
+  type: 'test'
+  ...
+# Subtest: registry uses verified CLI commands plus the isolated experimental Cursor transport
+ok 64 - registry uses verified CLI commands plus the isolated experimental Cursor transport
+  ---
+  duration_ms: 16.8873
+  type: 'test'
+  ...
+# Subtest: Codex exact initialize handshake, ID matching, newline/chunk framing, then cleanup
+ok 65 - Codex exact initialize handshake, ID matching, newline/chunk framing, then cleanup
+  ---
+  duration_ms: 5.383
+  type: 'test'
+  ...
+# Subtest: CLI JSON read waits for successful exit and returns no stderr
+ok 66 - CLI JSON read waits for successful exit and returns no stderr
+  ---
+  duration_ms: 2.2105
+  type: 'test'
+  ...
+# Subtest: timeout, cancellation and output limits always terminate the owned process exactly once
+ok 67 - timeout, cancellation and output limits always terminate the owned process exactly once
+  ---
+  duration_ms: 13.5236
+  type: 'test'
+  ...
+# Subtest: missing executables, protocol errors, invalid JSON and nonzero exits have safe errors
+ok 68 - missing executables, protocol errors, invalid JSON and nonzero exits have safe errors
+  ---
+  duration_ms: 6.2165
+  type: 'test'
+  ...
+# Subtest: Windows resolves actual .exe or .cmd safely without generic shell execution
+ok 69 - Windows resolves actual .exe or .cmd safely without generic shell execution
+  ---
+  duration_ms: 2.3788
+  type: 'test'
+  ...
+# Subtest: tree cleanup targets only owned POSIX group and Windows PID tree with bounded taskkill fallback
+ok 70 - tree cleanup targets only owned POSIX group and Windows PID tree with bounded taskkill fallback
+  ---
+  duration_ms: 4.4338
+  type: 'test'
+  ...
+# Subtest: all six scopes are deterministic opaque hashes and never contain credential or directory values
+ok 71 - all six scopes are deterministic opaque hashes and never contain credential or directory values
+  ---
+  duration_ms: 9.8177
+  type: 'test'
+  ...
+# Subtest: same-size, same-time credential replacement changes generation while keeping stable unknown-account lock namespace
+ok 72 - same-size, same-time credential replacement changes generation while keeping stable unknown-account lock namespace
+  ---
+  duration_ms: 31.5343
+  type: 'test'
+  ...
+# Subtest: Claude uses fixed actual profile dirs and identity only, not mutable .claude.json usage
+ok 73 - Claude uses fixed actual profile dirs and identity only, not mutable .claude.json usage
+  ---
+  duration_ms: 1.6138
+  type: 'test'
+  ...
+# Subtest: auth override VALUES, not presence, distinguish namespaces across every provider
+ok 74 - auth override VALUES, not presence, distinguish namespaces across every provider
+  ---
+  duration_ms: 1.4552
+  type: 'test'
+  ...
+# Subtest: Codex hashes selected home auth/config and identity-file overrides
+ok 75 - Codex hashes selected home auth/config and identity-file overrides
+  ---
+  duration_ms: 3.2623
+  type: 'test'
+  ...
+# Subtest: Cursor exact platform auth paths stay separate from config-root override; active teams are distinct
+ok 76 - Cursor exact platform auth paths stay separate from config-root override; active teams are distinct
+  ---
+  duration_ms: 9.4308
+  type: 'test'
+  ...
+# Subtest: GitHub config root precedence and host selectors use independent namespaces
+ok 77 - GitHub config root precedence and host selectors use independent namespaces
+  ---
+  duration_ms: 1.1029
+  type: 'test'
+  ...
+# Subtest: Antigravity fingerprints observed native fallback files and all selectors without treating AGY_ACCOUNT as subscription identity
+ok 78 - Antigravity fingerprints observed native fallback files and all selectors without treating AGY_ACCOUNT as subscription identity
+  ---
+  duration_ms: 4.2309
+  type: 'test'
+  ...
+# Subtest: production registry attaches all six scope resolvers with fixed Claude profiles
+ok 79 - production registry attaches all six scope resolvers with fixed Claude profiles
+  ---
+  duration_ms: 2.8213
+  type: 'test'
+  ...
+# Subtest: verified Codex access-token and federation overrides hash values, including identity-token file contents
+ok 80 - verified Codex access-token and federation overrides hash values, including identity-token file contents
+  ---
+  duration_ms: 1.3228
+  type: 'test'
+  ...
+# Subtest: confidence requires observable credentials or an account marker, not configuration or API URLs
+ok 81 - confidence requires observable credentials or an account marker, not configuration or API URLs
+  ---
+  duration_ms: 1.5471
+  type: 'test'
+  ...
+# Subtest: observed Antigravity state path does not invalidate account generation on mutable state-content updates
+ok 82 - observed Antigravity state path does not invalidate account generation on mutable state-content updates
+  ---
+  duration_ms: 0.3761
+  type: 'test'
+  ...
+# Subtest: manual rapid reads share TTL, original timestamps, and one refresh at expiry
+ok 83 - manual rapid reads share TTL, original timestamps, and one refresh at expiry
+  ---
+  duration_ms: 252.6607
+  type: 'test'
+  ...
+# Subtest: failure cooldown starts at completion and retains only matching stale value across restart
+ok 84 - failure cooldown starts at completion and retains only matching stale value across restart
+  ---
+  duration_ms: 66.0434
+  type: 'test'
+  ...
+# Subtest: structured retry hints and exact Claude rate-limit reason survive shared restart
+ok 85 - structured retry hints and exact Claude rate-limit reason survive shared restart
+  ---
+  duration_ms: 24.7646
+  type: 'test'
+  ...
+# Subtest: real separate processes coalesce through the public sample boundary and restart failure cooldown
+ok 86 - real separate processes coalesce through the public sample boundary and restart failure cooldown
+  ---
+  duration_ms: 5571.433
+  type: 'test'
+  ...
+# Subtest: paused owner is never stolen even after marker expiry; canceled follower cannot cancel owner; crash releases OS mutex
+ok 87 - paused owner is never stolen even after marker expiry; canceled follower cannot cancel owner; crash releases OS mutex
+  ---
+  duration_ms: 12662.9326
+  type: 'test'
+  ...
+# Subtest: owner abort holds mutex through underlying cleanup and never publishes late success
+ok 88 - owner abort holds mutex through underlying cleanup and never publishes late success
+  ---
+  duration_ms: 326.5425
+  type: 'test'
+  ...
+# Subtest: scope change during fetch discards result, clears monitor state, and never publishes old-account success
+ok 89 - scope change during fetch discards result, clears monitor state, and never publishes old-account success
+  ---
+  duration_ms: 339.2951
+  type: 'test'
+  ...
+# Subtest: monitor adopts original shared timestamps and shared stale replacement, not local cached value
+ok 90 - monitor adopts original shared timestamps and shared stale replacement, not local cached value
+  ---
+  duration_ms: 1.8508
+  type: 'test'
+  ...
+# Subtest: corrupt, oversized and invalid-schema records rebuild under coordination; only normalized safe data persists
+ok 91 - corrupt, oversized and invalid-schema records rebuild under coordination; only normalized safe data persists
+  ---
+  duration_ms: 441.2578
+  type: 'test'
+  ...
+# Subtest: storage failures fail closed without invoking live reader
+ok 92 - storage failures fail closed without invoking live reader
+  ---
+  duration_ms: 39.6731
+  type: 'test'
+  ...
+# Subtest: different provider/profile/auth namespaces have independent values and cooldowns
+ok 93 - different provider/profile/auth namespaces have independent values and cooldowns
+  ---
+  duration_ms: 184.5672
+  type: 'test'
+  ...
+# Subtest: scoped startup, five-minute tick, and rapid manual refresh all use the same freshness policy
+ok 94 - scoped startup, five-minute tick, and rapid manual refresh all use the same freshness policy
+  ---
+  duration_ms: 126.2595
+  type: 'test'
+  ...
+# Subtest: nonzero fetch duration still refreshes exactly once at the next start-aligned monitor tick
+ok 95 - nonzero fetch duration still refreshes exactly once at the next start-aligned monitor tick
+  ---
+  duration_ms: 422.0059
+  type: 'test'
+  ...
+# Subtest: opaque stale fallback expires on failures and cannot resurrect after restart; known contexts retain stale values
+ok 96 - opaque stale fallback expires on failures and cannot resurrect after restart; known contexts retain stale values
+  ---
+  duration_ms: 377.3497
+  type: 'test'
+  ...
+# Subtest: opaque cooldown and orphan-marker sanitization also covers old records with missing confidence
+ok 97 - opaque cooldown and orphan-marker sanitization also covers old records with missing confidence
+  ---
+  duration_ms: 627.2808
+  type: 'test'
+  ...
+# Subtest: opaque cached error ages out at the return boundary even when its cooldown remains live
+ok 98 - opaque cached error ages out at the return boundary even when its cooldown remains live
+  ---
+  duration_ms: 104.3976
+  type: 'test'
+  ...
+# Subtest: confidence-only transitions clear cached values without changing hash keys or bypassing failure cooldown
+ok 99 - confidence-only transitions clear cached values without changing hash keys or bypassing failure cooldown
+  ---
+  duration_ms: 662.128
+  type: 'test'
+  ...
+# Subtest: legacy error records without confidence cannot restore stale values into an identified context
+ok 100 - legacy error records without confidence cannot restore stale values into an identified context
+  ---
+  duration_ms: 363.3406
+  type: 'test'
+  ...
+# Subtest: mid-fetch confidence changes discard prior values even when the owner is canceled
+ok 101 - mid-fetch confidence changes discard prior values even when the owner is canceled
+  ---
+  duration_ms: 91.6864
+  type: 'test'
+  ...
+1..101
+# tests 101
+# suites 0
+# pass 101
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 47392.4345

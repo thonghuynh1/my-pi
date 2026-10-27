@@ -9,7 +9,7 @@ import { createProcessRunner, UsageReadError, type ProcessRequest } from "../lib
 
 const request = {
   command: "claude",
-  args: ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence"],
+  args: ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--debug-to-stderr"],
   protocol: "claude",
 } satisfies ProcessRequest;
 const initialize = { type: "control_request", request_id: "usage-init", request: { subtype: "initialize" } };
@@ -19,7 +19,8 @@ const success = (id: string, response: unknown) => ({
   type: "control_response", response: { subtype: "success", request_id: id, response },
 });
 
-function processFixture(options: { timeoutMs?: number; maxOutputBytes?: number } = {}) {
+function processFixture(options: { timeoutMs?: number; maxOutputBytes?: number; drain?: (stderr: PassThrough) => void } = {}) {
+  const { drain, ...dependencies } = options;
   const events = new EventEmitter();
   const stdin = new PassThrough();
   const stdout = new PassThrough();
@@ -32,8 +33,8 @@ function processFixture(options: { timeoutMs?: number; maxOutputBytes?: number }
   const run = createProcessRunner({
     launch: (r) => ({ file: r.command, args: [...r.args] }),
     spawn: () => { spawns++; return child; },
-    terminate: async () => { cleanups++; },
-    ...options,
+    terminate: async () => { cleanups++; queueMicrotask(() => { drain?.(stderr); stderr.end(); }); },
+    ...dependencies,
   });
   const send = (message: unknown) => stdout.write(JSON.stringify(message) + "\n");
   return { run, writes, stdout, stderr, events, send, cleanups: () => cleanups, spawns: () => spawns };
@@ -52,6 +53,13 @@ const usage = {
     extra_usage: null,
   },
 };
+
+const fetchStart = "2026-10-27T09:26:26.942Z [DEBUG] fetchUtilization: GET /api/oauth/usage (attempt 1)\n";
+const fetchSuccess = "2026-10-27T09:26:29.135Z [DEBUG] fetchUtilization: 200 after 1 attempt(s)\n";
+const freshDiagnostics = fetchStart + fetchSuccess;
+const rateLimited = "[ERROR] Failed to load usage data: Request failed with status code 429\n";
+const cooldown = "[DEBUG] fetchUtilization: 429 remembered for this bearer; not asking again for 300s\n";
+const replayed = "[DEBUG] fetchUtilization: /api/oauth/usage replayed \u2014 the endpoint answered 429 2s ago; not asked again for 298s\n";
 
 test("Claude handshake frames fragments, matches IDs, denies permissions and resolves only get_usage", async () => {
   const f = processFixture();
@@ -78,6 +86,7 @@ test("Claude handshake frames fragments, matches IDs, denies permissions and res
   assert.equal(denial.response.subtype, "success");
   assert.equal(denial.response.request_id, "permission-1");
   assert.equal(denial.response.response.behavior, "deny");
+  f.stderr.write(freshDiagnostics);
   const reply = JSON.stringify(success("usage-read", usage));
   f.stdout.write(reply.slice(0, 57));
   assert.equal(f.cleanups(), 0);
@@ -207,6 +216,200 @@ test("Claude protocol errors, malformed output and EOF without matching usage re
     f.events.emit("close", 1);
     assert.equal(f.cleanups(), 1);
   }
+});
+
+test("Claude rejects cached usage success after stderr reports a rate-limited refresh", async () => {
+  const f = processFixture();
+  const pending = f.run(request, signal());
+  f.send(success("usage-init", {}));
+  assert.deepEqual(f.writes, [initialize, getUsage]);
+  f.stderr.write("2026-10-27T09:26:26.942Z [DEBUG] fetchUtilization: GET /api/oauth/usage (attempt 1)\n");
+  f.stderr.write("2026-10-27T09:26:29.135Z [DEBUG] fetchUtilization: 429 remembered for this bearer; not asking again for 300s\n");
+  f.stderr.write("2026-10-27T09:26:29.135Z [ERROR] Failed to load usage data: Request failed with status code 429\n");
+  f.send(success("usage-read", {
+    rate_limits_available: true,
+    rate_limits: {
+      ...usage.rate_limits,
+      five_hour: { utilization: 84, resets_at: "2026-10-27T09:29:59.730973+00:00" },
+      seven_day: { utilization: 74, resets_at: "2026-10-29T00:59:59.730993+00:00" },
+    },
+    accountUuid: "secret-account",
+    accessToken: "secret-token",
+    emailAddress: "secret@example.com",
+  }));
+  await assert.rejects(pending, (error: Error) => {
+    assert(error instanceof UsageReadError);
+    assert.match(error.message, /refresh.*rate.limit|rate.limit/i);
+    const exposed = error.message + JSON.stringify(error);
+    assert(!/secret|accountUuid|accessToken|emailAddress|rate_limits|utilization|resets_at|\/api\/oauth\/usage|fetchUtilization/.test(exposed));
+    return true;
+  });
+  assert.equal(f.cleanups(), 1);
+});
+
+test("Claude freshness combines matching usage and endpoint success in either stream order", async () => {
+  for (const payloadFirst of [true, false]) {
+    const f = processFixture();
+    const pending = f.run(request, signal());
+    f.send(success("usage-init", {}));
+    if (payloadFirst) f.send(success("usage-read", usage));
+    else f.stderr.write(freshDiagnostics);
+    assert.equal(f.cleanups(), 0);
+    if (payloadFirst) f.stderr.write(freshDiagnostics);
+    else f.send(success("usage-read", usage));
+    assert.deepEqual(await pending, usage);
+    assert.equal(f.cleanups(), 1);
+  }
+});
+
+test("Claude accepts a successful usage fetch after an OAuth refresh retry", async () => {
+  const f = processFixture({ timeoutMs: 50 });
+  const pending = f.run(request, signal());
+  f.send(success("usage-init", {}));
+  f.stderr.write(fetchStart + "[DEBUG] fetchUtilization: GET /api/oauth/usage (attempt 2)\n"
+    + "[DEBUG] fetchUtilization: 200 after 2 attempt(s) (401→refresh→retry succeeded)\n");
+  f.send(success("usage-read", usage));
+  assert.deepEqual(await pending, usage);
+  assert.equal(f.cleanups(), 1);
+});
+
+test("Claude freshness parses split diagnostic lines and CRLF without retaining raw diagnostics", async () => {
+  const f = processFixture();
+  const pending = f.run(request, signal());
+  f.send(success("usage-init", {}));
+  f.send(success("usage-read", usage));
+  const diagnostics = freshDiagnostics.replaceAll("\n", "\r\n");
+  for (const character of diagnostics.slice(0, -1)) f.stderr.write(character);
+  assert.equal(f.cleanups(), 0);
+  f.stderr.write(diagnostics.slice(-1));
+  assert.deepEqual(await pending, usage);
+  assert.equal(f.cleanups(), 1);
+});
+
+test("Claude rate-limit failures and replayed cooldown reject cached success in either stream order", async () => {
+  for (const diagnostics of [fetchStart + rateLimited, cooldown, replayed]) {
+    for (const payloadFirst of [true, false]) {
+      const f = processFixture();
+      const pending = f.run(request, signal());
+      f.send(success("usage-init", {}));
+      if (payloadFirst) f.send(success("usage-read", usage));
+      f.stderr.write(diagnostics);
+      if (!payloadFirst) f.send(success("usage-read", usage));
+      await assert.rejects(pending, (error: unknown) => {
+        assert(error instanceof UsageReadError);
+        assert.match(error.message, /refresh.*rate.limit/i);
+        assert(!/fetchUtilization|oauth|utilization|resets_at/.test(error.message + JSON.stringify(error)));
+        return true;
+      });
+      assert.equal(f.cleanups(), 1);
+    }
+  }
+});
+
+test("Claude usage failures dominate 200 in the same chunk and while draining stderr", async () => {
+  for (const failure of ["[ERROR] Failed to load usage data: secret-token /private-profile\n",
+    "[DEBUG] Usage fetch returned a fieldless or non-object body (in-band error)\n"]) {
+    for (const duringDrain of [false, true]) {
+      const f = processFixture({ drain: duringDrain ? (stderr) => { stderr.write(failure.trimEnd()); } : undefined });
+      const pending = f.run(request, signal());
+      f.send(success("usage-init", {}));
+      f.send(success("usage-read", usage));
+      f.stderr.write(freshDiagnostics + (duringDrain ? "" : failure));
+      await assert.rejects(pending, (error: unknown) => {
+        assert(error instanceof UsageReadError);
+        assert.match(error.message, /refresh failed/i);
+        assert(!/secret|private-profile|fieldless|fetchUtilization/.test(error.message + JSON.stringify(error)));
+        return true;
+      });
+      assert.equal(f.cleanups(), 1);
+    }
+  }
+});
+
+test("Claude ignores unrelated HTTP errors and pre-request diagnostics when verifying usage", async () => {
+  const f = processFixture();
+  const pending = f.run(request, signal());
+  f.stderr.write(rateLimited + cooldown);
+  f.send(success("usage-init", {}));
+  f.stderr.write("[ERROR] telemetry POST failed: status code 429\n[DEBUG] other endpoint returned 200\n");
+  f.stderr.write(freshDiagnostics);
+  f.send(success("usage-read", usage));
+  assert.deepEqual(await pending, usage);
+  assert.equal(f.cleanups(), 1);
+});
+
+test("Claude missing, unknown or unpaired freshness evidence waits for cancellation", async () => {
+  for (const diagnostics of ["", "[DEBUG] Usage read answered from a snapshot -1s old; endpoint not asked\n", "[DEBUG] other endpoint returned 200\n", fetchSuccess,
+    fetchStart + "[DEBUG] fetchUtilization: 200 after 1 attempt\n"]) {
+    const f = processFixture();
+    const controller = new AbortController();
+    const pending = f.run(request, controller.signal);
+    f.stderr.write(freshDiagnostics);
+    f.send(success("usage-init", {}));
+    f.send(success("usage-read", usage));
+    f.stderr.write(diagnostics);
+    assert.equal(f.cleanups(), 0);
+    controller.abort();
+    await assert.rejects(pending, /canceled/i);
+    assert.equal(f.cleanups(), 1);
+  }
+});
+
+test("Claude missing freshness evidence remains bounded by the existing timeout", async () => {
+  const f = processFixture({ timeoutMs: 2 });
+  const pending = f.run(request, signal());
+  f.send(success("usage-init", {}));
+  f.send(success("usage-read", usage));
+  await assert.rejects(pending, /timed out/i);
+  assert.equal(f.cleanups(), 1);
+});
+
+test("Claude accepts only explicit snapshots at most sixty seconds old", async () => {
+  for (const age of [0, 60, 60.001, 3600]) {
+    for (const payloadFirst of [true, false]) {
+      const f = processFixture();
+      const pending = f.run(request, signal());
+      f.send(success("usage-init", {}));
+      if (payloadFirst) f.send(success("usage-read", usage));
+      f.stderr.write(`[DEBUG] Usage read answered from a snapshot ${age}s old; endpoint not asked\n`);
+      if (!payloadFirst) f.send(success("usage-read", usage));
+      if (age <= 60) assert.deepEqual(await pending, usage);
+      else await assert.rejects(pending, /snapshot too old/i);
+      assert.equal(f.cleanups(), 1);
+    }
+  }
+});
+
+test("Claude unavailable and null quotas reach the adapter login error without freshness proof", async () => {
+  for (const payload of [{ rate_limits_available: false, rate_limits: usage.rate_limits },
+    { rate_limits_available: true, rate_limits: null }]) {
+    const f = processFixture();
+    const pending = readClaudeUsageAt(f.run, signal(), "/private-profile");
+    f.send(success("usage-init", {}));
+    f.stderr.write(rateLimited);
+    f.send(success("usage-read", payload));
+    await assert.rejects(pending, (error: unknown) => {
+      assert(error instanceof ClaudeUsageError);
+      assert.match(error.message, /check CLI login/i);
+      return true;
+    });
+    assert.equal(f.cleanups(), 1);
+  }
+});
+
+test("Claude diagnostic line bounds fail safely without changing the combined output limit", async () => {
+  const f = processFixture();
+  const pending = f.run(request, signal());
+  f.send(success("usage-init", {}));
+  f.send(success("usage-read", usage));
+  f.stderr.write("secret-token".repeat(1000));
+  await assert.rejects(pending, (error: unknown) => {
+    assert(error instanceof UsageReadError);
+    assert.match(error.message, /diagnostics exceeded safety limit/i);
+    assert(!error.message.includes("secret"));
+    return true;
+  });
+  assert.equal(f.cleanups(), 1);
 });
 
 test("Claude timeout, cancellation and output limits clean up once and never send later usage requests", async () => {

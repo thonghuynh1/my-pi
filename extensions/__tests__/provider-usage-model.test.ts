@@ -184,6 +184,26 @@ test("compact footer uses two provider rows, short labels, rounded values and st
   assert.deepEqual(compactFooterRows([{ ...tiny, value: undefined }]), ["", ""]);
 });
 
+test("Claude personal footer shows RL with cached weekly usage or an unknown weekly value", () => {
+  const state: ProviderState = {
+    id: "claude-personal", name: "Claude Personal", status: "error",
+    error: "Claude usage refresh rate limited",
+  };
+  assert.deepEqual(compactFooterRows([state]), ["Claude-P 5h-RL wk-?", ""]);
+  const cached: ProviderState = { ...state, value: { kind: "spend", windows: [
+    { id: "5h", label: "5h", usedPercent: 84 },
+    { id: "week", label: "week", usedPercent: 74 },
+  ] } };
+  assert.deepEqual(compactFooterRows([cached]), ["Claude-P 5h-RL wk-74%*", ""]);
+  assert.match(detailText([cached]), /Reason: Claude usage refresh rate limited/);
+  assert.match(detailText([cached]), /Five-hour window [(]5h[)]: 84% used/);
+  assert.deepEqual(compactFooterRows([{ ...cached, error: undefined, status: "available" }]), ["Claude-P 5h-84% wk-74%", ""]);
+  assert.deepEqual(compactFooterRows([{ ...cached, error: "Read timed out (30 seconds)" }]), ["Claude-P 5h-84% wk-74%*", ""]);
+  assert.deepEqual(compactFooterRows([{ ...state, value: { kind: "spend", windows: [
+    { id: "week", label: "week", usedPercent: 0 },
+  ] } }]), ["Claude-P 5h-RL wk-0%*", ""]);
+});
+
 test("Copilot footer converts actual credits to rounded dollar equivalent, preserving raw credits", () => {
   for (const [consumed, display] of [[0, "$0"], [29500, "$295"], [29549, "$295"], [29550, "$296"], [123456, "$1,235"]] as const) {
     const state: ProviderState = { id: "copilot", name: "Copilot", status: "available", value: { kind: "credits", consumed } };

@@ -1,0 +1,73 @@
+{
+  "verifiedAt": "2026-10-27T09:26:30.153Z",
+  "raw": {
+    "utilization": {
+      "five_hour": {
+        "utilization": 84,
+        "resets_at": "2026-10-27T09:29:59.730973+00:00",
+        "limit_dollars": null,
+        "used_dollars": null,
+        "remaining_dollars": null,
+        "locked_reason": null
+      },
+      "seven_day": {
+        "utilization": 74,
+        "resets_at": "2026-10-29T00:59:59.730993+00:00",
+        "limit_dollars": null,
+        "used_dollars": null,
+        "remaining_dollars": null,
+        "locked_reason": null
+      },
+      "spend": {
+        "used": {
+          "amount_minor": 0,
+          "currency": "USD",
+          "exponent": 2
+        },
+        "limit": null,
+        "percent": 0,
+        "severity": "normal",
+        "enabled": false,
+        "disabled_reason": null,
+        "cap": null,
+        "balance": null,
+        "auto_reload": null,
+        "disclaimer": "Usage credits cover you when you hit your plan limits. [Learn more](https://support.claude.com/articles/12429409)",
+        "can_purchase_credits": false,
+        "can_toggle": false
+      },
+      "extra_usage": {
+        "is_enabled": false,
+        "monthly_limit": null,
+        "used_credits": null,
+        "utilization": null,
+        "currency": null,
+        "disabled_reason": null,
+        "decimal_places": null,
+        "user_disabled": false,
+        "spend_limit_reached": false,
+        "credits_ever_enabled": false,
+        "daily": null,
+        "weekly": null
+      }
+    }
+  },
+  "events": [
+    {
+      "stream": "stderr",
+      "line": "2026-10-27T09:26:26.942Z [DEBUG] fetchUtilization: GET /api/oauth/usage (attempt 1)"
+    },
+    {
+      "stream": "stderr",
+      "line": "2026-10-27T09:26:29.135Z [DEBUG] fetchUtilization: 429 remembered for this bearer; not asking again for 300s"
+    },
+    {
+      "stream": "stderr",
+      "line": "2026-10-27T09:26:29.135Z [ERROR] Failed to load usage data: Request failed with status code 429"
+    },
+    {
+      "stream": "stdout",
+      "event": "usage response"
+    }
+  ]
+}

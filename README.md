@@ -20,6 +20,36 @@ Restart Pi or run `/reload`.
 
 The `postinstall` script handles Accordion build automatically.
 
+## Claude Work / Personal accounts
+
+The `claude-profile` extension switches the account used by `claude-bridge/*` models. Work defaults to `~/.claude`; Personal defaults to `~/.claude-personal`. Keep these directories **different** so renewing Personal does not overwrite Work's login.
+
+### Renew Personal OAuth without affecting Work
+
+1. In Pi, run `/claude-profile status` and note the **Personal** directory. If it is not configured yet, run `/claude-profile setup personal`. Custom paths can be saved in `~/.pi/agent/claude-profiles.json`; `CLAUDE_PROFILE_WORK_DIR` / `CLAUDE_PROFILE_PERSONAL_DIR` environment overrides take precedence.
+2. Open a **separate terminal outside Pi**. Use the exact Personal directory from step 1 in place of the default below. Switching profiles inside Pi does not change another terminal's environment.
+
+   **PowerShell** (use a fresh terminal and close it afterward, so these environment changes do not persist in your working shell):
+
+   ```powershell
+   $env:CLAUDE_CONFIG_DIR = Join-Path $HOME '.claude-personal'
+   Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
+   claude auth login
+   claude auth status
+   ```
+
+   **Git Bash** (environment changes apply only to each command):
+
+   ```bash
+   env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR="$HOME/.claude-personal" claude auth login
+   env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR="$HOME/.claude-personal" claude auth status
+   ```
+
+3. In the browser, explicitly choose your **personal** Claude account, not the work account that may already be signed in. Check `claude auth status` reports the intended account before continuing.
+4. Back in Pi, run `/claude-profile use personal` and select a `claude-bridge/*` model. The next bridge turn uses Personal. Run `/provider-usage`, then press `r` to refresh usage. To return to Work, run `/claude-profile use work`.
+
+**Avoid:** running login/logout without an explicit `CLAUDE_CONFIG_DIR`, pointing Personal at the Work directory, copying credentials between directories, or using `setx` to change the global config directory. No Work logout is needed. Pi's `/login` is separate from the Claude Code login used by `claude-bridge`. The profile picker checks for login files, not token validity, so a profile marked ready can still need OAuth renewal.
+
 ## Provider account usage
 
 The footer stays **three lines** tall: session totals on the left, model on the top right, Codex/Antigravity on the second right row, and Copilot/Cursor on the third. Connected accounts are shown independently of the selected Pi model. Summary labels: `wk` = weekly, `AG-G` = Antigravity Gemini, `AG-C/G` = Antigravity Claude/GPT, Copilot dollars = credits ÷ 100 rounded to whole dollars (user-requested equivalent, not a verified bill; raw credits remain in details), Cursor `M` = overall monthly included usage and `A` = Auto. Percentages are rounded; `*` marks stale data. Narrow terminals truncate summaries instead of adding rows. Use `/provider-usage` for reset dates, errors and manual refresh. Automatic refresh runs every five minutes while the footer is enabled.

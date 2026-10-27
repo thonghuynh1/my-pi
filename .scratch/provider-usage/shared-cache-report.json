@@ -1,0 +1,97 @@
+{
+  "feature": "Cross-process Provider Account Usage coordination",
+  "providers": [
+    "codex",
+    "antigravity",
+    "copilot",
+    "cursor",
+    "claude-work",
+    "claude-personal"
+  ],
+  "design": {
+    "entry": "SharedUsageCache.read(reader, signal)",
+    "scope": "Hashed provider/config/auth context; observable credential generation and confidence",
+    "storage": "getAgentDir()/provider-usage/v1/<opaque-key>.json",
+    "successReuseMs": 300000,
+    "failureCooldownMs": 300000,
+    "manualRefresh": "Uses the same cache and cooldown; no bypass",
+    "timestamps": "Preserves original lastAttempt and lastSuccess across processes",
+    "coordination": "Exclusive OS-owned 127.0.0.1 socket per hashed cache namespace; no lockfile reaping",
+    "publication": "Private atomic JSON via the existing durable-file helper; attempt marker precedes transport invocation",
+    "privacy": "Normalized usage, safe error codes, timestamps and hashes only. No credential contents or raw provider responses persisted."
+  },
+  "alternatives": [
+    {
+      "shape": "Stale mkdir lease",
+      "decision": "Rejected because stale takeover and release can remove a replacement owner."
+    },
+    {
+      "shape": "Long-lived broker",
+      "decision": "Rejected because the existing readers can coordinate without another process or service."
+    },
+    {
+      "shape": "Disk snapshots with OS-owned mutex",
+      "decision": "Selected to keep cached data durable and lock ownership tied to the operating system."
+    }
+  ],
+  "review": {
+    "intent": "Reduce duplicate provider polling across Pi processes without marking cached data newly fetched.",
+    "corrected": [
+      "Success expiry aligned with attempt start to avoid skipping the next five-minute monitor tick.",
+      "Added source-verified Codex auth selectors and corrected native Antigravity state path.",
+      "Opaque contexts cannot retain stale values beyond five minutes, including legacy cooldown/error records.",
+      "Mid-read scope changes discard results rather than publishing under a new context."
+    ],
+    "limitations": [
+      "All running Pi instances need the updated extension; older versions and other provider clients do not cooperate.",
+      "Known identity means an observable local credential context, not universal proof for every OS keyring backend.",
+      "A five-minute durable attempt marker limits crash retries but does not guarantee containment of arbitrary orphaned external CLIs.",
+      "Port or storage failures fail closed; no uncached bypass.",
+      "The atomic publication helper has bounded synchronous Windows retry and does not promise power-loss durability."
+    ]
+  },
+  "verification": {
+    "providerTests": {
+      "passed": 101,
+      "failed": 0,
+      "evidence": "shared-cache-provider-tests.txt"
+    },
+    "focusedRenderingTest": {
+      "passed": 1,
+      "failed": 0,
+      "evidence": "shared-cache-footer-tests.txt"
+    },
+    "fullFooterSuite": {
+      "passed": 11,
+      "failed": 7,
+      "knownUnchangedFailures": "Subscription cost/pricing tests, independently reproduced using untouched HEAD earlier in this session.",
+      "evidence": "shared-cache-full-footer-tests.txt"
+    },
+    "separateNodeProcesses": "Tests cover duplicate suppression, owner pause/crash, cancellation, cooldown persistence and timestamps.",
+    "realPiTuis": {
+      "processes": 2,
+      "providers": 6,
+      "totalFixtureFetches": 6,
+      "manualPanelRefreshes": 2,
+      "extraFetches": 0,
+      "evidence": [
+        "shared-tui-fetch-proof.json",
+        "shared-usage-a-footer.txt",
+        "shared-usage-b-footer.txt",
+        "shared-usage-a-manual.txt",
+        "shared-usage-b-manual.txt"
+      ],
+      "realProviderRequests": 0
+    },
+    "nativeScopeAndMutexCheck": {
+      "passed": 6,
+      "evidence": "shared-native-scope-check.json",
+      "realProviderRequests": 0
+    },
+    "typeCheck": "npm run check passed; tsc --noEmit exited with code 0",
+    "diffCheck": "passed"
+  },
+  "activation": "Run /reload in every open Pi instance, or restart those instances.",
+  "userEdits": "Existing README.md edit and prior Claude freshness/RL-display changes were preserved.",
+  "commits": "No commits, staging, push, or PR performed."
+}

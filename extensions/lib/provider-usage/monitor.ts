@@ -1,3 +1,4 @@
+import { SharedUsageCache, type SharedObservation } from "./shared-cache.ts";
 import type { ProviderId, ProviderState, UsageMetric } from "./model.ts";
 import { providerReaders, UsageReadError, type ProviderReader } from "./readers.ts";
 
@@ -24,10 +25,12 @@ export class ProviderUsageMonitor {
   private generation = 0;
   private readers: ProviderReader[];
   private clock: MonitorClock;
+  private sharedCache: Pick<SharedUsageCache, "read">;
 
-  constructor(readers = providerReaders(), timerClock = clock) {
+  constructor(readers = providerReaders(), timerClock = clock, sharedCache: Pick<SharedUsageCache, "read"> = new SharedUsageCache()) {
     this.readers = readers;
     this.clock = timerClock;
+    this.sharedCache = sharedCache;
     this.states = readers.map(({ id, name, experimental }) => ({ id, name, experimental, status: "error", error: "Not refreshed yet" }));
   }
   snapshot(): readonly ProviderState[] { return this.states; }
@@ -76,23 +79,26 @@ export class ProviderUsageMonitor {
       }, 30_000);
     });
     // Invoke readers in a microtask so synchronous readers still share the same pending entry.
-    const promise = Promise.race<UsageMetric>([Promise.resolve().then(() => {
+    const promise = Promise.race<UsageMetric | SharedObservation>([Promise.resolve().then<UsageMetric | SharedObservation>(() => {
       if (controller.signal.aborted) throw new UsageReadError("Read canceled");
-      return reader.read(controller.signal);
+      return reader.scope ? this.sharedCache.read(reader, controller.signal) : reader.read(controller.signal);
     }), canceled]).then((value) => {
       if (generation !== this.generation || controller.signal.aborted) return;
-      this.update(reader.id, { status: "available", value, lastSuccess: this.clock.now(), error: undefined });
+      if ("status" in value) {
+        this.update(reader.id, { status: value.status, value: value.value, lastAttempt: value.lastAttempt,
+          lastSuccess: value.lastSuccess, error: value.status === "error" ? value.error : undefined });
+      } else this.update(reader.id, { status: "available", value, lastSuccess: this.clock.now(), error: undefined });
     }, (error: unknown) => {
       if (generation !== this.generation) return;
       const reason = error instanceof UsageReadError ? error.message : "Usage fields unavailable or CLI read failed";
-      this.update(reader.id, { status: "error", error: reason });
+      this.update(reader.id, { status: "error", error: reason, ...(reader.scope ? { value: undefined, lastSuccess: undefined } : {}) });
     }).finally(() => {
       this.clock.cancelAfter(timeout);
       controller.signal.removeEventListener("abort", abortListener);
       if (this.pending.get(reader.id)?.controller === controller) this.pending.delete(reader.id);
     });
     this.pending.set(reader.id, { promise, controller, cancelTimeout: () => this.clock.cancelAfter(timeout) });
-    this.update(reader.id, { status: "loading", lastAttempt: this.clock.now() });
+    this.update(reader.id, { status: "loading", ...(reader.scope ? {} : { lastAttempt: this.clock.now() }) });
     return promise;
   }
 }

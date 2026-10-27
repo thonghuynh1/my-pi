@@ -1,0 +1,461 @@
+{
+  "verifiedAt": "2026-10-27T09:22:05.058Z",
+  "snapshots": [
+    {
+      "elapsedMs": 2857,
+      "available": true,
+      "responseKeys": [
+        "session",
+        "subscription_type",
+        "rate_limits_available",
+        "rate_limits",
+        "behaviors"
+      ],
+      "limits": {
+        "five_hour": {
+          "utilization": 84,
+          "resets_at": "2026-10-27T09:29:59.730973+00:00",
+          "limit_dollars": null,
+          "used_dollars": null,
+          "remaining_dollars": null,
+          "locked_reason": null
+        },
+        "seven_day": {
+          "utilization": 74,
+          "resets_at": "2026-10-29T00:59:59.730993+00:00",
+          "limit_dollars": null,
+          "used_dollars": null,
+          "remaining_dollars": null,
+          "locked_reason": null
+        },
+        "seven_day_oauth_apps": null,
+        "seven_day_opus": null,
+        "seven_day_sonnet": null,
+        "cinder_cove": null,
+        "wattle_ember": null,
+        "extra_usage": {
+          "is_enabled": false,
+          "monthly_limit": null,
+          "used_credits": null,
+          "utilization": null,
+          "currency": null,
+          "disabled_reason": null,
+          "decimal_places": null,
+          "user_disabled": false,
+          "spend_limit_reached": false,
+          "credits_ever_enabled": false,
+          "daily": null,
+          "weekly": null
+        },
+        "seven_day_cowork": null,
+        "seven_day_omelette": null,
+        "tangelo": null,
+        "iguana_necktie": null,
+        "omelette_promotional": null,
+        "nimbus_quill": null,
+        "copper_kite": null,
+        "brass_thimble": null,
+        "harbor_lantern": null,
+        "amber_ladder": null,
+        "granite_teacup": null,
+        "amber_cistern": null,
+        "amber_cistern_offer": null,
+        "juniper_tide": null,
+        "cedar_ember": null,
+        "starry_waterfall": null,
+        "amber_gauge": null,
+        "pace": null,
+        "spend": {
+          "used": {
+            "amount_minor": 0,
+            "currency": "USD",
+            "exponent": 2
+          },
+          "limit": null,
+          "percent": 0,
+          "severity": "normal",
+          "enabled": false,
+          "disabled_reason": null,
+          "cap": null,
+          "balance": null,
+          "auto_reload": null,
+          "disclaimer": "Usage credits cover you when you hit your plan limits. [Learn more](https://support.claude.com/articles/12429409)",
+          "can_purchase_credits": false,
+          "can_toggle": false
+        },
+        "member_dashboard_available": false,
+        "seven_day_breakdown": {
+          "as_of": "2026-10-27T08:52:18.762163+00:00",
+          "window_started_at": "2026-10-22T00:59:59.730993+00:00",
+          "rows": [
+            {
+              "key": "claude_code",
+              "display_name": "Claude Code",
+              "percent": 100
+            },
+            {
+              "key": "chat",
+              "display_name": "Chats",
+              "percent": 0
+            },
+            {
+              "key": "cowork",
+              "display_name": "Cowork",
+              "percent": 0
+            },
+            {
+              "key": "other",
+              "display_name": "Other",
+              "percent": 0
+            }
+          ]
+        },
+        "weekly_scoped_shares": null
+      }
+    },
+    {
+      "elapsedMs": 4865,
+      "available": true,
+      "responseKeys": [
+        "session",
+        "subscription_type",
+        "rate_limits_available",
+        "rate_limits",
+        "behaviors"
+      ],
+      "limits": {
+        "five_hour": {
+          "utilization": 84,
+          "resets_at": "2026-10-27T09:29:59.730973+00:00",
+          "limit_dollars": null,
+          "used_dollars": null,
+          "remaining_dollars": null,
+          "locked_reason": null
+        },
+        "seven_day": {
+          "utilization": 74,
+          "resets_at": "2026-10-29T00:59:59.730993+00:00",
+          "limit_dollars": null,
+          "used_dollars": null,
+          "remaining_dollars": null,
+          "locked_reason": null
+        },
+        "seven_day_oauth_apps": null,
+        "seven_day_opus": null,
+        "seven_day_sonnet": null,
+        "cinder_cove": null,
+        "wattle_ember": null,
+        "extra_usage": {
+          "is_enabled": false,
+          "monthly_limit": null,
+          "used_credits": null,
+          "utilization": null,
+          "currency": null,
+          "disabled_reason": null,
+          "decimal_places": null,
+          "user_disabled": false,
+          "spend_limit_reached": false,
+          "credits_ever_enabled": false,
+          "daily": null,
+          "weekly": null
+        },
+        "seven_day_cowork": null,
+        "seven_day_omelette": null,
+        "tangelo": null,
+        "iguana_necktie": null,
+        "omelette_promotional": null,
+        "nimbus_quill": null,
+        "copper_kite": null,
+        "brass_thimble": null,
+        "harbor_lantern": null,
+        "amber_ladder": null,
+        "granite_teacup": null,
+        "amber_cistern": null,
+        "amber_cistern_offer": null,
+        "juniper_tide": null,
+        "cedar_ember": null,
+        "starry_waterfall": null,
+        "amber_gauge": null,
+        "pace": null,
+        "spend": {
+          "used": {
+            "amount_minor": 0,
+            "currency": "USD",
+            "exponent": 2
+          },
+          "limit": null,
+          "percent": 0,
+          "severity": "normal",
+          "enabled": false,
+          "disabled_reason": null,
+          "cap": null,
+          "balance": null,
+          "auto_reload": null,
+          "disclaimer": "Usage credits cover you when you hit your plan limits. [Learn more](https://support.claude.com/articles/12429409)",
+          "can_purchase_credits": false,
+          "can_toggle": false
+        },
+        "member_dashboard_available": false,
+        "seven_day_breakdown": {
+          "as_of": "2026-10-27T08:52:18.762163+00:00",
+          "window_started_at": "2026-10-22T00:59:59.730993+00:00",
+          "rows": [
+            {
+              "key": "claude_code",
+              "display_name": "Claude Code",
+              "percent": 100
+            },
+            {
+              "key": "chat",
+              "display_name": "Chats",
+              "percent": 0
+            },
+            {
+              "key": "cowork",
+              "display_name": "Cowork",
+              "percent": 0
+            },
+            {
+              "key": "other",
+              "display_name": "Other",
+              "percent": 0
+            }
+          ]
+        },
+        "weekly_scoped_shares": null
+      }
+    },
+    {
+      "elapsedMs": 8871,
+      "available": true,
+      "responseKeys": [
+        "session",
+        "subscription_type",
+        "rate_limits_available",
+        "rate_limits",
+        "behaviors"
+      ],
+      "limits": {
+        "five_hour": {
+          "utilization": 84,
+          "resets_at": "2026-10-27T09:29:59.730973+00:00",
+          "limit_dollars": null,
+          "used_dollars": null,
+          "remaining_dollars": null,
+          "locked_reason": null
+        },
+        "seven_day": {
+          "utilization": 74,
+          "resets_at": "2026-10-29T00:59:59.730993+00:00",
+          "limit_dollars": null,
+          "used_dollars": null,
+          "remaining_dollars": null,
+          "locked_reason": null
+        },
+        "seven_day_oauth_apps": null,
+        "seven_day_opus": null,
+        "seven_day_sonnet": null,
+        "cinder_cove": null,
+        "wattle_ember": null,
+        "extra_usage": {
+          "is_enabled": false,
+          "monthly_limit": null,
+          "used_credits": null,
+          "utilization": null,
+          "currency": null,
+          "disabled_reason": null,
+          "decimal_places": null,
+          "user_disabled": false,
+          "spend_limit_reached": false,
+          "credits_ever_enabled": false,
+          "daily": null,
+          "weekly": null
+        },
+        "seven_day_cowork": null,
+        "seven_day_omelette": null,
+        "tangelo": null,
+        "iguana_necktie": null,
+        "omelette_promotional": null,
+        "nimbus_quill": null,
+        "copper_kite": null,
+        "brass_thimble": null,
+        "harbor_lantern": null,
+        "amber_ladder": null,
+        "granite_teacup": null,
+        "amber_cistern": null,
+        "amber_cistern_offer": null,
+        "juniper_tide": null,
+        "cedar_ember": null,
+        "starry_waterfall": null,
+        "amber_gauge": null,
+        "pace": null,
+        "spend": {
+          "used": {
+            "amount_minor": 0,
+            "currency": "USD",
+            "exponent": 2
+          },
+          "limit": null,
+          "percent": 0,
+          "severity": "normal",
+          "enabled": false,
+          "disabled_reason": null,
+          "cap": null,
+          "balance": null,
+          "auto_reload": null,
+          "disclaimer": "Usage credits cover you when you hit your plan limits. [Learn more](https://support.claude.com/articles/12429409)",
+          "can_purchase_credits": false,
+          "can_toggle": false
+        },
+        "member_dashboard_available": false,
+        "seven_day_breakdown": {
+          "as_of": "2026-10-27T08:52:18.762163+00:00",
+          "window_started_at": "2026-10-22T00:59:59.730993+00:00",
+          "rows": [
+            {
+              "key": "claude_code",
+              "display_name": "Claude Code",
+              "percent": 100
+            },
+            {
+              "key": "chat",
+              "display_name": "Chats",
+              "percent": 0
+            },
+            {
+              "key": "cowork",
+              "display_name": "Cowork",
+              "percent": 0
+            },
+            {
+              "key": "other",
+              "display_name": "Other",
+              "percent": 0
+            }
+          ]
+        },
+        "weekly_scoped_shares": null
+      }
+    },
+    {
+      "elapsedMs": 14867,
+      "available": true,
+      "responseKeys": [
+        "session",
+        "subscription_type",
+        "rate_limits_available",
+        "rate_limits",
+        "behaviors"
+      ],
+      "limits": {
+        "five_hour": {
+          "utilization": 84,
+          "resets_at": "2026-10-27T09:29:59.730973+00:00",
+          "limit_dollars": null,
+          "used_dollars": null,
+          "remaining_dollars": null,
+          "locked_reason": null
+        },
+        "seven_day": {
+          "utilization": 74,
+          "resets_at": "2026-10-29T00:59:59.730993+00:00",
+          "limit_dollars": null,
+          "used_dollars": null,
+          "remaining_dollars": null,
+          "locked_reason": null
+        },
+        "seven_day_oauth_apps": null,
+        "seven_day_opus": null,
+        "seven_day_sonnet": null,
+        "cinder_cove": null,
+        "wattle_ember": null,
+        "extra_usage": {
+          "is_enabled": false,
+          "monthly_limit": null,
+          "used_credits": null,
+          "utilization": null,
+          "currency": null,
+          "disabled_reason": null,
+          "decimal_places": null,
+          "user_disabled": false,
+          "spend_limit_reached": false,
+          "credits_ever_enabled": false,
+          "daily": null,
+          "weekly": null
+        },
+        "seven_day_cowork": null,
+        "seven_day_omelette": null,
+        "tangelo": null,
+        "iguana_necktie": null,
+        "omelette_promotional": null,
+        "nimbus_quill": null,
+        "copper_kite": null,
+        "brass_thimble": null,
+        "harbor_lantern": null,
+        "amber_ladder": null,
+        "granite_teacup": null,
+        "amber_cistern": null,
+        "amber_cistern_offer": null,
+        "juniper_tide": null,
+        "cedar_ember": null,
+        "starry_waterfall": null,
+        "amber_gauge": null,
+        "pace": null,
+        "spend": {
+          "used": {
+            "amount_minor": 0,
+            "currency": "USD",
+            "exponent": 2
+          },
+          "limit": null,
+          "percent": 0,
+          "severity": "normal",
+          "enabled": false,
+          "disabled_reason": null,
+          "cap": null,
+          "balance": null,
+          "auto_reload": null,
+          "disclaimer": "Usage credits cover you when you hit your plan limits. [Learn more](https://support.claude.com/articles/12429409)",
+          "can_purchase_credits": false,
+          "can_toggle": false
+        },
+        "member_dashboard_available": false,
+        "seven_day_breakdown": {
+          "as_of": "2026-10-27T08:52:18.762163+00:00",
+          "window_started_at": "2026-10-22T00:59:59.730993+00:00",
+          "rows": [
+            {
+              "key": "claude_code",
+              "display_name": "Claude Code",
+              "percent": 100
+            },
+            {
+              "key": "chat",
+              "display_name": "Chats",
+              "percent": 0
+            },
+            {
+              "key": "cowork",
+              "display_name": "Cowork",
+              "percent": 0
+            },
+            {
+              "key": "other",
+              "display_name": "Other",
+              "percent": 0
+            }
+          ]
+        },
+        "weekly_scoped_shares": null
+      }
+    }
+  ],
+  "diagnostics": [
+    "2026-10-27T09:21:51.263Z [DEBUG] fetchUtilization: GET /api/oauth/usage (attempt 1)",
+    "2026-10-27T09:21:53.008Z [DEBUG] fetchUtilization: 429 remembered for this bearer; not asking again for 300s",
+    "2026-10-27T09:21:53.008Z [ERROR] Failed to load usage data: Request failed with status code 429",
+    "2026-10-27T09:21:55.017Z [DEBUG] fetchUtilization: /api/oauth/usage replayed — the endpoint answered 429 2s ago; not asked again for 298s",
+    "2026-10-27T09:21:59.023Z [DEBUG] fetchUtilization: /api/oauth/usage replayed — the endpoint answered 429 6s ago; not asked again for 294s",
+    "2026-10-27T09:22:05.019Z [DEBUG] fetchUtilization: /api/oauth/usage replayed — the endpoint answered 429 12s ago; not asked again for 288s"
+  ]
+}

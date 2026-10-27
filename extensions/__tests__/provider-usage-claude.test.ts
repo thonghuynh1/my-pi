@@ -28,7 +28,7 @@ test("reader requests live Claude control usage without a user prompt", async ()
   assert.deepEqual(requests, [{ ...CLAUDE_USAGE_REQUEST, env: { CLAUDE_CONFIG_DIR: "/cfg-work", ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: undefined, DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", DISABLE_AUTOUPDATER: "1" } }]);
   assert.deepEqual(CLAUDE_USAGE_REQUEST, {
     command: "claude",
-    args: ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence"],
+    args: ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--debug-to-stderr"],
     protocol: "claude",
   });
   assert.deepEqual(raw, { utilization: {

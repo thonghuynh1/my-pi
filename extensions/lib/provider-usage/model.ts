@@ -161,6 +161,11 @@ export function compactFooterRows(states: readonly ProviderState[]): string[] {
   const accounts: string[] = [];
   const pct = (n: number) => n > 0 && n < 1 ? "<1%" : `${Math.round(n)}%`;
   for (const state of states) {
+    const rateLimited = state.id === "claude-personal" && state.error === "Claude usage refresh rate limited";
+    if (rateLimited) {
+      const weekly = state.value?.kind === "spend" ? state.value.windows.find((window) => window.id === "week") : undefined;
+      quota.push(`${claudeShort(state)} 5h-RL wk-${weekly ? `${pct(weekly.usedPercent)}*` : "?"}`);
+    }
     if (!state.value) continue;
     const stale = state.error ? "*" : "";
     if (state.value.kind === "credits") {
@@ -170,7 +175,7 @@ export function compactFooterRows(states: readonly ProviderState[]): string[] {
     }
     if (state.value.kind === "spend") {
       const { spend, windows } = state.value;
-      if (windows.length) quota.push(`${claudeShort(state)} ${windows.map((w) => `${w.id === "week" ? "wk" : w.label}-${pct(w.usedPercent)}`).join(" ")}${stale}`);
+      if (windows.length && !rateLimited) quota.push(`${claudeShort(state)} ${windows.map((w) => `${w.id === "week" ? "wk" : w.label}-${pct(w.usedPercent)}`).join(" ")}${stale}`);
       if (spend) {
         const amount = `${dollars(spend.used, spend.currency, 0)}${spend.limit !== undefined ? `/${dollars(spend.limit, spend.currency, 0)}` : ""}`;
         accounts.push(`${claudeShort(state)} ${amount}${spend.usedPercent !== undefined ? ` ${pct(spend.usedPercent)}` : ""}${stale}`);

@@ -1,0 +1,67 @@
+
+ ▀▀█  v1.4.0
+ █▀ █ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more
+ Press ctrl+o to show full startup help and loaded resources.
+
+ Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.
+
+
+[Context]
+  ~\.pi\agent\APPEND_SYSTEM.md, AGENTS.md
+
+[Extensions]
+  usage-footer.ts
+
+
+
+
+
+
+Provider account usage
+r refresh · ↑/↓ scroll · Esc/q close
+
+Codex
+  available · last refresh: 10/27/2026, 10:38:56 AM
+  Last success: 10/27/2026, 10:39:02 AM
+  Codex
+    Five-hour window (5h): 29% used · resets: 10/27/2026, 3:14:07 PM
+    Weekly window (week): 37% used · resets: 11/2/2026, 9:22:44 AM
+
+Antigravity
+  available · last refresh: 10/27/2026, 10:38:56 AM
+  Last success: 10/27/2026, 10:39:05 AM
+  Gemini Models
+    Five-hour window (5h): 10.8% used · resets: 10/27/2026, 2:39:28 PM
+    Weekly window (week): 18.8% used · resets: 11/2/2026, 10:03:40 AM
+  Claude and GPT models
+    Five-hour window (5h): 0% used · resets: 10/27/2026, 3:39:03 PM
+    Weekly window (week): 0% used · resets: 11/3/2026, 10:39:03 AM
+
+GitHub Copilot (experimental internal API)
+  available · last refresh: 10/27/2026, 10:38:56 AM
+  Last success: 10/27/2026, 10:39:01 AM
+  101,055 credits consumed
+  Footer converts 100 credits = $1, rounded to whole dollars; not a verified bill.
+  Resets: 11/1/2026, 1:00:00 AM
+
+Cursor (experimental internal API)
+  error · last refresh: 10/27/2026, 10:38:56 AM
+  Last success: unavailable
+  Reason: Cursor usage unavailable; check existing CLI login (file store required)
+  Usage unavailable (no successful read)
+
+Claude Work (experimental internal API)
+  available · last refresh: 10/27/2026, 10:38:56 AM
+  Last success: 10/27/2026, 10:39:03 AM
+  Usage credits: $570.15 used of $750.00 limit · 76% · warning
+  Spend period/reset not reported by Claude Code.
+
+Claude Personal (experimental internal API)
+  error · last refresh: 10/27/2026, 10:38:56 AM
+  Last success: unavailable
+  Reason: Claude usage refresh rate limited
+  Usage unavailable (no successful read)
+
+ctx 0/500.0k 0.0%                                                                  model openai-codex/gpt-6.1-sol (high)
+in 0 · out 0 · cache 0                                     Codex 5h-29% wk-37% · AG-G 5h-11% wk-19% · AG-C/G 5h-0% wk-0%
+total 0 · $0.0000                                                                Copilot $1,011 · Claude-W $570/$750 76%

@@ -1,0 +1,63 @@
+{
+ "_source": "Labels derived from 'Building agents: When to fold subagents into your main agent loop' (claude.com, 2026-10-22). Default is the single loop; a subagent is right only for context bloat, parallel fresh-context work, or black-box verification, split by context with a compact result.",
+ "T01": {
+  "label": "EITHER",
+  "ideal": "Lean single loop: the main agent found these root causes last turn, so the fixes and the one-tool/Jev design belong with the context that connects them. Acceptable: parallel children scoping root causes in separate components it has not read yet, each returning a compact fixed-shape result. Wrong: delegating the design or the fixes."
+ },
+ "T02": {
+  "label": "EITHER",
+  "ideal": "Lean single loop: conflict resolution is coupled work that needs shared context. Acceptable: one read-only child summarising what master changed in the conflicted files (an independent research path with a compact result). Wrong: children resolving or staging conflicts."
+ },
+ "T03": {
+  "label": "EITHER",
+  "ideal": "Lean single loop: the evaluation builds on the conversation. Acceptable: one child tracing how workers discover and message each other, returning file:line evidence, if the trace would bloat the main context. Wrong: splitting coupled parts of that trace across children."
+ },
+ "T04": {
+  "label": "MUST-NOT",
+  "ideal": "Single loop: a continuing, dependent bug trace of continueTeam's timeout; each step builds on the last, so the agent that saw earlier results should keep going."
+ },
+ "T05": {
+  "label": "MUST",
+  "ideal": "Repository-wide trace for the Book: too much for one context and naturally split into independent areas. Parallel read-only children, one per functional area, each with the same report schema; delegate before reading broadly itself; main synthesises and spot-checks claims."
+ },
+ "T06": {
+  "label": "UNCLEAR",
+  "ideal": "Dropped: the plan folder it edits (.scratch/70323-pasted-image-permissions) is untracked and no longer exists, so the turn can't be replayed."
+ },
+ "T07": {
+  "label": "EITHER",
+  "ideal": "Lean single loop: the cap-500 change and the TODO are small known edits, and the review context is already in the main context. Acceptable: one child on the authorization deep dive in parallel with the edits. Wrong: children for the small edits, or bundling unrelated topics into one child."
+ },
+ "T08": {
+  "label": "UNCLEAR",
+  "ideal": "Meaning depends on a dropped localdev turn; not graded."
+ },
+ "T10": {
+  "label": "MUST-NOT",
+  "ideal": "Single loop: trace one endpoint to the slow loop and propose a fix; one connected chain of reasoning."
+ },
+ "C1": {
+  "label": "MUST-NOT",
+  "ideal": "Single loop: coupled rename across a few files; grep, rename, test."
+ },
+ "C2": {
+  "label": "MUST-NOT",
+  "ideal": "Single loop: explain its own merge resolution from context and the evidence file."
+ },
+ "C3": {
+  "label": "MUST-NOT",
+  "ideal": "Single loop: answer from the conversation plus at most one targeted lookup."
+ },
+ "C4": {
+  "label": "MUST-NOT",
+  "ideal": "Single loop: a judgement on options it proposed; answer directly, maybe one targeted check."
+ },
+ "T11": {
+  "label": "MUST",
+  "ideal": "Verify a finished change (issue 09: five separate guarantees over a 278-file commit). Checking each guarantee group is independent research that would flood one context: parallel read-only children, one per guarantee group, each given the issue's criteria (not the implementer's conclusions) and returning pass/fail with file:line and test evidence; shell where it must run tests. Delegate before reading the diff broadly itself; the parent runs the focused tests and gives the verdict. Wrong: no delegation with broad diff reading, or one child for everything."
+ },
+ "T12": {
+  "label": "MUST",
+  "ideal": "Census of every terminal-creation path (worker/team dispatch, side conversations, everything else) to propose naming options. The paths are independent: parallel read-only children, one per path, each with the same report shape (where the terminal is created, what title is set, file:line), launched before the parent reads the paths itself; the parent compares and gives the options. Wrong: reading all paths itself, or one child for all paths."
+ }
+}

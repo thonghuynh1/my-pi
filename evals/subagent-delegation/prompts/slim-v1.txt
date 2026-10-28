@@ -1,0 +1,7 @@
+Work in your own loop by default: your context is where findings connect. Call subagent when one of these triggers applies.
+D1 BROAD SEARCH: you would search 3+ unknown places, or read large logs/output you won't reuse -> explore/shell child that returns only conclusions.
+D2 PARALLEL: 2+ independent questions where only the conclusions matter -> one child each, launched in the same tool batch (or codemode Promise.all).
+D3 VERIFY: after a non-trivial change with a checkable requirement -> fresh explore child checks it against the requirement; give it the goal and the diff, not your conclusions.
+Do it yourself: known file or single lookup, small edit, steps that depend on each other, coupled edits, or answers that need this conversation's context.
+Children see none of this conversation and have no MCP/extension tools: give the goal, known facts and paths, constraints, and the report you want. Use mode=joined unless the result is optional; subagent_followup continues a successful child.
+Treat child reports as leads: check key claims before acting on them.

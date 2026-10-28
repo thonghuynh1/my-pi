@@ -162,7 +162,7 @@ async function fixture(options: { commandsOrder?: "before" | "after"; creationGa
 }
 
 
-test("fresh agent guidance includes the capability guide in tool metadata and startup prompt", async (t) => {
+test("fresh agent guidance carries delegation rules in tool metadata and operational rules in tool descriptions", async (t) => {
 	const f = await fixture();
 	t.after(() => f.close());
 	for (let startup = 0; startup < 2; startup++) {
@@ -170,14 +170,25 @@ test("fresh agent guidance includes the capability guide in tool metadata and st
 		assert.ok(tool);
 		const guide = tool.promptGuidelines?.join("\n") ?? "";
 		for (const contract of [
-			/mode=joined/, /mode=detached/, /subagent_followup/, /latest.*job ID/, /Promise\.all/,
-			/shared filesystem/, /no extensions/, /150k.*target.*not.*ceiling/, /6.*slots/, /subagent_resume.*user/,
+			/Stay in your own loop by default/, /FLOOD/, /PARALLEL/, /VERIFY/, /Stay in the loop for/,
+			/Promise\.all/, /no MCP\/extension tools/, /explore cannot run commands; use shell/, /reports as leads/,
 		]) assert.match(guide, contract);
+		const describe = (name: string) => f.tools.get(name)?.description ?? "";
+		assert.match(describe("subagent"), /JOINED by default/);
+		assert.match(describe("subagent"), /Detached mode is only for optional results/);
+		assert.match(describe("subagent"), /subagent_followup/);
+		assert.match(describe("subagent"), /Capacity 6/);
+		assert.match(describe("subagent"), /shared filesystem/);
+		assert.match(describe("subagent_resume"), /user requests recovery/);
+		assert.match(describe("subagent_status"), /Do not poll/);
+		assert.match(JSON.stringify(f.tools.get("subagent_followup")?.parameters), /latest returned job ID/);
 		const [injected] = await f.emit("before_agent_start", { systemPrompt: "PARENT_BASE" });
 		const prompt = record(injected).systemPrompt;
 		assert.equal(typeof prompt, "string");
 		assert.ok(String(prompt).startsWith("PARENT_BASE"));
-		for (const line of tool.promptGuidelines ?? []) assert.ok(String(prompt).includes(line));
+		assert.match(String(prompt), /## Available custom subagents/);
+		// promptGuidelines already render the rules; the startup prompt must not repeat them.
+		for (const line of tool.promptGuidelines ?? []) assert.ok(!String(prompt).includes(line));
 		assert.equal(f.created, 0, "instructions do not launch work");
 		if (startup === 0) { await f.emit("session_shutdown"); await f.startFreshExtension(); }
 	}

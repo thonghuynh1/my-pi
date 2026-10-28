@@ -386,7 +386,7 @@ const SubagentWaitParams = Type.Object({
 });
 
 const SubagentFollowupParams = Type.Object({
-	jobId: Type.String({ description: "Successful normal child to reuse explicitly; never an interrupted or packet child." }),
+	jobId: Type.String({ description: "Successful normal child to reuse explicitly: the latest returned job ID, not an ancestor; never an interrupted or packet child." }),
 	task: Type.String({ description: "Explicit related follow-up assignment." }),
 	mode: Type.Optional(StringEnum(["joined", "detached"] as const)),
 	background: Type.Optional(Type.Boolean({ description: "Legacy mode alias: true=detached, false=joined." })),
@@ -420,7 +420,10 @@ Return a concise report with:
 - Relevant files and symbols
 - Key observations
 - Evidence, paths, and line references when possible
-- Suggested next steps for the parent agent`;
+- What you could not check (e.g. commands you cannot run)
+- Suggested next steps for the parent agent
+
+Keep the report under 800 words unless the task asks for more: conclusions with file:line pointers, not file contents or exhaustive listings.`;
 
 const SHELL_PROMPT = `You are Pi's shell subagent.
 
@@ -433,7 +436,9 @@ Return a concise report with:
 - Commands run
 - Important output or failures
 - Diagnosis
-- Suggested next steps for the parent agent`;
+- Suggested next steps for the parent agent
+
+Keep the report under 800 words unless the task asks for more: quote only the output lines that matter.`;
 
 function normalizePathArgument(input: string): string {
 	return input.startsWith("@") ? input.slice(1) : input;
@@ -2464,18 +2469,27 @@ Optional results will be delivered later. Continue independent work; do not poll
 		return withLongCacheTtl(event.payload);
 	});
 
-	const subagentCapabilityGuidelines = [
-		"CHOOSE BY DEPENDENCY: use mode=joined (default) for findings needed before your next edit, decision, or answer. The call returns the report after cleanup; no extra join is needed. Use mode=detached only for optional work whose result is not a prerequisite for the current answer.",
-		"BATCH IN PARALLEL: split independent work into 2–5 narrow assignments. Use an available parallel tool wrapper or codemode Promise.all([tools.subagent(...), tools.subagent(...)]); otherwise emit a true multi-tool-call message. Do not await independent calls one by one. Never batch a dependent edit/command alongside the child finding it needs; read the prerequisite report first.",
-		"FOLLOW UP instead of restarting related investigation: subagent_followup({ jobId, task }) reopens a successful normal child's saved conversation with the same model/tools/prompt. Use the latest returned job ID, not an ancestor. Only one assignment may own a transcript lineage at a time; do not batch follow-ups on the same lineage. There is no automatic continuation.",
-		"SELF-CONTAINED TASKS: a fresh child does not inherit your parent conversation. Supply its goal, known facts/code anchors, constraints, and expected report. Optional evidencePacket gives claims to verify and bounded source guidance; supplied claims are not proof. Packet children cannot be followed up.",
-		"ISOLATED CONTEXT, shared filesystem: children are not sandboxed worktrees. Assign one owner for coupled implementation files; parallelize read-only investigations or truly disjoint work. Do not perform the same owned task yourself while its child is running.",
-		"CHILD TOOLS: explore has read/grep/find/ls; shell adds bash; custom uses its configured tool set. Children load no extensions: do not assume parent MCP, subagent, or Accordion tools are available. Choose a role that can actually perform the task.",
-		"REPORTS AND CONTROLS: inspect returned findings, errors, verification evidence, and durability warnings before acting; runtime completion is not proof of correctness. subagent_wait retrieves missing/recovered or detached reports (all by default; any after one finishes); timeout/abort stops waiting, not children. subagent_cancel stops a child. subagent_status is for requested progress/recovery discovery, never polling or sleep loops.",
-		"CONTEXT LIMITS: child-local native compaction uses a 150k-token target, not a hard per-request ceiling. After 3 assignments, 1 MiB transcript, or unsafe/unknown context, follow-up uses a clearly marked fresh handoff with goal/report/transcript pointers, not full memory. Respect reset reasons and unknown context values.",
-		"RECOVERY: use subagent_resume only when the user requests recovery of interrupted work, after checking transcripts/checkpoints and possible side effects. Results/history persist, but in-process children cannot survive host exit. Never automatically replay uncertain work. A failed lineage requires a reviewed new-child handoff, not reuse of an older success.",
-		"CAPACITY: 6 running slots shared by joined/detached; overflow fails explicitly, with no queue or silent mode switch. Finish existing work before admitting another batch. Request-ID deduplication is not semantic task deduplication.",
-		"USE DELEGATION WHERE IT HELPS: several source lookups, substantial logs, independent subsystem reviews, or a related follow-up. Read one known file or make a small targeted edit directly. Keep assignments narrow; for broad exploration omit timeoutSeconds or use at least 600 seconds. The parent owns integration and final verification.",
+	// Eval switches (see .scratch/subagent-eval): PI_SUBAGENT_PROMPT_FILE replaces the guidelines
+	// with one guideline per non-empty line; PI_SUBAGENT_EVAL_DRYRUN=1 records subagent calls
+	// without starting a child.
+	const promptFile = process.env.PI_SUBAGENT_PROMPT_FILE;
+	const fileGuidelines = promptFile
+		? fs.readFileSync(promptFile, "utf-8").split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+		: undefined;
+	const evalDryRun = process.env.PI_SUBAGENT_EVAL_DRYRUN === "1";
+
+	// When to delegate, per the subagent eval (.scratch/subagent-eval): stay in one loop by default and
+	// delegate only for context flooding, independent parallel research, or black-box verification.
+	// Operational rules (capacity, wait/status/resume, follow-up lineage) live in the tool descriptions.
+	const subagentCapabilityGuidelines = fileGuidelines ?? [
+		"Stay in your own loop by default: your context connects each step's results, while a child hands back a lossy summary. Use subagent only when one of these applies.",
+		"FLOOD: the work needs material you won't reuse that would flood your context — a survey across many areas of a repo, huge logs or outputs -> explore/shell child that returns only conclusions.",
+		"PARALLEL: independent research paths that need nothing from each other or from this conversation -> one child each, launched in the same tool batch (or codemode Promise.all), each returning the same compact report shape.",
+		"VERIFY: after a non-trivial change with a checkable requirement -> fresh explore child checks it as a black box; give it the goal and the diff, not your conclusions.",
+		"Stay in the loop for: continuing an investigation or debugging trace you already started, updating a plan or doc, explaining your own work, clarifying or judging options from this conversation, resolving conflicts, coupled edits, small edits, and single lookups. One causal chain is never split across children.",
+		"If you delegate, do it before reading that material yourself. Children research and verify; you keep the design calls and every edit.",
+		"Children see none of this conversation and have no MCP/extension tools: give the goal, known facts and paths, constraints, and the report you want. explore cannot run commands; use shell when the child needs git, builds, or tests.",
+		"Treat child reports as leads: check the claims you rely on against the code before acting on them or writing them into an answer, plan, or document.",
 	];
 
 	function buildSubagentToolDef(enabled: boolean) {
@@ -2493,6 +2507,9 @@ Optional results will be delivered later. Continue independent work; do not poll
 			parameters: SubagentParams,
 			prepareArguments: normalizeTimeoutSeconds,
 			execute: async (toolCallId, params, signal, _onUpdate, ctx) => {
+				if (evalDryRun) {
+					return { content: [{ type: "text" as const, text: `[subagent-eval] call recorded (type=${params.type}); stop here.` }], details: undefined as unknown as SubagentDetails };
+				}
 				const mode = resolveSubagentMode(params.mode, params.background);
 				return launchBackgroundSubagent(params, ctx, mode, toolCallId, signal);
 			},
@@ -2573,17 +2590,8 @@ Optional results will be delivered later. Continue independent work; do not poll
 			.slice(0, 20)
 			.map((agent) => `- ${agent.name} (${agent.source}): ${agent.description || agent.filePath}`)
 			.join("\n");
-		return {
-			systemPrompt: [
-				event.systemPrompt,
-				"=== Subagent workflow mode is enabled ===",
-				"## Capability selection and safeguards",
-				...subagentCapabilityGuidelines.map((line) => `- ${line}`),
-				"## Concrete delegation patterns\n- Feature investigation: batch independent route, data-model, and UI explorers; integrate their reports before editing.\n- Related detail after success: follow up the latest child job instead of restating the investigation from scratch.\n- Optional review/log research: detach only if the current answer does not depend on it.\n- Coupled implementation: one owner; other children investigate or review, not duplicate its edits.",
-				"## Available custom subagents",
-				customAgents || "- none discovered",
-			].join("\n\n"),
-		};
+		// The guidelines already render via promptGuidelines; only add the agent catalog.
+		return { systemPrompt: [event.systemPrompt, "## Available custom subagents", customAgents || "- none discovered"].join("\n\n") };
 	});
 
 	// Initial registration. Defaults ON unless PI_SUBAGENT_MODE disables it, so

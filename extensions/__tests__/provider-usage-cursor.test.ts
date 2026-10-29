@@ -18,6 +18,86 @@ function fixture(options: CursorUsageDependencies = {}, auth: unknown = { access
   });
   return { read, files, requests };
 }
+test("Cursor SDK API key exchange uses only Cursor hosts and ignores unrelated CLI credentials/team", async () => {
+  const requests: { url: string; init: RequestInit }[] = [];
+  const f = fixture({ apiKey: async () => " synthetic-sdk-key ",
+    platform: "darwin", env: {},
+    readFile: async () => { assert.fail("SDK usage must not read CLI credentials or team config"); },
+    fetch: async (url, init) => {
+      requests.push({ url: String(url), init: init! });
+      return json(String(url).endsWith("exchange_user_api_key") ? { accessToken: jwt(), private: "not-retained" } : usage);
+    },
+  });
+  assert.deepEqual(await f.read(signal()), usage);
+  assert.deepEqual(await f.read(signal()), usage);
+  assert.equal(requests.length, 3); // Exchange once, quota read twice.
+  assert.equal(requests[0].url, "https://api2.cursor.sh/auth/exchange_user_api_key");
+  assert.equal(new Headers(requests[0].init.headers).get("authorization"), "Bearer synthetic-sdk-key");
+  for (const { url, init } of requests) {
+    assert.equal(new URL(url).origin, "https://api2.cursor.sh");
+    assert.equal(init.method, "POST"); assert.equal(init.body, "{}");
+    assert.equal(init.redirect, "error"); assert.equal(init.credentials, "omit");
+  }
+  for (const { init } of requests.slice(1)) {
+    assert.equal(new Headers(init.headers).get("authorization"), `Bearer ${jwt()}`);
+    assert.equal(new Headers(init.headers).has("x-cursor-team-id"), false);
+    assert(!JSON.stringify(init).includes("synthetic-sdk-key"));
+  }
+});
+
+test("Cursor re-exchanges on credential change, bearer expiry, and rejected dashboard authorization", async () => {
+  let key = "key-one";
+  let time = now;
+  let rejected = false;
+  let exchanges = 0;
+  const f = fixture({ apiKey: async () => key, now: () => time,
+    readFile: async () => { assert.fail("no CLI fallback"); },
+    fetch: async (url) => {
+      if (String(url).endsWith("exchange_user_api_key")) { exchanges++; return json({ accessToken: jwt({ exp: time / 1000 + 3600 }) }); }
+      if (rejected) { rejected = false; return new Response("secret", { status: 401 }); }
+      return json(usage);
+    },
+  });
+  await f.read(signal()); assert.equal(exchanges, 1);
+  key = "key-two"; await f.read(signal()); assert.equal(exchanges, 2);
+  time += 3_400_000; await f.read(signal()); assert.equal(exchanges, 3);
+  rejected = true; await assert.rejects(f.read(signal()));
+  await f.read(signal()); assert.equal(exchanges, 4);
+});
+
+test("Cursor SDK environment keys work without a CLI login, but resolved Pi keys take precedence", async () => {
+  for (const resolved of [undefined, "pi-key"]) {
+    const auth: string[] = [];
+    const f = fixture({ apiKey: async () => resolved, env: { CURSOR_API_KEY: "env-key" },
+      readFile: async () => { assert.fail("no credential file reads"); },
+      fetch: async (url, init) => {
+        auth.push(new Headers(init?.headers).get("authorization")!);
+        return json(String(url).endsWith("exchange_user_api_key") ? { accessToken: jwt() } : usage);
+      },
+    });
+    await f.read(signal()); assert.equal(auth[0], `Bearer ${resolved ?? "env-key"}`);
+  }
+});
+
+test("Cursor SDK exchange fails closed and never falls back to another account or exposes secrets", async () => {
+  for (const response of [
+    () => new Response("synthetic-secret", { status: 403 }),
+    () => new Response("synthetic-secret", { status: 302, headers: { location: "https://evil.invalid" } }),
+    () => json({ accessToken: "synthetic-secret" }),
+    () => json({ accessToken: jwt({ exp: now / 1000 - 1 }) }),
+    () => json({ private: "synthetic-secret" }),
+  ]) {
+    let requests = 0;
+    const f = fixture({ apiKey: async () => "synthetic-secret", readFile: async () => { assert.fail("no CLI fallback"); },
+      fetch: async () => { requests++; return response(); },
+    });
+    await assert.rejects(f.read(signal()), (error: Error) => !error.message.includes("synthetic-secret") && error.cause === undefined);
+    assert.equal(requests, 1);
+  }
+  await assert.rejects(fixture({ apiKey: async () => new Promise(() => {}), timeoutMs: 5 }).read(signal()), /timed out/);
+  await assert.rejects(fixture({ apiKey: async () => "key", fetch: async () => new Promise(() => {}), timeoutMs: 5 }).read(signal()), /timed out/);
+});
+
 test("Cursor reads provider-owned existing accessToken and POSTs only empty Connect JSON", async () => {
   const f = fixture({}, undefined, { authInfo: { activeTeamId: 42, teamId: 99 } });
   assert.deepEqual(await f.read(signal()), usage);

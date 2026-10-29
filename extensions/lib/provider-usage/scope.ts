@@ -10,6 +10,8 @@ export interface ScopeDependencies {
   home?: string;
   platform?: NodeJS.Platform;
   readFile?: (file: string) => Buffer | undefined;
+  cursorApiKey?: () => Promise<string | undefined>;
+  codexApiKey?: () => Promise<string | undefined>;
 }
 const digest = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 const hash = (value: unknown): string => digest(JSON.stringify(value));
@@ -87,6 +89,11 @@ export function usageScope(id: ProviderId, configDir?: string, deps: ScopeDepend
       accountKnown = marker !== null;
       for (const key of ["CLAUDE_CODE_OAUTH_TOKEN_FILE", "ANTHROPIC_AUTH_TOKEN_FILE"]) if (env[key]) { files.push(env[key]!); credentialFiles.push(env[key]!); }
     } else if (id === "codex") {
+      const token = await deps.codexApiKey?.();
+      if (token !== undefined) {
+        const key = hash(["provider-usage-codex-pi-oauth-v1", platform, digest(token)]);
+        return { key, generation: key, identity: "known" };
+      }
       root = env.CODEX_HOME || join(home, ".codex");
       selectors = ["CODEX_HOME", "CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_ORGANIZATION", "OPENAI_PROJECT_ID", "CODEX_AUTH_FILE", "OPENAI_API_KEY_FILE", "CODEX_IDENTITY_FILE", "CODEX_BASE_URL", "CODEX_ACCESS_TOKEN", "OPENAI_FEDERATION_RULE_ID", "OPENAI_IDENTITY_TOKEN_FILE", "OPENAI_WORKLOAD_IDENTITY_CONTEXT"];
       files.push(join(root, "auth.json"), join(root, "config.toml"));
@@ -104,6 +111,12 @@ export function usageScope(id: ProviderId, configDir?: string, deps: ScopeDepend
       credentialFiles.push(join(root, "hosts.yml"));
       credentialEnv = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
     } else if (id === "cursor") {
+      const apiKey = ((await deps.cursorApiKey?.()) ?? env.CURSOR_API_KEY)?.trim();
+      if (apiKey) {
+        // Match the SDK credential, not an unrelated CLI account/team. Only hashes persist.
+        const key = hash(["provider-usage-cursor-sdk-v1", platform, digest(apiKey)]);
+        return { key, generation: key, identity: "known" };
+      }
       root = env.CURSOR_CONFIG_DIR?.trim() ? env.CURSOR_CONFIG_DIR : (env.XDG_CONFIG_HOME?.trim() ? join(env.XDG_CONFIG_HOME, "cursor") : join(home, ".cursor"));
       const auth = platform === "win32" ? join(env.APPDATA || join(home, "AppData", "Roaming"), "Cursor", "auth.json")
         : platform === "darwin" ? join(home, ".cursor", "auth.json") : join(env.XDG_CONFIG_HOME || join(home, ".config"), "cursor", "auth.json");

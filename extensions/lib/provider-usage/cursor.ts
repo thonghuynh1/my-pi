@@ -1,15 +1,19 @@
+import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
 // Source-verified against Cursor Agent 2026.10.16-e3cb207; never import its entrypoint.
 const ENDPOINT = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
+// Same key exchange used by @cursor/sdk; never send API keys to dashboard RPCs.
+const KEY_EXCHANGE = "https://api2.cursor.sh/auth/exchange_user_api_key";
 const FILE_LIMIT = 65_536;
 class SafeError extends Error {}
 const fail = (message: string): never => { throw new SafeError(message); };
 const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 export interface CursorUsageDependencies {
   fetch?: typeof globalThis.fetch;
+  apiKey?: () => Promise<string | undefined>;
   readFile?: (file: string, signal: AbortSignal) => Promise<string>;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
@@ -138,6 +142,8 @@ async function responseJson(response: Response, limit: number, signal: AbortSign
 }
 
 export function createCursorUsageReader(deps: CursorUsageDependencies = {}): (signal: AbortSignal) => Promise<unknown> {
+  // Memory only; neither the API key nor exchanged bearer belongs in the usage cache.
+  let cached: { keyHash: string; token: string } | undefined;
   return async (signal) => {
     if (signal.aborted) throw new Error("Cursor usage read canceled");
     const controller = new AbortController();
@@ -154,21 +160,48 @@ export function createCursorUsageReader(deps: CursorUsageDependencies = {}): (si
       const env = deps.env ?? process.env;
       const platform = deps.platform ?? process.platform;
       const home = deps.home ?? homedir();
-      // Default macOS store is Keychain. Never fall back to a potentially stale file.
-      if (env.AGENT_CLI_CREDENTIAL_STORE === "memory" || (platform === "darwin" && env.AGENT_CLI_CREDENTIAL_STORE !== "file")) return fail("Cursor credential store unsupported");
       const paths = platform === "win32" ? path.win32 : path.posix;
-      const authPath = platform === "win32"
-        ? paths.join(env.APPDATA || paths.join(home, "AppData", "Roaming"), "Cursor", "auth.json")
-        : platform === "darwin" ? paths.join(home, ".cursor", "auth.json")
-          : paths.join(env.XDG_CONFIG_HOME || paths.join(home, ".config"), "cursor", "auth.json");
-      const read = deps.readFile ?? boundedFile;
-      const token = accessToken(parseFile(await read(authPath, controller.signal)), (deps.now ?? Date.now)());
+      const apiKey = ((await deps.apiKey?.()) ?? env.CURSOR_API_KEY)?.trim();
+      let token: string;
+      if (apiKey) {
+        if (apiKey.length > 32_768 || /[\r\n]/.test(apiKey)) return fail("Cursor API key unavailable");
+        const keyHash = createHash("sha256").update(apiKey).digest("hex");
+        let reusable = false;
+        if (cached?.keyHash === keyHash) {
+          try { accessToken({ accessToken: cached.token }, (deps.now ?? Date.now)()); reusable = true; }
+          catch { cached = undefined; }
+        }
+        if (!reusable) {
+          controller.signal.throwIfAborted();
+          const response = await (deps.fetch ?? globalThis.fetch)(KEY_EXCHANGE, {
+            method: "POST", headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json", accept: "application/json" },
+            body: "{}", redirect: "error", credentials: "omit", signal: controller.signal,
+          });
+          try {
+            const data = await responseJson(response, deps.maxResponseBytes ?? 262_144, controller.signal);
+            if (!record(data)) return fail("Cursor API key exchange unavailable");
+            cached = { keyHash, token: accessToken(data, (deps.now ?? Date.now)()) };
+          } finally { void response.body?.cancel().catch(() => {}); }
+        }
+        token = cached!.token;
+      } else {
+        cached = undefined;
+        // Default macOS store is Keychain. Never fall back to a potentially stale file.
+        if (env.AGENT_CLI_CREDENTIAL_STORE === "memory" || (platform === "darwin" && env.AGENT_CLI_CREDENTIAL_STORE !== "file")) return fail("Cursor credential store unsupported");
+        const authPath = platform === "win32"
+          ? paths.join(env.APPDATA || paths.join(home, "AppData", "Roaming"), "Cursor", "auth.json")
+          : platform === "darwin" ? paths.join(home, ".cursor", "auth.json")
+            : paths.join(env.XDG_CONFIG_HOME || paths.join(home, ".config"), "cursor", "auth.json");
+        const read = deps.readFile ?? boundedFile;
+        token = accessToken(parseFile(await read(authPath, controller.signal)), (deps.now ?? Date.now)());
+      }
       controller.signal.throwIfAborted();
       const configDir = env.CURSOR_CONFIG_DIR?.trim() ? env.CURSOR_CONFIG_DIR
         : env.XDG_CONFIG_HOME?.trim() ? paths.join(env.XDG_CONFIG_HOME, "cursor") : paths.join(home, ".cursor");
       let team: number | undefined;
+      // A user/service API key selects its own account. Never mix in a CLI's active team.
       try {
-        const config = parseFile(await read(paths.join(configDir, "cli-config.json"), controller.signal));
+        const config: Record<string, unknown> = apiKey ? {} : parseFile(await (deps.readFile ?? boundedFile)(paths.join(configDir, "cli-config.json"), controller.signal));
         if (config.authInfo !== undefined) {
           if (!record(config.authInfo)) return fail("Cursor active team unavailable");
           const value = config.authInfo.activeTeamId;
@@ -191,14 +224,16 @@ export function createCursorUsageReader(deps: CursorUsageDependencies = {}): (si
       const response = await (deps.fetch ?? globalThis.fetch)(ENDPOINT, {
         method: "POST", headers, body: "{}", redirect: "error", credentials: "omit", signal: controller.signal,
       });
-      try { return usageSchema(await responseJson(response, deps.maxResponseBytes ?? 262_144, controller.signal)); }
-      finally { void response.body?.cancel().catch(() => {}); }
+      try {
+        if (response.status === 401 || response.status === 403) cached = undefined;
+        return usageSchema(await responseJson(response, deps.maxResponseBytes ?? 262_144, controller.signal));
+      } finally { void response.body?.cancel().catch(() => {}); }
     };
     try {
       if (signal.aborted) controller.abort();
       return await Promise.race([work(), canceled]);
     } catch (error) {
-      throw new Error(error instanceof SafeError ? error.message : "Cursor usage unavailable; check existing CLI login");
+      throw new Error(error instanceof SafeError ? error.message : "Cursor usage unavailable; check Pi Cursor API key or existing CLI login");
     } finally {
       clearTimeout(timer);
       signal.removeEventListener("abort", abort);

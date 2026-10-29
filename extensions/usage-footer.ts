@@ -3,6 +3,7 @@ import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { ProviderUsageMonitor } from "./lib/provider-usage/monitor.ts";
+import { providerReaders, UsageReadError } from "./lib/provider-usage/readers.ts";
 import { detailText, compactFooterRows } from "./lib/provider-usage/model.ts";
 import {
   createManagedExtension,
@@ -126,6 +127,24 @@ function estimateClaudePlanCost(usage: AssistantUsage, model: unknown): number |
   }).total;
 }
 
+// Standard-speed Cursor list-price equivalents, not plan consumption or billed charges.
+// cursor-to-pi disables Fast when the live catalog advertises that parameter.
+// Source: https://cursor.com/docs/models-and-pricing#cursor-models (2026-10-29).
+export function estimateCursorPlanCost(usage: AssistantUsage, model: unknown): number | undefined {
+  const counts = [usage.input ?? 0, usage.output ?? 0, usage.cacheRead ?? 0, usage.cacheWrite ?? 0];
+  if (counts.some((n) => !Number.isFinite(n) || n < 0)) return undefined;
+  const [input, output, cacheRead, cacheWrite] = counts;
+  const prompt = input + cacheRead + cacheWrite;
+  if (model === "grok-4.5" || model === "grok-4.6" || model === "grok-4.7") {
+    const tier = model === "grok-4.7" && prompt > 256_000 ? 2 : 1;
+    // No separate Grok cache-write rate is published; estimate writes at input rate.
+    return ((input + cacheWrite) * 2 + cacheRead * 0.5 + output * 6) * tier / 1_000_000;
+  }
+  if (model === "composer-2.5") return ((input + cacheWrite) * 0.5 + cacheRead * 0.2 + output * 2.5) / 1_000_000;
+  // Exact Claude catalog IDs only. Never guess prices for Auto or unknown model aliases.
+  return estimateClaudePlanCost(usage, model);
+}
+
 function getTokenTotals(ctx: ExtensionContext): {
   input: number;
   output: number;
@@ -135,7 +154,11 @@ function getTokenTotals(ctx: ExtensionContext): {
   parentCost: number;
   subCost: number;
   subTokens: number;
+  cursorEstimated: boolean;
+  cursorUnpriced: boolean;
 } {
+  let cursorEstimated = false;
+  let cursorUnpriced = false;
   let input = 0;
   let output = 0;
   let cache = 0;
@@ -160,7 +183,12 @@ function getTokenTotals(ctx: ExtensionContext): {
     total += usage.totalTokens ?? messageInput + messageOutput + messageCache;
     const provider = (entry.message as { provider?: unknown }).provider;
     const reported = totalCostOf(usage);
-    if (typeof provider === "string" && SUBSCRIPTION_PROVIDERS.has(provider) && reported <= 0) {
+    if (provider === "cursor" && reported <= 0) {
+      const estimate = estimateCursorPlanCost(usage, (entry.message as { model?: unknown }).model);
+      parentCost += estimate ?? 0;
+      if (estimate !== undefined && messageInput + messageOutput + messageCache > 0) cursorEstimated = true;
+      else if (estimate === undefined && (usage.totalTokens ?? messageInput + messageOutput + messageCache) > 0) cursorUnpriced = true;
+    } else if (typeof provider === "string" && SUBSCRIPTION_PROVIDERS.has(provider) && reported <= 0) {
       const model = (entry.message as { model?: unknown }).model;
       parentCost += estimateClaudePlanCost(usage, model) ?? 0;
     } else parentCost += reported;
@@ -185,6 +213,8 @@ function getTokenTotals(ctx: ExtensionContext): {
     parentCost,
     subCost: sub.cost,
     subTokens: sub.tokens,
+    cursorEstimated,
+    cursorUnpriced,
   };
 }
 
@@ -216,9 +246,10 @@ export function installUsageFooter(pi: ExtensionAPI, ctx: ExtensionContext, moni
       invalidate() {},
       render(width: number): string[] {
         const totals = getTokenTotals(ctx);
+        const qualifier = `${totals.cursorEstimated ? " est" : ""}${totals.cursorUnpriced ? " + unpriced Cursor" : ""}`;
         const cost = totals.subCost > 0
-          ? `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)} (${formatMoney(totals.parentCost)} + ${formatMoney(totals.subCost)} sub)`
-          : `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)}`;
+          ? `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)}${qualifier} (${formatMoney(totals.parentCost)} + ${formatMoney(totals.subCost)} sub)`
+          : `total ${compactNumber(totals.total)} · ${formatMoney(totals.cost)}${qualifier}`;
         const left = [getContextLine(ctx),
           `in ${compactNumber(totals.input)} · out ${compactNumber(totals.output)} · cache ${compactNumber(totals.cache)}`, cost];
         return layoutUsageLines(left.map((line) => theme.fg("warning", line)),
@@ -260,10 +291,21 @@ export function usageDetailPanel(monitor: ProviderUsageMonitor, requestRender: (
 
 export const piExtension = { id: "usage-footer" };
 
-export default function usageFooter(pi: ExtensionAPI, monitor = new ProviderUsageMonitor()) {
+export default function usageFooter(pi: ExtensionAPI, suppliedMonitor?: ProviderUsageMonitor) {
+  let latestCtx: ExtensionContext | undefined;
+  const monitor = suppliedMonitor ?? new ProviderUsageMonitor(providerReaders(undefined, undefined, undefined, undefined, {
+    cursorApiKey: async () => latestCtx?.modelRegistry.getApiKeyForProvider("cursor"),
+    codexApiKey: async () => {
+      const auth = await latestCtx?.modelRegistry.getProviderAuth("openai-codex");
+      if (!auth) return undefined;
+      if (auth.source !== "OAuth" || !auth.auth.apiKey) throw new UsageReadError("Codex account usage requires Pi OAuth login");
+      return auth.auth.apiKey;
+    },
+  }));
   let enabled = true;
   let closeDetails: (() => void) | undefined;
   const install = (ctx: ExtensionContext) => {
+    latestCtx = ctx;
     if (enabled && isTui(ctx)) installUsageFooter(pi, ctx, monitor);
   };
   pi.on("session_start", (_event, ctx) => {
@@ -272,7 +314,7 @@ export default function usageFooter(pi: ExtensionAPI, monitor = new ProviderUsag
     install(ctx);
     if (enabled && isTui(ctx)) monitor.start();
   });
-  pi.on("session_shutdown", () => { closeDetails?.(); monitor.stop(); });
+  pi.on("session_shutdown", () => { closeDetails?.(); monitor.stop(); latestCtx = undefined; });
   pi.on("model_select", (_event, ctx) => install(ctx));
   pi.on("thinking_level_select", (_event, ctx) => install(ctx));
   pi.on("agent_start", (_event, ctx) => install(ctx));

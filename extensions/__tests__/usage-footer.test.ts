@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type Component } from "@earendil-works/pi-tui";
-import usageFooter, { layoutUsageLines } from "../usage-footer.ts";
+import usageFooter, { estimateCursorPlanCost, layoutUsageLines } from "../usage-footer.ts";
 import { ProviderUsageMonitor, type MonitorClock } from "../lib/provider-usage/monitor.ts";
 import { UsageReadError, type ProviderReader } from "../lib/provider-usage/readers.ts";
 import { parseClaude } from "../lib/provider-usage/model.ts";
@@ -334,6 +334,57 @@ test("mixed subscription, metered and subagent dollars are each counted once", a
     assert.match(output, /total 101\.9k · \$7\.900 \(\$5\.900 \+ \$2\.000 sub\)/);
     assert.doesNotMatch(output, /plan|~/);
   } finally { f.emit("session_shutdown"); globals.__subagent = old; }
+});
+
+test("Cursor standard list-price estimates count cache separately and preserve recorded usage", async () => {
+  for (const model of ["grok-4.5", "grok-4.6", "grok-4.7"]) {
+    const f = fixture();
+    const usage = { input: 100000, output: 10000, cacheRead: 100000, cacheWrite: 10000,
+      totalTokens: 220000, cost: { total: 0 } };
+    const original = structuredClone(usage);
+    (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => [
+      { type: "message", message: { role: "assistant", provider: "cursor", model, usage } },
+    ];
+    try {
+      f.emit("session_start"); await flush();
+      const output = f.footer()!.render(240).join("\n");
+      // .2 input + .06 output + .05 cache read + .02 cache write.
+      assert.match(output, /total 220\.0k · \$0\.3300 est/);
+      assert.match(output, /in 100\.0k · out 10\.0k · cache 110\.0k/);
+      assert.deepEqual(usage, original);
+    } finally { f.emit("session_shutdown"); }
+  }
+});
+
+test("Cursor estimates use the full prompt for Grok 4.7 long-context pricing, not output", () => {
+  assert.equal(estimateCursorPlanCost({ input: 156000, cacheRead: 100000, output: 10000 }, "grok-4.7"), 0.422);
+  assert.equal(estimateCursorPlanCost({ input: 156001, cacheRead: 100000, output: 10000 }, "grok-4.7"), 0.844004);
+  assert.equal(estimateCursorPlanCost({ input: 156001, cacheRead: 100000, output: 10000 }, "grok-4.5"), 0.422002);
+  assert.equal(estimateCursorPlanCost({ input: 100000, output: 10000, cacheRead: 100000 }, "composer-2.5"), 0.095);
+  assert.equal(estimateCursorPlanCost({ input: -1 }, "grok-4.7"), undefined);
+  assert.equal(estimateCursorPlanCost({ output: NaN }, "grok-4.7"), undefined);
+});
+
+test("Cursor positive reported dollars win; Auto remains unpriced instead of borrowing another model's rate", async () => {
+  for (const [model, reported, expected] of [
+    ["grok-4.7", 2, "total 100.0k · $2.000"],
+    ["default", 0, "total 100.0k · $0.0000 + unpriced Cursor"],
+    ["gpt-unknown", 0, "total 100.0k · $0.0000 + unpriced Cursor"],
+    ["claude-opus-5-5", 0, "total 100.0k · $0.4000 est"],
+  ] as const) {
+    const f = fixture();
+    (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => [
+      { type: "message", message: { role: "assistant", provider: "cursor", model, usage: {
+        input: 100000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 100000, cost: { total: reported },
+      } } },
+    ];
+    try {
+      f.emit("session_start"); await flush();
+      const output = f.footer()!.render(240).join("\n");
+      assert(output.includes(expected), output);
+      if (reported > 0) assert(!output.includes(" est"));
+    } finally { f.emit("session_shutdown"); }
+  }
 });
 
 test("layout stays three rows with ANSI, CJK and narrow truncation", () => {

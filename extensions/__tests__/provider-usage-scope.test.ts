@@ -89,6 +89,32 @@ test("Codex hashes selected home auth/config and identity-file overrides", async
   assert.notEqual((await resolve()).generation, configChanged.generation);
 });
 
+test("Cursor SDK scopes follow the effective Pi key, ignore unrelated CLI teams, and never persist secrets", async () => {
+  const f = fixture({ CURSOR_API_KEY: "environment-key" });
+  let key: string | undefined = "resolved-pi-key";
+  f.deps.cursorApiKey = async () => key;
+  const resolve = usageScope("cursor", undefined, f.deps);
+  const first = await resolve();
+  assert.equal(first.identity, "known");
+  assert.deepEqual(f.reads, []);
+  f.env.CURSOR_API_KEY = "another-ignored-env-key";
+  assert.deepEqual(await resolve(), first);
+  key = "another-pi-key";
+  const changed = await resolve();
+  assert.notEqual(changed.key, first.key);
+  assert.notEqual(changed.generation, first.generation);
+  key = undefined;
+  const fromEnv = await resolve();
+  assert.notEqual(fromEnv.key, changed.key);
+  assert.deepEqual(f.reads, []);
+  assert(!JSON.stringify([first, changed, fromEnv]).includes("resolved-pi-key"));
+  assert(!JSON.stringify([first, changed, fromEnv]).includes("another-pi-key"));
+  delete f.env.CURSOR_API_KEY;
+  const noKey = await resolve();
+  assert.notEqual(noKey.key, fromEnv.key);
+  assert.equal(noKey.identity, "opaque");
+});
+
 test("Cursor exact platform auth paths stay separate from config-root override; active teams are distinct", async () => {
   for (const [platform, env, home, auth, config] of [
     ["win32", { APPDATA: "C:\\Roaming", CURSOR_CONFIG_DIR: "C:\\Custom" }, "C:\\Home", "C:\\Roaming\\Cursor\\auth.json", "C:\\Custom\\cli-config.json"],

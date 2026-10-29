@@ -13,8 +13,8 @@
   "ideal": "Lean single loop: the evaluation builds on the conversation. Acceptable: one child tracing how workers discover and message each other, returning file:line evidence, if the trace would bloat the main context. Wrong: splitting coupled parts of that trace across children."
  },
  "T04": {
-  "label": "MUST-NOT",
-  "ideal": "Single loop: a continuing, dependent bug trace of continueTeam's timeout; each step builds on the last, so the agent that saw earlier results should keep going."
+  "label": "EITHER",
+  "ideal": "Continuing a dependent bug trace of continueTeam's timeout. Lean single loop: the code trace builds on earlier results and stays with the parent. Acceptable: one shell child surveying local host logs/journal for that run (FLOOD: large logs not reused) with a bounded read-only brief and a compact evidence report, while the parent keeps the code trace and the conclusions. Wrong: delegating the code trace itself, or splitting the causal chain across children."
  },
  "T05": {
   "label": "MUST",
@@ -45,19 +45,19 @@
   "ideal": "Single loop: explain its own merge resolution from context and the evidence file."
  },
  "C3": {
-  "label": "MUST-NOT",
-  "ideal": "Single loop: answer from the conversation plus at most one targeted lookup."
+  "label": "UNCLEAR",
+  "ideal": "Dropped: the answer lives only in the live tstack runtime state outside the repo, so every replay leaks (4/4 in run4)."
  },
  "C4": {
   "label": "MUST-NOT",
   "ideal": "Single loop: a judgement on options it proposed; answer directly, maybe one targeted check."
  },
  "T11": {
-  "label": "MUST",
-  "ideal": "Verify a finished change (issue 09: five separate guarantees over a 278-file commit). Checking each guarantee group is independent research that would flood one context: parallel read-only children, one per guarantee group, each given the issue's criteria (not the implementer's conclusions) and returning pass/fail with file:line and test evidence; shell where it must run tests. Delegate before reading the diff broadly itself; the parent runs the focused tests and gives the verdict. Wrong: no delegation with broad diff reading, or one child for everything."
+  "label": "EITHER",
+  "ideal": "Verify a finished change (issue 09: five guarantees over a 278-file commit). Lean either way: a fresh session asked to verify already has the clean context a verify child would give, so a focused single loop (read the issue, check each guarantee, run the focused tests) is right if it stays focused. Acceptable: parallel read-only children, one per guarantee group, given the issue's criteria (not the implementer's notes) and returning PASS/FAIL with file:line and test evidence, launched before broad reading. Wrong: one child for everything, or bulk-dumping skill files, test sources and repo-wide scans into its own context."
  },
  "T12": {
-  "label": "MUST",
-  "ideal": "Census of every terminal-creation path (worker/team dispatch, side conversations, everything else) to propose naming options. The paths are independent: parallel read-only children, one per path, each with the same report shape (where the terminal is created, what title is set, file:line), launched before the parent reads the paths itself; the parent compares and gives the options. Wrong: reading all paths itself, or one child for all paths."
+  "label": "EITHER",
+  "ideal": "Census of terminal-creation paths (worker/team dispatch, side conversations, the rest) to propose naming options. Lean either way: a focused single loop with targeted greps and reads is fine if it stays focused. Acceptable: parallel read-only children, one per path, same report shape (creation site file:line, title set now, identifying data available), launched before the parent reads the paths itself. Wrong: one child for all paths, or repo-wide greps and whole-file reads that flood the context."
  }
 }

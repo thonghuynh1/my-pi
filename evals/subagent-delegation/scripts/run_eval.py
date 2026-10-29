@@ -24,6 +24,8 @@ BASES = os.path.join(os.path.dirname(os.path.abspath(TASKS)), "bases.json")
 PINNED = json.load(open(BASES, encoding="utf-8")) if os.path.exists(BASES) else {}
 # Git-ignored context files the original session saw in the live checkout (docs, AGENTS.md, ...);
 # clean -fdx removes them, so copy them back read-only per task. Globs are relative to the source repo.
+OVERRIDES_FILE = os.path.join(os.path.dirname(os.path.abspath(TASKS)), "prompt-overrides.json")
+OVERRIDES = json.load(open(OVERRIDES_FILE, encoding="utf-8")) if os.path.exists(OVERRIDES_FILE) else {}
 OVERLAYS_FILE = os.path.join(os.path.dirname(os.path.abspath(TASKS)), "overlays.json")
 OVERLAYS = json.load(open(OVERLAYS_FILE, encoding="utf-8")) if os.path.exists(OVERLAYS_FILE) else {}
 # Tools that act outside the worktree (live panes, detached jobs, external services) stay off.
@@ -218,14 +220,14 @@ def truncated_session(task, wt, dest, extra_dir=None):
     if not any(e.get("type") == "message" and e["message"].get("role") in ("user", "assistant") for e in chain):
         # First-turn task (only model/thinking/system-prompt entries before it): resuming collides
         # in pi; start fresh.
-        return fix_prompt(text(target["message"]["content"])), False
+        return fix_prompt(OVERRIDES.get(task["id"]) or text(target["message"]["content"])), False
     rewriters = [cwd_rewriter(d, wt) for d in {header["cwd"], extra_dir or header["cwd"]}]
     retarget = lambda e: [e := r(e) for r in rewriters][-1]
     header["cwd"] = wt
     with open(dest, "w", encoding="utf-8") as f:
         for e in [header, *chain]:
             f.write(json.dumps(retarget(e), ensure_ascii=False) + "\n")
-    return fix_prompt(text(target["message"]["content"])), True
+    return fix_prompt(OVERRIDES.get(task["id"]) or text(target["message"]["content"])), True
 
 def run_one(task, model_key, variant, rep, wt, extra_dir, base):
     tag = f"{task['id']}_{model_key}_{variant}_r{rep}"
@@ -253,6 +255,7 @@ def run_one(task, model_key, variant, rep, wt, extra_dir, base):
     cmd = ["node", PI_CLI, *(["--session", sess] if resumed else ["--no-session"]), "-p", "--mode", "json",
            "--exclude-tools", EXCLUDE, "--model", MODELS[model_key], prompt]
     before = fingerprint(extra_dir)
+    strays_before = stray_snapshot()
     start = time.time()
     # pi -p reads piped stdin as extra prompt input; a held-open pipe would block it forever.
     p = subprocess.Popen(cmd, cwd=wt, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -261,7 +264,7 @@ def run_one(task, model_key, variant, rep, wt, extra_dir, base):
     timer.start()
     res = {"tag": tag, "task": task["id"], "model": model_key, "variant": variant, "rep": rep,
            "delegated": False, "sub_type": None, "tools_before": 0, "tools": [], "cost": 0.0, "stop": "ended", "final": "",
-           "reports": 0, "tools_after_report": 0, "actions": 0}
+           "reports": 0, "tools_after_report": 0, "actions": 0, "briefs": [], "decision_secs": None}
     own_jobs = set()
     with open(log, "w", encoding="utf-8") as lf:
         for line in p.stdout:
@@ -278,12 +281,15 @@ def run_one(task, model_key, variant, rep, wt, extra_dir, base):
                 if res["reports"]:
                     res["tools_after_report"] += 1
                 if name in ("subagent", "subagent_followup"):
+                    res["briefs"].append({"type": (e.get("args") or {}).get("type"), "task": str((e.get("args") or {}).get("task", ""))[:3000]})
+                    res["decision_secs"] = res["decision_secs"] or round(time.time() - start, 1)
                     res["delegated"] = True
                     res["sub_type"] = res["sub_type"] or (e.get("args") or {}).get("type")
                     if not REAL:
                         res["stop"] = "subagent"
                 # Fetch/pull from a worktree touches the shared object store and remote refs of the live repo.
-                if LIVE.search(json.dumps(e.get("args"))) or NETWORK_GIT.search(json.dumps(e.get("args"))):
+                if (LIVE.search(json.dumps(e.get("args"))) or NETWORK_GIT.search(json.dumps(e.get("args")))
+                        or writes_outside(name, e.get("args"), wt)):
                     res["stop"] = "leak"
                     kill(p); break
                 # Children from the replayed history were saved with the live repo as cwd; reopening one leaks.
@@ -309,6 +315,9 @@ def run_one(task, model_key, variant, rep, wt, extra_dir, base):
     timer.cancel()
     p.wait()
     res["live_changed"] = fingerprint(extra_dir) != before
+    res["strays"] = sorted(stray_snapshot() - strays_before)
+    if res["strays"] and res["stop"] != "harness_error":
+        res["stop"] = "leak"
     if resumed and os.path.exists(sess):
         shutil.copy2(sess, os.path.join(OUT_DIR, "sessions", tag + ".jsonl"))
     if time.time() - start >= MAX_SECS and res["stop"] == "ended":
@@ -324,6 +333,21 @@ def run_one(task, model_key, variant, rep, wt, extra_dir, base):
     res["secs"] = round(time.time() - start, 1)
     json.dump(res, open(log + ".done", "w", encoding="utf-8"))
     return res
+
+# A trial that writes outside its checkout (e.g. a helper script in C:\tmp) is not isolated.
+STRAY_DIRS = [r"C:\tmp"]
+WRITE_TOOLS = ("write", "edit")
+
+def stray_snapshot():
+    return {os.path.join(d, n) for d in STRAY_DIRS if os.path.isdir(d) for n in os.listdir(d)}
+
+def writes_outside(name, args, wt):
+    """An absolute write/edit path outside the checkout and the neutral temp folder."""
+    path = (args or {}).get("path") if name in WRITE_TOOLS else None
+    if not path or not os.path.isabs(path):
+        return False
+    p = os.path.normcase(os.path.abspath(path))
+    return not any(p.startswith(os.path.normcase(os.path.abspath(r)) + os.sep) for r in (wt, NEUTRAL))
 
 def kill(p):
     if p.poll() is None:
@@ -343,13 +367,17 @@ def main():
         print(f"{task['id']}: base {base[:10]} from {src}", flush=True)
         wt = make_checkout(task["id"], src, base, target.get("timestamp") or header["timestamp"])
         for model_key in [m for m in MODELS if not ONLY_MODELS or m in ONLY_MODELS]:
-            for variant, rep in PLAN:
+            # The first trial on a task pays the prompt-cache write; alternate which variant goes first
+            # (stable per task and model) so cost and latency aren't biased toward the second variant.
+            flip = int(hashlib.sha1(f"{task['id']}{model_key}".encode()).hexdigest(), 16) % 2
+            for variant, rep in (PLAN[::-1] if flip else PLAN):
                     r = run_one(task, model_key, variant, rep, wt, src, base)
                     total += r["cost"]
                     with open(results, "a", encoding="utf-8") as f:
                         f.write(json.dumps(r) + "\n")
                     print(f"{r['tag']:28} delegated={r['delegated']!s:5} stop={r['stop']:11} tools={r['tools_before']:2} "
                           f"{'LIVE-CHANGED ' if r.get('live_changed') else ''}"
+                          f"{'STRAY ' + ','.join(r['strays']) + ' ' if r.get('strays') else ''}"
                           f"${r['cost']:.3f} total=${total:.2f}", flush=True)
 
 if __name__ == "__main__":

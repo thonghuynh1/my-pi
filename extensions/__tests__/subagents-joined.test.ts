@@ -10,7 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import backgroundJobsExtension from "../background-jobs.ts";
 import { supportsNativeCacheWarming } from "../lib/background-cache-warming.ts";
-import subagents, { type SubagentSdk } from "../subagents.ts";
+import subagents, { type SubagentSdk, unknownCustomAgentMessage } from "../subagents.ts";
 import { DurableJobStore, durableSessionDirectory } from "../lib/durable-jobs.ts";
 import { type StoredBackgroundJob } from "../lib/subagent-background.ts";
 import { childContextPolicy } from "../lib/subagent-context.ts";
@@ -182,16 +182,41 @@ test("fresh agent guidance carries delegation rules in tool metadata and operati
 		assert.match(describe("subagent_resume"), /user requests recovery/);
 		assert.match(describe("subagent_status"), /Do not poll/);
 		assert.match(JSON.stringify(f.tools.get("subagent_followup")?.parameters), /latest returned job ID/);
+		// No custom agents in this fixture: the type and its catalog stay out of sight, and the prompt is left alone.
 		const [injected] = await f.emit("before_agent_start", { systemPrompt: "PARENT_BASE" });
-		const prompt = record(injected).systemPrompt;
-		assert.equal(typeof prompt, "string");
-		assert.ok(String(prompt).startsWith("PARENT_BASE"));
-		assert.match(String(prompt), /## Available custom subagents/);
+		assert.equal(injected, undefined);
+		const prompt = "PARENT_BASE";
+		assert.doesNotMatch(JSON.stringify(tool.parameters), /custom/i);
+		assert.doesNotMatch(tool.description, /custom/i);
 		// promptGuidelines already render the rules; the startup prompt must not repeat them.
 		for (const line of tool.promptGuidelines ?? []) assert.ok(!String(prompt).includes(line));
 		assert.equal(f.created, 0, "instructions do not launch work");
 		if (startup === 0) { await f.emit("session_shutdown"); await f.startFreshExtension(); }
 	}
+});
+
+test("configured custom agents bring back the custom type and the catalog", async (t) => {
+	const f = await fixture(); t.after(() => f.close());
+	mkdirSync(join(f.base, ".pi", "agents"), { recursive: true });
+	writeFileSync(join(f.base, ".pi", "agents", "memory-owner.md"), "---\nname: memory-owner\ndescription: Test memory owner\ntools: read\n---\nRetain the earlier facts.");
+	await f.emit("session_shutdown"); await f.startFreshExtension();
+	const tool = f.tools.get("subagent");
+	assert.ok(tool);
+	assert.match(JSON.stringify(tool.parameters), /"custom"/);
+	assert.match(tool.description, /custom \(configured markdown agent\)/);
+	const [injected] = await f.emit("before_agent_start", { systemPrompt: "PARENT_BASE" });
+	assert.match(String(record(injected).systemPrompt), /## Available custom subagents[\s\S]*memory-owner \(project\)/);
+});
+
+test("an unknown custom agent points at the built-in types when none are configured, else lists the configured ones", () => {
+	assert.equal(
+		unknownCustomAgentMessage("general", []),
+		'Unknown custom agent "general". No custom agents are configured; use type "explore" (read-only) or "shell" (can run git, builds, and tests).',
+	);
+	assert.equal(
+		unknownCustomAgentMessage("general", [{ name: "memory-owner", source: "project" }]),
+		'Unknown custom agent "general". Available custom agents: memory-owner (project).',
+	);
 });
 
 test("model thinking suffix reaches child sessions and an omitted suffix inherits the parent level", { timeout: 15_000 }, async (t) => {

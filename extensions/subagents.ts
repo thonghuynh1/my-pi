@@ -352,10 +352,10 @@ type SubagentStatusSink = (status: RunningSubagentStatus | undefined) => void;
 
 const SubagentParams = Type.Object({
 	type: StringEnum(["explore", "shell", "custom"] as const, {
-		description: "Subagent type. explore=read-only investigation, shell=command-oriented investigation, custom=markdown-defined agent.",
+		description: "Subagent type. explore=read-only investigation, shell=command-oriented investigation, custom=markdown-defined agent listed under 'Available custom subagents' (never a guessed name).",
 	}),
 	task: Type.String({ description: "Task to delegate to the subagent." }),
-	customAgent: Type.Optional(Type.String({ description: "Custom agent name when type is custom." })),
+	customAgent: Type.Optional(Type.String({ description: "Custom agent name when type is custom: exactly a name from 'Available custom subagents'." })),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the subagent. Defaults to the current cwd." })),
 	model: Type.Optional(
 		Type.String({
@@ -378,6 +378,15 @@ const SubagentParams = Type.Object({
 });
 
 type SubagentParamsType = Static<typeof SubagentParams>;
+
+// Shown when no custom agents exist: an advertised "custom" type invites guessed names (e.g. "general").
+const { type: _customType, customAgent: _customAgent, ...builtInProperties } = SubagentParams.properties;
+const BuiltInSubagentParams = Type.Object({
+	type: StringEnum(["explore", "shell"] as const, {
+		description: "Subagent type. explore=read-only investigation, shell=command-oriented investigation.",
+	}),
+	...builtInProperties,
+});
 
 const SubagentWaitParams = Type.Object({
 	waitFor: Type.Optional(StringEnum(["all", "any"] as const, { description: "Defaults to all. Any returns after at least one targeted terminal outcome." })),
@@ -1048,6 +1057,14 @@ class SubagentModelsEditor extends Container {
 	}
 }
 
+// Models guess familiar names (e.g. "general"); with no agents configured, point them at the built-in types.
+export function unknownCustomAgentMessage(name: string, agents: Pick<CustomAgent, "name" | "source">[]): string {
+	const available = agents.map((agent) => `${agent.name} (${agent.source})`).join(", ");
+	return available
+		? `Unknown custom agent "${name}". Available custom agents: ${available}.`
+		: `Unknown custom agent "${name}". No custom agents are configured; use type "explore" (read-only) or "shell" (can run git, builds, and tests).`;
+}
+
 function resolveRunConfig(params: SubagentParamsType, cwd: string): RunConfig {
 	const routing = readSubagentRoutingConfig(cwd);
 	if (params.type === "explore") {
@@ -1083,8 +1100,7 @@ function resolveRunConfig(params: SubagentParamsType, cwd: string): RunConfig {
 	const agents = discoverCustomAgents(cwd);
 	const agent = agents.find((agent) => agent.name === agentName);
 	if (!agent) {
-		const available = agents.map((agent) => `${agent.name} (${agent.source})`).join(", ") || "none";
-		throw new Error(`Unknown custom agent "${agentName}". Available custom agents: ${available}.`);
+		throw new Error(unknownCustomAgentMessage(agentName, agents));
 	}
 
 	return {
@@ -2493,18 +2509,21 @@ Optional results will be delivered later. Continue independent work; do not poll
 	];
 
 	function buildSubagentToolDef(enabled: boolean) {
+		const hasCustomAgents = (customAgentsSnapshot?.length ?? 0) > 0;
 		return {
 			name: "subagent",
 			label: "Subagent",
 			executionMode: "parallel" as const,
 			description: enabled
-				? "Run an isolated in-process Pi subagent. JOINED by default: required reports return after cleanup. Detached mode is only for optional results delivered later. Use subagent_followup for related successful work with saved conversation/configuration. Batch independent calls with a real parallel tool batch; never batch dependent edits with prerequisite research. Isolated context, shared filesystem. Capacity 6 across both modes; overflow fails explicitly. Types: explore (read-only), shell (commands/logs), custom (configured markdown agent)."
+				? "Run an isolated in-process Pi subagent. JOINED by default: required reports return after cleanup. Detached mode is only for optional results delivered later. Use subagent_followup for related successful work with saved conversation/configuration. Batch independent calls with a real parallel tool batch; never batch dependent edits with prerequisite research. Isolated context, shared filesystem. Capacity 6 across both modes; overflow fails explicitly. Types: explore (read-only), shell (commands/logs)" +
+					(hasCustomAgents ? ", custom (configured markdown agent)." : ".")
 				: "Run an isolated in-process Pi subagent. Joined by default; detached only for optional results. Capacity 6; excess admission fails.",
 			promptSnippet: enabled
 				? "Choose joined for prerequisites, detached only for optional results, and subagent_followup for related successful work. Batch independent assignments with a real parallel tool batch. Children have isolated conversations but share your filesystem; provide self-contained tasks and avoid overlapping ownership."
 				: "",
 			promptGuidelines: enabled ? subagentCapabilityGuidelines : [],
-			parameters: SubagentParams,
+			// Same runtime shape either way; the built-in schema only drops the unavailable "custom" option.
+			parameters: (hasCustomAgents ? SubagentParams : BuiltInSubagentParams) as typeof SubagentParams,
 			prepareArguments: normalizeTimeoutSeconds,
 			execute: async (toolCallId, params, signal, _onUpdate, ctx) => {
 				if (evalDryRun) {
@@ -2586,12 +2605,13 @@ Optional results will be delivered later. Continue independent work; do not poll
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (!subagentModeEnabled) return;
 		customAgentsSnapshot ??= discoverCustomAgents(ctx.cwd);
+		if (!customAgentsSnapshot.length) return;
 		const customAgents = prioritizeCustomAgentsForDisplay(customAgentsSnapshot)
 			.slice(0, 20)
 			.map((agent) => `- ${agent.name} (${agent.source}): ${agent.description || agent.filePath}`)
 			.join("\n");
 		// The guidelines already render via promptGuidelines; only add the agent catalog.
-		return { systemPrompt: [event.systemPrompt, "## Available custom subagents", customAgents || "- none discovered"].join("\n\n") };
+		return { systemPrompt: [event.systemPrompt, "## Available custom subagents", customAgents].join("\n\n") };
 	});
 
 	// Initial registration. Defaults ON unless PI_SUBAGENT_MODE disables it, so

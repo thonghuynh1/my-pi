@@ -58,13 +58,68 @@ To run the eval on another machine you need:
   `WORK_DIRS` and the `LIVE` guard in `run_eval.py` hard-code these paths.
 - **Models:** `anthropic/claude-opus-5-5:medium` (also the judge) and `openai-codex/gpt-6.1-sol:medium`.
 
-## Status (2026-10-28)
+## What the article asks of the eval, and where it is covered
+
+| article | here |
+|---|---|
+| Track routing (did it pick the right subagent, skill, tool) | Delegation decision graded by code against the label; child type checked by code (an explore child asked to run git, builds or tests fails) |
+| Don't just read the final score; look at which tasks flipped | `report_onepass.py` lists per-task flips against `current` |
+| A task for every rule the agent must not break | Rule coverage table below |
+| Run each task more than once (a break showed in 1 of 2 runs) | At least 2 trials per task and model before any claim; MUST-NOT is pass^k |
+| Cost and latency, not just quality | Median cost, seconds, and seconds to the first subagent call per variant. Dry runs stop at the decision, so these are decision-point numbers, not whole-task numbers |
+| Verify the subagent's conclusion against real data with the main agent | Tier 2 (`EVAL_REAL=1`, `judge_use.py`): the parent checks child claims before relying on them |
+| Change one thing at a time; keep what holds up | One variant against `current` per round |
+
+### Rule coverage (slim-v4)
+
+| rule | tasks |
+|---|---|
+| Stay in your loop by default | all MUST-NOT tasks |
+| FLOOD: survey across many areas | T05 (repo-wide Book trace). **Gap:** no huge-log task can be replayed (it would need CI, ADO or runtime DB access) |
+| PARALLEL: independent paths, same report shape, one batch | T05; T12 (EITHER) |
+| VERIFY: black-box check after a change | T11 (EITHER: a fresh session is already a clean-context verifier). **Gap:** no task where the agent verifies its own change |
+| Stay in loop: continuing a trace | T04 (EITHER: a shell child for large local logs is acceptable FLOOD) |
+| Stay in loop: one causal chain | T10 |
+| Stay in loop: explaining own work | C2 |
+| Stay in loop: clarifying / judging options | C4 (C3 dropped: not replayable) |
+| Stay in loop: resolving conflicts | T02 (EITHER: one read-only master-diff child allowed) |
+| Stay in loop: coupled edits | C1 |
+| Stay in loop: small edits | T07 |
+| Stay in loop: updating a plan or doc | **Gap:** T06 dropped (its plan folder no longer exists) |
+| Delegate before reading the material | judge `timing` |
+| Brief: goal, facts, paths, report shape | judge `brief` |
+| explore cannot run commands | code check in the report |
+| Children research; parent keeps edits | judge `self_work` |
+| Treat child reports as leads | tier 2 only |
+
+## Status (2026-10-29)
 
 - Steps 1 to 3 are done: the harness rebuild, the reference check (13/13), the one-pass re-judge of
   run2, and the new MUST tasks T11 and T12. The one-pass results are in `results/report-onepass.md`.
-- **Next is step 4:** fresh trials of current vs slim-v4 on 13 tasks × 2 models in the new harness
-  (52 trials, about $13), then up to 3 trials where the variants disagree (about $16 in total). This
-  has not been started; it needs the user's confirmation, since the cost is over $10.
+- **Step 4 round 1 is done.** 52 trials plus judge cost $15.41; results are in
+  `results/report-run4-round1.md`. The verdict is inconclusive with no regression: slim-v4 matches current on every
+  delegation decision except T03 codex, which improves. Neither variant delegates on T11 or T12 (MUST), and
+  codex delegates T04 (MUST-NOT) under both. The T11/T12 labels are in question (see below), C3 can't be
+  replayed (every trial leaks into tstack runtime state), and the cost gap is confounded by prompt-cache order.
+  The runner now alternates which variant goes first.
+- **Fixes after round 1:**
+  - T11, T12 and T04 are relabelled EITHER.
+  - C3 is dropped (UNCLEAR).
+  - T11's prompt names the herdr-provider issue, through `prompt-overrides.json`, because the repo has three issue-09
+    files.
+  - Labels now: MUST T05; EITHER T01, T02, T03, T04, T07, T11, T12; MUST-NOT T10, C1, C2, C4.
+  - The labels moved after seeing results. Any round 2 claim must say so, and the old labels remain in
+    `results/judged-run4-round1.jsonl`.
+- Round 1 setup (for reference): current vs slim-v4, one trial per task per model, across
+  13 tasks and 2 models (52 trials, about $13), into `.scratch/subagent-eval/run4`. Next, within the
+  approved $16, only the tasks that flip or sit on the split (T02, T04, T05, T07, T11, T12) get a
+  second and third trial. A second trial on every task, as the article suggests, would bring the
+  total to about $26 and needs approval.
+- **Harness additions for step 4:** a trial that writes outside its checkout counts as a leak (the
+  write/edit path is checked, plus new entries in `C:\tmp`). Each trial records its subagent briefs
+  and the time to the first subagent call.
+- **Not yet run:** a tier 2 round on T05, T11 and T12 for the "treat reports as leads" rule. It needs
+  its own approval.
 
 ## Claim
 

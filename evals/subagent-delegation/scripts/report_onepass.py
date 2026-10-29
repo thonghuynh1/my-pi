@@ -1,6 +1,6 @@
 """Summarise judge_onepass output, in the eval checklist's report shape.
 Usage: report_onepass.py <judged-onepass.jsonl> [old judged.jsonl for agreement] [out.md]"""
-import collections, json, sys
+import collections, json, os, re, statistics, sys
 
 rows = [json.loads(l) for l in open(sys.argv[1], encoding="utf-8")]
 old = {}
@@ -45,6 +45,49 @@ for task, model in sorted({(r["task"], r["model"]) for r in trials}):
         rs = [r for r in trials if r["task"] == task and r["model"] == model and r["variant"] == v]
         cells.append(f"{sum(num(r.get('decision')) == 2 for r in rs)}/{len(rs)}" if rs else "·")
     out.append(f"| {task} | {label} | {model} | " + " | ".join(cells) + " |")
+
+# The article: don't just read the final score, look at which tasks flipped between variants.
+if len(variants) >= 2:
+    base_v = "current" if "current" in variants else variants[0]
+    out.append(f"\n## Flips against {base_v} (pass rate differs)\n")
+    flips = []
+    for task, model in sorted({(r["task"], r["model"]) for r in trials}):
+        rate = {}
+        for v in variants:
+            rs = [r for r in trials if r["task"] == task and r["model"] == model and r["variant"] == v]
+            if rs:
+                rate[v] = (sum(num(r.get("decision")) == 2 for r in rs), len(rs))
+        for v, (p, n) in rate.items():
+            if v != base_v and base_v in rate and p / n != rate[base_v][0] / rate[base_v][1]:
+                bp, bn = rate[base_v]
+                flips.append(f"- {task} {model}: {base_v} {bp}/{bn} -> {v} {p}/{n} ({'better' if p / n > bp / bn else 'WORSE'})")
+    out.extend(flips or ["- none"])
+
+# Cost and latency up to the decision. Dry runs stop at the first subagent call, so these are
+# decision-point numbers, not whole-task numbers.
+# run_dir is stored as the run folder's name; runs sit next to each other (default: beside the judged file's run).
+RUNS_ROOT = os.environ.get("RUNS_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[1])))
+def done(r):
+    p = os.path.join(RUNS_ROOT, r.get("run_dir") or "", "logs", r["tag"] + ".jsonl.done")
+    return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
+for r in trials:
+    r["_done"] = done(r)
+out.append("\n## Cost and time to the decision (median per trial)\n")
+out.append("| model / variant | trials | cost | secs | delegated trials: secs to first subagent call |")
+out.append("|---|---|---|---|---|")
+med = lambda xs: f"{statistics.median(xs):.2f}" if xs else "-"
+for (m, v), rs in sorted(by.items()):
+    d = [r["_done"] for r in rs if r["_done"]]
+    out.append(f"| {m} / {v} | {len(d)} | ${med([x['cost'] for x in d])} | {med([x['secs'] for x in d if 'secs' in x])} | "
+               f"{med([x['decision_secs'] for x in d if x.get('decision_secs')])} |")
+
+# Rule checks code can grade: explore children cannot run commands.
+CMD = re.compile(r"(?i)\b(run|execute)\b[^.\n]{0,40}\b(git|dotnet|npm|pnpm|npx|vitest|jest|tests?|build|script)\b|\bgit (diff|log|show|status|blame)\b")
+wrong = [(r["tag"], b["task"][:120]) for r in trials for b in r["_done"].get("briefs", [])
+         if b.get("type") == "explore" and CMD.search(b.get("task", ""))]
+with_briefs = sum(1 for r in trials if r["_done"].get("briefs"))
+out.append(f"\n## Rule check: explore child asked to run commands ({len(wrong)} of {with_briefs} delegating trials with recorded briefs)\n")
+out.extend(f"- {t}: {b!r}" for t, b in wrong)
 
 if old:
     pairs = [(r, old[r["tag"]]) for r in trials if r["tag"] in old]

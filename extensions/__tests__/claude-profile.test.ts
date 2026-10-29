@@ -12,9 +12,8 @@ import {
   isProfileReady,
   loadStoredProfileDirs,
   parsePickerValue,
-  restoreActiveProfile,
-  saveActiveProfile,
   saveStoredProfileDirs,
+  startOnPersonal,
   switchClaudeProfile,
 } from "../lib/claude-profiles.ts";
 
@@ -82,27 +81,19 @@ test("switching to personal sets its dir and stashes the API key; work restores 
   assert.equal(env.ANTHROPIC_API_KEY, "work-key");
 });
 
-test("picked profile persists alongside dirs and is restored on startup", () => {
-  const file = path.join(tmp(), "claude-profiles.json");
-  saveStoredProfileDirs({ personalDir: "/p" }, file);
-  saveActiveProfile("personal", file);
-  assert.deepEqual(loadStoredProfileDirs(file), { personalDir: "/p", activeProfile: "personal" });
-  writeFileSync(file, JSON.stringify({ activeProfile: "other" }), "utf8");
-  assert.deepEqual(loadStoredProfileDirs(file), {});
-
+test("sessions start on personal when it is logged in, else stay on work", () => {
   const personalDir = path.join(tmp(), "personal");
   mkdirSync(personalDir, { recursive: true });
   writeFileSync(path.join(personalDir, ".credentials.json"), "{}", "utf8");
   const env: NodeJS.ProcessEnv = { ANTHROPIC_API_KEY: "work-key" };
-  const restored = restoreActiveProfile(env, "/home/u", { personalDir, activeProfile: "personal" });
-  assert.equal(restored?.id, "personal");
+  assert.equal(startOnPersonal(env, "/home/u", { personalDir })?.id, "personal");
   assert.equal(env.CLAUDE_CONFIG_DIR, personalDir);
   assert.equal(env.ANTHROPIC_API_KEY, undefined);
 
   const untouched: NodeJS.ProcessEnv = {};
-  assert.equal(restoreActiveProfile(untouched, "/home/u", { personalDir: path.join(tmp(), "no-login"), activeProfile: "personal" }), undefined);
-  assert.equal(restoreActiveProfile(untouched, "/home/u", {}), undefined);
+  assert.equal(startOnPersonal(untouched, "/home/u", { personalDir: path.join(tmp(), "no-login") }), undefined);
   assert.equal(untouched.CLAUDE_CONFIG_DIR, undefined);
+  assert.equal(currentClaudeProfileId(untouched, "/home/u", {}), "work");
 });
 
 test("expandHome handles ~ prefixes and plain paths", () => {

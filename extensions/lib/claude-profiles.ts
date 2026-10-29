@@ -57,8 +57,6 @@ export function currentClaudeProfileId(
   return "work";
 }
 
-// ponytail: in-process only, resets on Pi restart. Launch Pi with
-// CLAUDE_CONFIG_DIR preset to default to personal instead.
 const SAVED_API_KEY = "CLAUDE_PROFILE_SAVED_API_KEY";
 
 export function switchClaudeProfile(
@@ -86,6 +84,7 @@ export function switchClaudeProfile(
 export interface StoredProfileDirs {
   workDir?: string;
   personalDir?: string;
+  activeProfile?: ClaudeProfileId;
 }
 
 export function defaultProfilesConfigFile(agentDir: string = getAgentDir()): string {
@@ -104,7 +103,13 @@ export function loadStoredProfileDirs(configFile: string = defaultProfilesConfig
       typeof parsed[key] === "string" && (parsed[key] as string).trim() ? (parsed[key] as string).trim() : undefined;
     const workDir = pick("workDir");
     const personalDir = pick("personalDir");
-    return { ...(workDir ? { workDir } : {}), ...(personalDir ? { personalDir } : {}) };
+    const active = pick("activeProfile");
+    const activeProfile = active && isProfileId(active) ? active : undefined;
+    return {
+      ...(workDir ? { workDir } : {}),
+      ...(personalDir ? { personalDir } : {}),
+      ...(activeProfile ? { activeProfile } : {}),
+    };
   } catch {
     return {};
   }
@@ -120,6 +125,23 @@ export function saveStoredProfileDirs(dirs: StoredProfileDirs, configFile: strin
 export function applyStoredProfileDirs(env: NodeJS.ProcessEnv = process.env, stored: StoredProfileDirs = loadStoredProfileDirs()): void {
   if (!clean(env.CLAUDE_PROFILE_WORK_DIR) && stored.workDir) env.CLAUDE_PROFILE_WORK_DIR = stored.workDir;
   if (!clean(env.CLAUDE_PROFILE_PERSONAL_DIR) && stored.personalDir) env.CLAUDE_PROFILE_PERSONAL_DIR = stored.personalDir;
+}
+
+export function saveActiveProfile(id: ClaudeProfileId, configFile: string = defaultProfilesConfigFile()): void {
+  saveStoredProfileDirs({ ...loadStoredProfileDirs(configFile), activeProfile: id }, configFile);
+}
+
+// The last picked profile survives Pi restarts. Skipped when it is no longer
+// logged in, so a broken login falls back to the default instead of failing.
+export function restoreActiveProfile(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = homedir(),
+  stored: StoredProfileDirs = loadStoredProfileDirs(),
+): ClaudeProfile | undefined {
+  if (!stored.activeProfile) return undefined;
+  const target = claudeProfiles(env, home, stored)[stored.activeProfile];
+  if (!isProfileReady(target.configDir)) return undefined;
+  return switchClaudeProfile(stored.activeProfile, env, home, stored);
 }
 
 export function expandHome(value: string, home: string = homedir()): string {

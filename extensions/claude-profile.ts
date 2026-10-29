@@ -27,6 +27,8 @@ import {
   isProfileReady,
   loadStoredProfileDirs,
   parsePickerValue,
+  restoreActiveProfile,
+  saveActiveProfile,
   saveStoredProfileDirs,
   switchClaudeProfile,
   type ClaudeProfileId,
@@ -214,6 +216,7 @@ async function runPicker(ctx: ExtensionCommandContext): Promise<void> {
       continue;
     }
     const switched = switchClaudeProfile(selection.id);
+    saveActiveProfile(selection.id);
     ctx.ui.notify(
       `Switched to ${switched.name} (${switched.configDir}). ` +
         `Next claude-bridge turn uses it. Run /provider-usage then r to refresh both subscriptions.`,
@@ -230,8 +233,10 @@ export default function claudeProfile(pi: ExtensionAPI): void {
   }
   const managed = createManagedExtension(pi, { id: piExtension.id, visibility: visibility.settings });
 
+  const launchedWithConfigDir = Boolean(process.env.CLAUDE_CONFIG_DIR?.trim());
   pi.on("session_start", () => {
     applyStoredProfileDirs();
+    if (!launchedWithConfigDir) restoreActiveProfile();
   });
 
   managed.registerCommand("claude-profile", {
@@ -278,6 +283,7 @@ export default function claudeProfile(pi: ExtensionAPI): void {
         return;
       }
       const switched = switchClaudeProfile(target);
+      saveActiveProfile(target);
       ctx.ui.notify(
         `Switched to ${switched.name} (${switched.configDir}). ` +
           `Next claude-bridge turn uses it. Run /provider-usage then r to refresh both subscriptions.`,

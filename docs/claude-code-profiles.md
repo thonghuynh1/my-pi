@@ -47,7 +47,9 @@ personal OAuth. (Inside Pi the profile switcher handles this for you.)
 ## Daily use in Pi
 
 1. Restart Pi after installs.
-2. `/claude-profile` — pick **Claude Work** or **Claude Personal**.
+2. `/claude-profile` — pick **Claude Work** or **Claude Personal**. The pick is
+   remembered, so new sessions start on it; you only switch when you want the
+   other one.
 3. `/model` — provider `claude-bridge`, e.g. `claude-bridge/claude-sonnet-5` (or `opus`/`haiku` equivalents from the catalog).
 4. Footer shows `Claude-W` /
    `Claude-P`; `/provider-usage` then `r` refreshes both.
@@ -80,9 +82,10 @@ Script-friendly equivalents (no TUI needed):
 | `CLAUDE_CONFIG_DIR` | Active dir (set by the switcher per session) | unset = work default |
 
 `~/.pi/agent/claude-profiles.json` stores `{"workDir": ..., "personalDir": ...}`
-as a fallback when the env vars are unset. The active choice itself is
-in-process only; preset `CLAUDE_CONFIG_DIR` before launching Pi to change the
-startup default.
+as a fallback when the env vars are unset, plus `"activeProfile"`, the last
+profile you picked. Each session starts on that profile if it is still logged
+in, and falls back to Work otherwise. A `CLAUDE_CONFIG_DIR` preset before
+launching Pi wins over the saved pick.
 
 ## Models and thinking effort
 

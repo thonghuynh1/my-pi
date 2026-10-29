@@ -46,7 +46,7 @@ The `claude-profile` extension switches the account used by `claude-bridge/*` mo
    ```
 
 3. In the browser, explicitly choose your **personal** Claude account, not the work account that may already be signed in. Check `claude auth status` reports the intended account before continuing.
-4. Back in Pi, run `/claude-profile use personal` and select a `claude-bridge/*` model. The next bridge turn uses Personal. Run `/provider-usage`, then press `r` to refresh usage. To return to Work, run `/claude-profile use work`.
+4. Back in Pi, run `/claude-profile use personal` and select a `claude-bridge/*` model. The next bridge turn uses Personal, and Pi remembers the pick, so later sessions start on Personal too. Run `/provider-usage`, then press `r` to refresh usage. To return to Work, run `/claude-profile use work`.
 
 **Avoid:** running login/logout without an explicit `CLAUDE_CONFIG_DIR`, pointing Personal at the Work directory, copying credentials between directories, or using `setx` to change the global config directory. No Work logout is needed. Pi's `/login` is separate from the Claude Code login used by `claude-bridge`. The profile picker checks for login files, not token validity, so a profile marked ready can still need OAuth renewal.
 

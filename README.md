@@ -8,6 +8,13 @@ Personal Pi package that bundles:
 - `usage-footer.ts` footer/status extension showing model and context usage
 - `subagents.ts` in-process subagent tool with `explore`, `shell`, and `custom` modes
 
+## Herdr workspace
+
+The portable Herdr layout, PR dashboard, and Git History mods live in
+[`herdr-app/`](herdr-app/README.md). Install or update them with
+`node herdr-app/install.mjs --activate`. Personal credentials and dismissal state
+stay on each computer; this installer is separate from Pi setup.
+
 ## Install locally
 
 ```bash

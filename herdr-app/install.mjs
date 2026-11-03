@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const here = dirname(fileURLToPath(import.meta.url));
-export const mods = ['github-prs', 'github-tabs', 'git-changes'];
+export const mods = ['github-prs', 'github-tabs', 'git-changes', 'project-spaces', 'workspace-files'];
 const entries = [...mods.map(name => `mods/${name}`), 'layouts/github-workspace.json'];
 const exists = async path => { try { return await lstat(path); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
 

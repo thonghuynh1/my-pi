@@ -25,7 +25,7 @@ test('installs all managed assets, validates before activation, preserves person
   assert.ok(JSON.parse(await readFile(join(target,'layouts','github-workspace.json'),'utf8')).cloned_from);
   for (const file of ['shared.json','settings.json','keys.json']) assert.equal(await readFile(join(target,file),'utf8'),'personal state');
   assert.equal(await readFile(join(target,'layouts','.state','clicks.json'),'utf8'),'saved sizes');
-  assert.equal(calls.filter(args=>args[0]==='check').length,3);
+  assert.equal(calls.filter(args=>args[0]==='check').length,mods.length);
   assert.deepEqual(calls.at(-1),['do','layout.switch','--name','github-workspace']);
   assert.ok(result.backup.startsWith(join(target,'backups')));
 });

@@ -22,9 +22,9 @@ shows a warning while direct review requests still work.
 
 The same install command updates an existing installation. It:
 
-1. Copies only the three custom mod folders and `github-workspace` layout.
+1. Copies only the five custom mod folders and `github-workspace` layout.
 2. Backs up the previous versions under `~/.config/herdr-app/backups/github-workspace-*`.
-3. Runs `herdr-app check` on all three mods; attempts to restore all previous files if checks fail (reports the backup path and any locked-file restore failures).
+3. Runs `herdr-app check` on all five mods; attempts to restore all previous files if checks fail (reports the backup path and any locked-file restore failures).
 4. Switches to the layout when `--activate` is supplied.
 
 No `npm install` or Pi extension registration is needed for this bundle.
@@ -39,15 +39,59 @@ computer/account; cloning this repository does not transfer them.
 
 The installer intentionally replaces the named custom folders, after backup.
 Keep your code edits here rather than editing the installed copies. Shipped Herdr
-mods and layouts are untouched. To undo, restore the four managed paths from the
+mods and layouts are untouched. To undo, restore the six managed paths from the
 printed backup; switch to `main` to leave this layout.
 
 ## What's included
 
+- **`mods/project-spaces`** — persistent project groups with every registered Git worktree, including closed checkouts.
+- **`mods/workspace-files`** — file browser with right-click path insertion into the active terminal.
 - **`mods/github-tabs`** — workspace tabs with Files, Changes, and PRs buttons.
 - **`mods/github-prs`** — PR dashboard, My PRs, All PRs, detail view, and wrapping merge chain.
 - **`mods/git-changes`** — Changes and Git History, Apple-inspired cards and file disclosures.
 - **`layouts/github-workspace.json`** — connects those mods to Herdr's standard workspace.
+
+### Projects and worktrees
+
+The expanded left sidebar discovers repositories from open spaces and remembers
+projects locally, even after their spaces close. **+** adds a local repository via
+the folder picker. Click a project header/arrow to expand or collapse its worktrees; the choice is
+remembered locally, with new projects expanded by default. Expanded projects list all registered worktrees (including
+locked/missing checkouts), branch, clean/dirty state, upstream ahead/behind, open
+spaces and agent status in compact two-line cards. Theme-aware project avatars,
+branch icons, colored health dots, and Here/agent badges add visual hierarchy;
+project colors stay stable when reordered. Full paths and upstream details
+appear on hover. Click a checkout row to open/switch (no separate Go/Open button). Right-click
+any checkout for **Remove worktree…**; open checkouts also offer rename/close
+space actions. Removal is only in that menu, never inline. Multiple spaces on one checkout remain individually
+selectable. Agents stay in the section below. **Machines** opens Herdr's original
+space/machine controls. Git refreshes every 15 seconds while the window is active;
+**↻** refreshes manually. Remote projects use their own machine. Failed refreshes
+show an error and retain old data, with checkout actions disabled.
+
+**Remove…** requires explicit confirmation and rechecks status. Main, bare,
+locked, missing, detached-HEAD, dirty, unverifiable or Herdr-open checkouts are blocked. Close
+spaces/terminals first. It uses only non-forced `git worktree remove`, never
+closes terminals or deletes branches, and never prunes registrations. Submodules
+that require forced removal are left to Git's refusal. Clean is not a safety
+recommendation: the dialog shows commits not on local remote-tracking refs and
+upstream status, which may be stale (no fetch/network). Branches/commits are kept;
+review detached HEAD work before removal. External editors/processes cannot be
+detected reliably. Project memory stays in this computer's per-mod storage and
+is not copied to other machines.
+
+### Insert file paths
+
+In **Files**, right-click a file or folder → **Insert path into terminal**.
+It pastes the absolute path into the terminal associated with the current Files
+view, without Enter or submission. The preview header’s **⋯** opens the same menu.
+**Copy path** is also available. File browsing/previews otherwise stay unchanged.
+The insertion uses the system clipboard (replacing its previous contents), checks
+the target has not changed, focuses that terminal, and uses native text paste—not
+`hc send`. Paths containing control characters are refused. Paths are inserted
+verbatim, not shell-escaped; quote/escape as needed before running a shell command.
+No file is uploaded or copied between machines. True file drag-and-drop is not
+exposed by this Herdr version’s mod API.
 
 ### PR dashboard
 

@@ -1,0 +1,3 @@
+# Generated locally by Herdr checks; recreated for each installed version.
+mods/**/gpui-kit.d.ts
+mods/**/jsconfig.json

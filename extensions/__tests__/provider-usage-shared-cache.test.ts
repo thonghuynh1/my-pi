@@ -5,7 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { SharedUsageCache, SHARED_USAGE_TTL, type SharedObservation } from "../lib/provider-usage/shared-cache.ts";
+import { SharedUsageCache, SHARED_USAGE_TTL, usageLockAddress, type SharedObservation } from "../lib/provider-usage/shared-cache.ts";
 import { ProviderUsageMonitor } from "../lib/provider-usage/monitor.ts";
 import type { UsageScope } from "../lib/provider-usage/scope.ts";
 import type { ProviderReader } from "../lib/provider-usage/readers.ts";
@@ -52,6 +52,29 @@ function child(options: { root: string; counter: string; scope: UsageScope; now:
   });
   return { process, wait, exit, send: (command: string) => process.send(command) };
 }
+
+test("Windows cache locks use a stable, namespace-isolated named pipe, not reservable TCP ports", () => {
+  const root = "C:\\Users\\Fixture\\private-cache", key = hash("fixture-account");
+  const address = usageLockAddress(root, key, "win32");
+  assert.deepEqual(address, {
+    path: `\\\\.\\pipe\\pi-provider-usage-${hash(root + "\0" + key)}`,
+    exclusive: true,
+  });
+  assert.equal(address.port, undefined);
+  assert.equal(address.host, undefined);
+  assert(!address.path!.includes("Fixture"));
+  assert(!address.path!.includes(key));
+  assert.deepEqual(usageLockAddress(root, key, "win32"), address);
+  assert.notDeepEqual(usageLockAddress(root + "-other", key, "win32"), address);
+  assert.notDeepEqual(usageLockAddress(root, hash("other-account"), "win32"), address);
+  const posix = usageLockAddress(root, key, "linux");
+  assert.deepEqual(posix, {
+    host: "127.0.0.1",
+    port: 49152 + createHash("sha256").update(root + "\0" + key).digest().readUInt32BE(0) % 16384,
+    exclusive: true,
+  });
+  assert.equal(posix.path, undefined);
+});
 
 test("manual rapid reads share TTL, original timestamps, and one refresh at expiry", async (t) => {
   const root = directory(t), context = scope();

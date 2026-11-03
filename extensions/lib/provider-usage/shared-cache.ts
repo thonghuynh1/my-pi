@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync } from "node:fs";
-import { createServer, type Server } from "node:net";
+import { createServer, type ListenOptions, type Server } from "node:net";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -134,7 +134,16 @@ function readRecord(file: string, key: string, now: number): DiskRecord | undefi
 async function close(server: Server): Promise<void> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 }
-async function bind(port: number, signal: AbortSignal): Promise<Server | undefined> {
+// Windows reserves dynamic TCP ranges (e.g. Hyper-V/WSL), so a hashed port
+// can become permanently unbindable. Named pipes provide the same crash-released
+// OS mutex without depending on an available TCP port. Only hashes enter its name.
+export function usageLockAddress(root: string, key: string, platform = process.platform): ListenOptions {
+  const hash = createHash("sha256").update(root + "\0" + key).digest();
+  return platform === "win32"
+    ? { path: `\\\\.\\pipe\\pi-provider-usage-${hash.toString("hex")}`, exclusive: true }
+    : { host: "127.0.0.1", port: 49152 + hash.readUInt32BE(0) % 16384, exclusive: true };
+}
+async function bind(address: ListenOptions, signal: AbortSignal): Promise<Server | undefined> {
   signal.throwIfAborted();
   const server = createServer((socket) => socket.destroy());
   try {
@@ -143,7 +152,7 @@ async function bind(port: number, signal: AbortSignal): Promise<Server | undefin
       const ready = () => { server.removeListener("error", error); resolve(); };
       server.once("error", error);
       server.once("listening", ready);
-      server.listen({ host: "127.0.0.1", port, exclusive: true });
+      server.listen(address);
     });
     if (signal.aborted) { await close(server); signal.throwIfAborted(); }
     return server;
@@ -170,13 +179,13 @@ export class SharedUsageCache {
       if (!directory.isDirectory() || (process.platform !== "win32" && (directory.mode & 0o077) !== 0)) throw new Error("Private cache unavailable");
       root = realpathSync(root);
       const file = path.join(root, `${scope.key}.json`);
-      const port = 49152 + createHash("sha256").update(root + "\0" + scope.key).digest().readUInt32BE(0) % 16384;
+      const address = usageLockAddress(root, scope.key);
       let record: DiskRecord | undefined;
       for (;;) {
         signal.throwIfAborted();
         record = readRecord(file, scope.key, this.now());
         if (record && !record.inFlight && record.generation === scope.generation && record.identity === scope.identity && record.nextRefreshAt > this.now()) return publicObservation(record.observation, scope, this.now());
-        lock = await bind(port, signal);
+        lock = await bind(address, signal);
         if (lock) break;
         await delay(100, undefined, { signal });
       }

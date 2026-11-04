@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ciStatus, reviewers, reviewStatus } from '../details.js';
+import { ciStatus, prCIStatus, reviewers, reviewStatus } from '../details.js';
 const review = (login, state, submittedAt = '2026-11-03') => ({author: {login}, state, submittedAt});
 
 test('CI uses compact failed/building/passed/absent indicators', () => {
@@ -32,4 +32,25 @@ test('approved reviewers sort first; deleted reviewers and unsubmitted drafts ar
   const result = reviewers({reviews: [review('z', 'APPROVED'), review('a', 'CHANGES_REQUESTED'), review('b', 'PENDING'), {author: null, state: 'APPROVED'}]});
   assert.equal(result.length, 2); assert.equal(result[0].name, '@z');
   assert.equal(reviewers().length, 0);
+});
+
+
+test('PR card CI uses full latest-head rollup, not a sampled set of checks', () => {
+  const pr = state => ({ciCommit:{nodes:[{commit:{statusCheckRollup:{state}}}]}});
+  for (const [state, expected, color, icon] of [
+    ['SUCCESS','passed','ansi2','check'],
+    ['FAILURE','failed','blocked','ci-failed'],
+    ['ERROR','failed','blocked','ci-failed'],
+    ['PENDING','building','working','ci-pending'],
+    ['EXPECTED','building','working','ci-pending'],
+  ]) {
+    const result=prCIStatus(pr(state));
+    assert.equal(result.state,expected);
+    assert.equal(result.color,color);
+    assert.equal(result.icon,icon);
+  }
+  assert.equal(prCIStatus({ciCommit:{nodes:[{commit:{statusCheckRollup:null}}]}}).state,'none');
+  for (const row of [{},{ciCommit:null},{ciCommit:{nodes:[]}},{ciCommit:{nodes:[{commit:{}}]}},pr(null),pr('FUTURE_STATE')]) {
+    assert.equal(prCIStatus(row).state,'unknown');
+  }
 });

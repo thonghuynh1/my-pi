@@ -48,26 +48,49 @@ export function place(space, ps) {
   const tabs = new Set((space.tabs ?? []).map(tab => tab.id));
   return ps.find(p => tabs.has(p.tab) && p.cwd)?.cwd || space.folder;
 }
+// Prepare roots once, not once per worktree × space × location on every render.
+function checkoutLookup(rows) {
+  const roots = rows.filter(row => !row.bare).map(row => {
+    const path = row.path;
+    return { row, key: pathKey(path), length: path.length };
+  }).sort((a, b) => b.length - a.length);
+  const cache = new Map();
+  return path => {
+    if (cache.has(path)) return cache.get(path);
+    const key = pathKey(path);
+    const row = roots.find(root => root.key && (key === root.key || key.startsWith(root.key + "/")))?.row;
+    cache.set(path, row);
+    return row;
+  };
+}
 export function checkoutFor(path, rows) {
-  return rows.filter(row => !row.bare && inside(path, row.path))
-    .sort((a, b) => b.path.length - a.path.length)[0];
+  return checkoutLookup(rows)(path);
+}
+// A row-to-spaces map for the whole project. Row identity, deepest-checkout
+// precedence, machine boundaries and input space order are preserved.
+export function projectSpaceIndex(rows, sp, ps, machine) {
+  const lookup = checkoutLookup(rows), index = new Map();
+  for (const space of sp) {
+    if ((space.machine ?? null) !== (machine ?? null)) continue;
+    const owned = new Set(locations(space, ps).map(lookup).filter(Boolean));
+    for (const row of owned) {
+      if (!index.has(row)) index.set(row, []);
+      index.get(row).push(space);
+    }
+  }
+  return index;
 }
 export function locations(space, ps) {
   const tabs = new Set((space.tabs ?? []).map(tab => tab.id));
   return [...new Set([space.folder, ...ps.filter(p => tabs.has(p.tab)).map(p => p.cwd)].filter(Boolean))];
 }
 export function spacesFor(row, rows, sp, ps, machine) {
-  return sp.filter(s => (s.machine ?? null) === (machine ?? null) &&
-    locations(s, ps).some(path => checkoutFor(path, rows) === row));
+  return projectSpaceIndex(rows, sp, ps, machine).get(row) || [];
 }
 export function removalBlock(row, open) {
   if (!row) return "Worktree is no longer registered. Refresh the list.";
   if (row.main || row.bare) return "The main checkout cannot be removed here.";
-  if (!row.branch) return "Detached HEAD: create or check out a branch before removing it here.";
-  if (row.locked) return "This worktree is locked.";
-  if (row.prunable) return "This checkout is missing or prunable. Repair it with Git.";
   if (open) return "Close its Herdr spaces and terminals before removing it.";
-  if (row.error || !row.status) return "Could not verify the worktree status.";
-  if (row.status.dirty) return "Uncommitted changes: commit or stash them first.";
+  if (!row.prunable && !row.locked && (row.error || !row.status)) return "Could not verify the worktree status.";
   return null;
 }

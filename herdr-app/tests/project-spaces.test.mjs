@@ -47,11 +47,15 @@ test('deepest checkout owns a space, including nested cwd and machine separation
   assert.deepEqual(spacesFor(rows[0],rows,sp,ps,null).map(s=>s.id), ['main']);
 });
 
-test('deletion fails closed for main, dirty, locked, missing, open, and unknown checkouts', () => {
+test('force deletion permits dirty, locked, detached and missing but protects main, open and unknown checkouts', () => {
   const clean = {path:'/tree',branch:'topic',status:{dirty:false}};
   assert.equal(removalBlock(clean,false), null);
-  for (const row of [undefined, {...clean,main:true}, {...clean,bare:true}, {...clean,locked:true}, {...clean,branch:null}, {...clean,prunable:true}, {...clean,error:'offline'}, {path:'/tree'}, {...clean,status:{dirty:true}}]) {
+  for (const row of [undefined, {...clean,main:true}, {...clean,bare:true}, {...clean,error:'offline'}, {path:'/tree'}]) {
     assert.ok(removalBlock(row,false));
+  }
+  for (const row of [{...clean,locked:true}, {...clean,branch:null}, {path:'/missing',prunable:true}, {path:'/missing',locked:true,error:'missing directory'}, {...clean,status:{dirty:true}}]) {
+    assert.equal(removalBlock(row,false),null);
+    assert.match(removalBlock(row,true),/Close/);
   }
   assert.match(removalBlock(clean,true), /Close/);
 });
@@ -72,4 +76,20 @@ test('real Git lists unopened worktrees from common dir and reports dirty/untrac
   await writeFile(join(tree,'untracked.txt'),'keep');
   assert.equal(parseStatus(git(tree,['status','--porcelain=v2','--branch'])).dirty,true);
   assert.throws(()=>git(common,['worktree','remove','--',tree]));
+  git(repo,['worktree','lock',tree]);
+  git(common,['worktree','remove','--force','--force','--',tree]);
+  assert.equal(parseWorktrees(git(common,['worktree','list','--porcelain','-z'])).length,1);
+  assert.equal(git(repo,['branch','--list','topic']).trim(),'topic');
+  const {access} = await import('node:fs/promises');
+  await assert.rejects(access(tree));
+
+  const missing = join(root,'missing');
+  git(repo,['worktree','add','--detach',missing]);
+  git(repo,['worktree','lock',missing]);
+  await rm(missing,{recursive:true,force:true});
+  const missingRow = parseWorktrees(git(common,['worktree','list','--porcelain','-z'])).find(row=>!row.main);
+  assert.ok(missingRow.locked);
+  assert.equal(removalBlock({...missingRow,error:'missing directory'},false),null);
+  git(common,['worktree','remove','--force','--force','--',missing]);
+  assert.equal(parseWorktrees(git(common,['worktree','list','--porcelain','-z'])).length,1);
 });

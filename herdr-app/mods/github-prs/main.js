@@ -3,8 +3,8 @@ import { v_flex, h_flex, InputState, Input, TextView } from "gpui-base";
 import { URL } from "url";
 import { exec, theme, shared, setShared, focused, spaces, panes, run } from "herdr";
 import { gh, repositories, pullRequests } from "./data.js";
-import { dashboard, prKey, unseenFeedback, trackFeedback } from "./attention.js";
-import { ciStatus, reviewers } from "./details.js";
+import { dashboard, prKey, unseenFeedback, trackFeedback, dashboardHidden, toggleDashboardPR, dismissDashboardPR, feedbackTooltip, feedbackSummary } from "./attention.js";
+import { ciStatus, prCIStatus, reviewers } from "./details.js";
 import { mergeChain, mergeStatus, syncStatus, compactBranch, chainSync, chainOrigin } from "./merge.js";
 
 import { palette, statusTone, authorInitials, authorTone } from "./ui.js";
@@ -42,10 +42,11 @@ export default class GitHubPRs extends View {
   }
 
   dismissPR(pr, cx) {
-    const state = this.attentionState(), dismissed = { ...state.dismissed }, key = prKey(pr);
-    if (dismissed[key] === pr.updatedAt) delete dismissed[key];
-    else dismissed[key] = pr.updatedAt;
-    this.saveAttention({ ...state, dismissed }); cx.notify();
+    this.saveAttention(dismissDashboardPR(pr, this.attentionState())); cx.notify();
+  }
+
+  removePR(pr, cx) {
+    this.saveAttention(toggleDashboardPR(pr, this.attentionState())); cx.notify();
   }
 
   loadRepos(cx) {
@@ -313,7 +314,7 @@ export default class GitHubPRs extends View {
           .when(Boolean(d), el => el.child(h_flex().items_center().flex_wrap().gap(5)
             .child(this.badge(ci.label, statusTone(ci.color)))
             .child(this.badge(people.length ? `✓ ${people.length} approved` : "No approvals", people.length ? "green" : "secondary")))))
-        .when(Boolean(this.openedFeedback), el => el.child(this.notice(`${this.openedFeedback?.label} · @${this.openedFeedback?.who}\n${this.openedFeedback?.at ? new Date(this.openedFeedback.at).toLocaleString() : ""}`, this.openedFeedback?.tone)))
+        .when(Boolean(this.openedFeedback), el => el.child(this.notice(feedbackTooltip(this.openedFeedback), this.openedFeedback?.tone)))
         .when(this.detailLoading, el => el.child(div().text_size(12).text_color(p.secondary).child("Loading description and approvals…")))
         .when(Boolean(this.detailError), el => el.child(this.notice(this.detailError, "red")))
         .child(this.mergeView())
@@ -358,8 +359,9 @@ export default class GitHubPRs extends View {
 
   prCard(pr, inDashboard = false) {
     const p = this.colors(), login = pr.author?.login || "unknown", tone = pr.isDraft ? "orange" : "green";
-    const state = this.attentionState(), feedback = login.toLowerCase() === this.viewer.toLowerCase() ? unseenFeedback(pr, this.viewer, state.seen, state.pending) : null;
-    const dismissed = state.dismissed?.[prKey(pr)] === pr.updatedAt;
+    const state = this.attentionState(), feedback = unseenFeedback(pr, this.viewer, state.seen, state.pending);
+    const preview = feedbackTooltip(feedback), summary = feedbackSummary(feedback), ci = prCIStatus(pr), ciTone = statusTone(ci.color);
+    const dismissed = dashboardHidden(pr, state), removed = Boolean(state.unfollowed?.[prKey(pr)]);
     return h_flex().id(`pr-${pr.repository.nameWithOwner}-${pr.number}`).min_w(0).flex_none().rounded(13).border(1).border_color(p.stroke)
       .bg(p.card).shadow_sm().hover(s => s.bg(p.hover).border_color(p.blue)).on_click((_e, cx) => this.selectPR(pr, cx))
       .child(div().w(3).flex_none().my(14).rounded(3).bg(p[tone]))
@@ -368,19 +370,43 @@ export default class GitHubPRs extends View {
           .child(this.badge(`#${pr.number}`, "blue"))
           .child(this.badge(pr.isDraft ? "○ Draft" : "↗ Open", tone))
           .child(div().flex_1())
-          .when(Boolean(feedback), el => el.child(this.icon("bell", 15, p.orange).tooltip(`${feedback?.label} by @${feedback?.who} · unseen in Herdr\nBased on latest comment/review summaries, not GitHub notification read state.`)))
-          .when(inDashboard, el => el.child(div().id(`dismiss-${prKey(pr)}`).size(27).flex_none().flex().items_center().justify_center().rounded(8)
-            .bg(dismissed ? p.inset : p.greenWash).text_color(dismissed ? p.secondary : p.green).hover(s => s.bg(p.hover))
-            .tooltip(dismissed ? "Restore to dashboard" : "Dismiss this update locally · new updates will return")
-            .accessibility_label(dismissed ? "Restore PR to dashboard" : "Dismiss PR from dashboard")
+          .child(div().id(`ci-${prKey(pr)}`).size(28).flex_none().flex().items_center().justify_center().rounded(7)
+            .bg(p[`${ciTone}Wash`] || p.inset)
+            .tooltip(`${ci.label} · latest commit · checked on Refresh`).accessibility_label(ci.label)
+            .child(this.icon(ci.icon, 15, p[ciTone])))
+          .when(Boolean(feedback), el => el.child(
+            div().id(`feedback-${prKey(pr)}`).size(28).flex_none().flex().items_center().justify_center().rounded(7)
+              .bg(p.orangeWash).hover(s => s.bg(p.orangeWash)).tooltip(preview)
+              .accessibility_label(`Unseen feedback: ${preview}`)
+              .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+              .on_click((_e, cx) => { cx.stop_propagation(); })
+              .child(this.icon("bell", 15, p.orange))))
+          .child(div().id(`external-${prKey(pr)}`).size(28).flex_none().flex().items_center().justify_center().rounded(7)
+            .hover(s => s.bg(p.blueWash)).tooltip(`Open PR on GitHub\n${pr.url}`)
+            .accessibility_label(`Open PR #${pr.number} on GitHub`)
             .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-            .on_click((_e, cx) => { cx.stop_propagation(); this.dismissPR(pr, cx); }).child(dismissed ? "↶" : "✓")))
-          .child(this.icon("external", 13, p.muted)))
+            .on_click((_e, cx) => { cx.stop_propagation(); this.openPR(pr, cx); })
+            .child(this.icon("external", 14, p.blue))))
         .child(div().text_size(14).font_semibold().child(pr.title))
         .child(div().text_size(11).text_color(p.secondary).child(pr.repository.nameWithOwner))
         .when(Boolean(feedback), el => el.child(h_flex().flex_wrap().gap(5)
-          .child(this.badge(feedback?.label || "New feedback", feedback?.tone)).child(div().text_size(10).text_color(p.secondary).child(`@${feedback?.who}`))))
+          .child(this.badge(summary.label, feedback?.tone)).child(div().text_size(10).text_color(p.secondary).child(summary.people))
+          .when(Boolean(summary.comments), row => row.child(div().text_size(10).text_color(p.secondary).child(summary.comments)))))
         .when(inDashboard, el => el.child(h_flex().flex_wrap().gap(5).children((pr.assignments ?? []).map(label => this.badge(label, label.startsWith("Team") ? "purple" : "blue")))))
+        .when(inDashboard, el => el.child(h_flex().justify_end().items_center().gap(8)
+          .when(dismissed, row => row.child(this.badge(removed ? "Removed" : "Dismissed", "orange")))
+          .when(!dismissed, row => row.child(
+            div().id(`dismiss-${prKey(pr)}`).px(8).py(5).rounded(6).text_size(11).text_color(p.secondary)
+              .hover(s => s.bg(p.hover)).tooltip("Dismiss this update · the PR returns when it updates")
+              .accessibility_label("Dismiss current PR update")
+              .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+              .on_click((_e, cx) => { cx.stop_propagation(); this.dismissPR(pr, cx); }).child("Dismiss")))
+          .child(div().id(`remove-${prKey(pr)}`).px(8).py(5).rounded(6).text_size(11).text_color(p.blue)
+            .hover(s => s.bg(p.hover))
+            .tooltip(dismissed ? "Restore to dashboard" : "Stop tracking on this dashboard until restored · does not unsubscribe on GitHub")
+            .accessibility_label(dismissed ? "Restore PR to dashboard" : "Remove PR from dashboard")
+            .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+            .on_click((_e, cx) => { cx.stop_propagation(); this.removePR(pr, cx); }).child(dismissed ? "Restore" : "Remove"))))
         .child(h_flex().items_center().gap(7)
           .child(this.avatar(login, 24))
           .child(div().flex_1().min_w(0).text_size(11).text_color(p.secondary).child(`@${login}`))));
@@ -388,16 +414,16 @@ export default class GitHubPRs extends View {
 
   dashboardView(rows) {
     const p = this.colors(), state = this.attentionState();
-    const dismissed = pr => state.dismissed?.[prKey(pr)] === pr.updatedAt;
+    const dismissed = pr => dashboardHidden(pr, state);
     const active = rows.filter(pr => !dismissed(pr)), visible = this.showDismissed ? rows : active;
     return v_flex().flex_1().min_h(0).min_w(0).gap(10)
       .child(v_flex().flex_none().p(14).gap(7).rounded(14).bg(p.heroStart)
         .child(h_flex().items_center().gap(8).child(this.icon("bell", 20, p.blue)).child(div().text_size(16).font_semibold().child("Your review radar")))
         .child(div().text_size(12).text_color(p.secondary).child(this.loading ? "Finding requests for you and your teams…" : `${active.length} PR${active.length === 1 ? "" : "s"} waiting for you or your teams`))
-        .child(div().text_size(10).text_color(p.secondary).child("Explicit GitHub review requests · ✓ dismisses locally until the PR updates")))
+        .child(div().text_size(10).text_color(p.secondary).child("Hover a bell to see who approved, requested changes or commented. Dismiss hides this update; Remove stops tracking until restored.")))
       .child(h_flex().items_center().gap(6)
         .child(div().flex_1().text_size(11).text_color(p.secondary).child(this.viewer ? `Signed in as @${this.viewer}` : "GitHub review assignments"))
-        .child(this.button("toggle-dismissed", this.showDismissed ? "Hide dismissed" : "Show dismissed", (_e, cx) => { this.showDismissed = !this.showDismissed; cx.notify(); })))
+        .child(this.button("toggle-dismissed", this.showDismissed ? "Hide hidden" : "Show hidden", (_e, cx) => { this.showDismissed = !this.showDismissed; cx.notify(); })))
       .child(v_flex().id("dashboard-list").flex_1().min_h(0).min_w(0).overflow_y_scrollbar().gap(9)
         .children(visible.map(pr => this.prCard(pr, true)))
         .when(!this.loading && !visible.length, el => el.child(this.emptyState(this.error ? "Nothing to show yet" : "A clear radar", this.error ? "Some assignments could not be loaded. Check the warning above." : "No matching review requests. Refresh to check for new ones."))))
@@ -408,7 +434,7 @@ export default class GitHubPRs extends View {
     const p = this.colors();
     return v_flex().flex_1().min_h(0).min_w(0).gap(10)
       .child(this.input(this.prInput))
-      .when(this.view === "mine", el => el.child(div().text_size(10).text_color(p.secondary).child("Bell badges show feedback not yet opened in Herdr. Refresh to check for updates.")))
+      .child(div().text_size(10).text_color(p.secondary).child("Bells show unseen feedback. Hover to see who approved, requested changes or commented. Refresh to check for updates."))
       .child(h_flex().items_center().gap(5).px(2)
         .child(div().flex_1().text_size(12).font_semibold().child(this.loading ? "Finding your next review…" : `${rows.length} pull request${rows.length === 1 ? "" : "s"}`))
         .child(this.badge("Open", "green")))

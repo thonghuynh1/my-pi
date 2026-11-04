@@ -10,6 +10,19 @@ export function ciStatus(checks = []) {
   return { state: "passed", label: "✓ CI passed", color: "ansi2" };
 }
 
+// List cards use GitHub's complete rollup state for the latest head commit.
+// Missing/partial data is unknown, never a green result.
+export function prCIStatus(pr) {
+  const commit = pr.ciCommit?.nodes?.[0]?.commit;
+  const state = commit?.statusCheckRollup?.state;
+  if (commit?.statusCheckRollup === null)
+    return { state: "none", label: "No CI checks", color: "muted", icon: "ci-none" };
+  if (!["SUCCESS", "FAILURE", "ERROR", "PENDING", "EXPECTED"].includes(state))
+    return { state: "unknown", label: "CI status unavailable", color: "muted", icon: "ci-none" };
+  const status = ciStatus([{ state }]);
+  return { ...status, icon: status.state === "passed" ? "check" : status.state === "failed" ? "ci-failed" : "ci-pending" };
+}
+
 export function reviewers(detail = {}) {
   const people = new Map();
   const reviews = [...(detail.reviews ?? [])].sort((a, b) => (a.submittedAt || "").localeCompare(b.submittedAt || ""));

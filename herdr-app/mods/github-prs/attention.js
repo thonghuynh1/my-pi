@@ -1,33 +1,91 @@
-import { gh, activityFields } from "./data.js";
+import { gh, activityFields, ciFields } from "./data.js";
 
 // Bounded summaries, not full comment histories. No notification writes or
 // organization-wide PR crawl; only GitHub's explicit review assignments.
-export const prFields = `number title url updatedAt isDraft author { login } repository { nameWithOwner } ${activityFields}`;
+export const prFields = `number title url updatedAt isDraft author { login } repository { nameWithOwner } ${ciFields} ${activityFields}`;
 export const prKey = pr => `${pr.repository.nameWithOwner.toLowerCase()}#${pr.number}`;
 
-export function latestFeedback(pr, viewer) {
-  if (!viewer) return null;
+export const dashboardHidden = (pr, state = {}) =>
+  Boolean(state.unfollowed?.[prKey(pr)] || state.dismissed?.[prKey(pr)] === pr.updatedAt);
+
+export function dismissDashboardPR(pr, state = {}) {
+  return { ...state, dismissed: { ...state.dismissed, [prKey(pr)]: pr.updatedAt } };
+}
+
+export function toggleDashboardPR(pr, state = {}) {
+  const key = prKey(pr), unfollowed = { ...state.unfollowed }, dismissed = { ...state.dismissed };
+  if (dashboardHidden(pr, state)) { delete unfollowed[key]; delete dismissed[key]; }
+  else unfollowed[key] = true;
+  return { ...state, unfollowed, dismissed };
+}
+
+const isComment = event => ["New comment", "Review comment"].includes(event.label);
+const eventKey = event => event.id || `${event.label}:${event.who.toLowerCase()}:${event.at}`;
+
+function feedbackEvents(pr, viewer) {
+  if (!viewer) return [];
   const other = author => author?.login && author.login.toLowerCase() !== viewer.toLowerCase();
   const events = [];
   for (const comment of pr.comments?.nodes ?? []) if (other(comment.author) && comment.updatedAt)
-    events.push({ at: comment.updatedAt, label: "New comment", who: comment.author.login, tone: "blue" });
+    events.push({ id: comment.id, at: comment.updatedAt, label: "New comment", who: comment.author.login, tone: "blue" });
   for (const review of pr.reviews?.nodes ?? []) {
     if (other(review.author) && review.submittedAt && review.state !== "PENDING") events.push({
-      at: review.submittedAt, who: review.author.login,
+      id: review.id, at: review.submittedAt, who: review.author.login,
       label: review.state === "APPROVED" ? "Approved" : review.state === "CHANGES_REQUESTED" ? "Changes requested" : "New review",
       tone: review.state === "APPROVED" ? "green" : review.state === "CHANGES_REQUESTED" ? "orange" : "purple",
     });
     for (const comment of review.comments?.nodes ?? []) if (other(comment.author) && comment.updatedAt)
-      events.push({ at: comment.updatedAt, label: "Review comment", who: comment.author.login, tone: "blue" });
+      events.push({ id: comment.id, at: comment.updatedAt, label: "Review comment", who: comment.author.login, tone: "blue" });
   }
-  return events.sort((a, b) => b.at.localeCompare(a.at))[0] || null;
+  return events.sort((a, b) => b.at.localeCompare(a.at));
+}
+
+export function latestFeedback(pr, viewer) {
+  return feedbackEvents(pr, viewer)[0] || null;
 }
 
 export function unseenFeedback(pr, viewer, seen = {}, pending = {}) {
   if (!viewer) return null;
-  const latest = latestFeedback(pr, viewer), saved = pending[prKey(pr)];
-  const event = saved && (!latest || saved.at > latest.at) ? saved : latest;
-  return event && event.at > (seen[prKey(pr)] || "") ? event : null;
+  const loaded = feedbackEvents(pr, viewer), saved = pending[prKey(pr)], events = new Map();
+  let legacyLimited = false;
+  // Migrate old single-event pending state; never retain old comment previews.
+  for (const raw of [...(saved?.events || (saved ? [saved] : [])), ...loaded]) {
+    const { at, label, who, tone } = raw;
+    if (!who || !at || at <= (seen[prKey(pr)] || "")) continue;
+    const match = !raw.id && loaded.find(e => e.label === label && e.who.toLowerCase() === who.toLowerCase() && e.at === at);
+    // Without an old ID an edited comment cannot be distinguished from a new
+    // comment by the same person. Coalesce conservatively, never invent a second.
+    const newer = !raw.id && !match && loaded.find(e => e.label === label && e.who.toLowerCase() === who.toLowerCase() && e.at > at);
+    if (newer) legacyLimited = true;
+    const id = raw.id || match?.id || newer?.id;
+    const event = { id, at, label, who, tone }, key = eventKey(event), old = events.get(key);
+    if (!old || at >= old.at) events.set(key, event);
+  }
+  const unseen = [...events.values()].sort((a, b) => b.at.localeCompare(a.at));
+  if (!unseen.length) return null;
+  const limited = Boolean(legacyLimited || saved?.limited || unseen.length > 200 || pr.comments?.pageInfo?.hasPreviousPage
+    || pr.reviews?.pageInfo?.hasPreviousPage || pr.reviews?.nodes?.some(r => r.comments?.pageInfo?.hasPreviousPage));
+  return { ...unseen[0], events: unseen.slice(0, 200), limited };
+}
+
+export function feedbackSummary(event) {
+  if (!event) return { label: "", people: "", comments: "" };
+  const comments = (event.events || [event]).filter(isComment);
+  const names = [...new Map(comments.map(e => [e.who.toLowerCase(), e.who])).values()];
+  const people = names.slice(0, 3).map(name => `@${name}`).join(", ") + (names.length > 3 ? ` +${names.length - 3} others` : "");
+  const count = comments.length;
+  const label = count ? `${count}${event.limited ? "+" : ""} new comment${count === 1 && !event.limited ? "" : "s"}` : "";
+  return {
+    label: isComment(event) ? label : event.label,
+    people: isComment(event) ? people : `@${event.who}`,
+    comments: !isComment(event) && count ? `${people} · ${label}` : "",
+  };
+}
+
+export function feedbackTooltip(event) {
+  if (!event) return "";
+  const summary = feedbackSummary(event);
+  return [`${summary.people} · ${summary.label}`, summary.comments].filter(Boolean).join("\n");
 }
 
 // Keep observed unseen feedback even if the author replies or later summaries
@@ -35,7 +93,7 @@ export function unseenFeedback(pr, viewer, seen = {}, pending = {}) {
 export function trackFeedback(rows, viewer, state = {}) {
   const pending = { ...state.pending };
   for (const pr of rows) {
-    if (pr.author?.login?.toLowerCase() !== viewer.toLowerCase()) continue;
+    if (!viewer) continue;
     const event = unseenFeedback(pr, viewer, state.seen, pending);
     if (event) pending[prKey(pr)] = event;
   }

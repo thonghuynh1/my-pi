@@ -23,15 +23,18 @@ export async function repositories(exec) {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export const activityFields = `comments(last:5) { nodes { updatedAt author { login } } }
-  reviews(last:5) { nodes { submittedAt state author { login } comments(last:1) { nodes { updatedAt author { login } } } } }`;
+// GitHub's aggregate for the current PR head, not an arbitrary sample of jobs.
+export const ciFields = `ciCommit: commits(last:1) { nodes { commit { statusCheckRollup { state } } } }`;
+
+export const activityFields = `comments(last:5) { pageInfo { hasPreviousPage } nodes { id updatedAt author { login } } }
+  reviews(last:5) { pageInfo { hasPreviousPage } nodes { id submittedAt state author { login } comments(last:5) { pageInfo { hasPreviousPage } nodes { id updatedAt author { login } } } } }`;
 
 export function queryFor(entries) {
   return `query { viewer { login } ${entries.map((e, i) => {
     const [owner, name] = e.name.split("/");
     return `r${i}: repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)}) {
       pullRequests(first:100,states:OPEN,orderBy:{field:UPDATED_AT,direction:DESC}${e.cursor ? `,after:${JSON.stringify(e.cursor)}` : ""}) {
-        nodes { number title url updatedAt isDraft author { login } repository { nameWithOwner } ${activityFields} }
+        nodes { number title url updatedAt isDraft author { login } repository { nameWithOwner } ${ciFields} ${activityFields} }
         pageInfo { hasNextPage endCursor }
       }
     }`;

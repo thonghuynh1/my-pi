@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, access, cp, symlink } from 'no
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { install, mods, restore } from '../install.mjs';
+import { install, mods, keyMods, restore } from '../install.mjs';
 
 const bundle = dirname(dirname(fileURLToPath(import.meta.url)));
 const missing = async path => { try { await access(path); return false; } catch { return true; } };
@@ -85,4 +85,69 @@ test('invalid source fails before changing the target', async t => {
   await writeFile(join(source,'mods','github-tabs','mod.json'),'{bad json');
   await assert.rejects(install({target,source,run:()=>{}}),SyntaxError);
   assert.equal(await missing(join(target,'backups')),true);
+});
+
+test('opt-in shared keys replace and back up existing bindings with their helper mod', async t => {
+  const {target}=await fixture(t), calls=[];
+  await writeFile(join(target,'keys.json'),'old computer bindings');
+  await writeFile(join(target,'settings.json'),'personal settings');
+  await mkdir(join(target,'mods','legacy-prefix'),{recursive:true});
+  await writeFile(join(target,'mods','legacy-prefix','main.js'),'old prefix');
+  const {backup}=await install({target,withKeys:true,run:args=>calls.push(args)});
+  assert.equal(await readFile(join(target,'keys.json'),'utf8'),await readFile(join(bundle,'keys.json'),'utf8'));
+  assert.equal(await readFile(join(backup,'keys.json'),'utf8'),'old computer bindings');
+  assert.equal(await readFile(join(backup,'mods','legacy-prefix','main.js'),'utf8'),'old prefix');
+  assert.equal(await readFile(join(target,'settings.json'),'utf8'),'personal settings');
+  assert.equal(calls.filter(args=>args[0]==='check').length,mods.length+keyMods.length);
+  assert.ok(calls.some(args=>args[0]==='check'&&args[1].endsWith('legacy-prefix')));
+});
+
+test('default installs never change an existing prefix helper or create keys', async t => {
+  const {target}=await fixture(t);
+  await mkdir(join(target,'mods','legacy-prefix'),{recursive:true});
+  await writeFile(join(target,'mods','legacy-prefix','main.js'),'personal prefix');
+  await install({target,run:()=>{}});
+  assert.equal(await missing(join(target,'keys.json')),true);
+  assert.equal(await readFile(join(target,'mods','legacy-prefix','main.js'),'utf8'),'personal prefix');
+});
+
+test('failed opt-in validation rolls back old keys and helper code', async t => {
+  const {target}=await fixture(t);
+  await writeFile(join(target,'keys.json'),'original keys');
+  await mkdir(join(target,'mods','legacy-prefix'),{recursive:true});
+  await writeFile(join(target,'mods','legacy-prefix','main.js'),'original prefix');
+  await assert.rejects(install({target,withKeys:true,run:args=>{
+    if(args[0]==='check' && args[1].endsWith('legacy-prefix')) throw Error('prefix invalid');
+  }}),/previous files restored/);
+  assert.equal(await readFile(join(target,'keys.json'),'utf8'),'original keys');
+  assert.equal(await readFile(join(target,'mods','legacy-prefix','main.js'),'utf8'),'original prefix');
+});
+
+test('failed fresh opt-in install removes newly created keys and prefix helper', async t => {
+  const {target}=await fixture(t);
+  await assert.rejects(install({target,withKeys:true,run:args=>{if(args[0]==='check') throw Error('broken');}}),/previous files restored/);
+  assert.equal(await missing(join(target,'keys.json')),true);
+  assert.equal(await missing(join(target,'mods','legacy-prefix')),true);
+});
+
+test('invalid shared key JSON or section shape fails before touching the target', async t => {
+  const {target,root}=await fixture(t), source=join(root,'source');
+  await cp(bundle,source,{recursive:true});
+  for(const value of ['{broken','null','[]','{"global":[]}','{"terminal":{"ctrl-a":42}}']) {
+    await writeFile(join(source,'keys.json'),value);
+    await assert.rejects(install({target,source,withKeys:true,run:()=>{}}));
+    assert.equal(await missing(join(target,'backups')),true);
+  }
+  // An unrelated optional preset must not break the default installation.
+  await install({target,source,run:()=>{}});
+  assert.equal(await missing(join(target,'keys.json')),true);
+});
+
+test('missing prefix dependency fails preflight for opt-in keys only', async t => {
+  const {target,root}=await fixture(t), source=join(root,'source');
+  await cp(bundle,source,{recursive:true});
+  await rm(join(source,'mods','legacy-prefix'),{recursive:true});
+  await assert.rejects(install({target,source,withKeys:true,run:()=>{}}),/ENOENT/);
+  assert.equal(await missing(join(target,'backups')),true);
+  await install({target,source,run:()=>{}});
 });

@@ -1,9 +1,10 @@
-// A lazy file browser for the focused pane's folder, with bounded read-only previews.
+// A lazy file browser with a small local editor and bounded remote/large previews.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, props, openOverlay, closeOverlay, run } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, settings, window, props, openOverlay, closeOverlay, run } from "herdr";
 
 import { fullPath, captureTarget, insertPath } from "./insert.js";
+import { FileDocument, EDIT_LIMIT } from "./editor.js";
 
 function location() {
   const space = spaces().find(s => s.active), f = focused();
@@ -36,7 +37,8 @@ export default class Files extends View {
   init(_props, cx) {
     this.menu = props()?.fileMenu;
     if (this.menu) return;
-    this.saved = new Map();
+    this.saved = new Map(); this.documents = new Map();
+    this.handle = cx.focus_handle(); this.fileRequest = 0;
     this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {};
     this.refresh(cx);
     cx.timer.every(10000, cx => this.refresh(cx));
@@ -53,7 +55,7 @@ export default class Files extends View {
   }
 
   current(context) {
-    return this.context === context && key() === context.key;
+    return !this.closed && this.context === context && key() === context.key;
   }
 
   async loadFolder(path, context) {
@@ -75,17 +77,20 @@ export default class Files extends View {
       this.loading = false;
       if (saved?.file) this.show(saved.file, cx);
     }
-    if (!cwd || this.loading) return;
+    // The tree is hidden while editing. Defer directory/Git scans until Back.
+    if (!cwd || this.loading || this.file) return;
     const context = this.context;
     this.loading = true;
     this.limited = false;
     cx.spawn(async cx => {
       try {
         for (const path of ["", ...this.folders]) {
-          if (!this.current(context)) return;
+          if (!this.current(context) || this.file) return;
           await this.loadFolder(path, context);
         }
+        if (!this.current(context) || this.file) return;
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(() => null);
+        if (!this.current(context) || this.file) return;
         const marks = {};
         if (top?.code === 0) {
           // Writes nothing under .git (index lock, fsmonitor cookie): the folder watch would refresh again.
@@ -123,24 +128,113 @@ export default class Files extends View {
     cx.notify();
   }
 
+  flushDraft() {
+    if (!this.draftTask) return;
+    this.draftTask.cancel(); this.draftTask = null;
+    this.document?.persist();
+    return true;
+  }
+
+  trimEditors() {
+    const cached = [...this.documents.entries()].filter(([, doc]) => doc.code);
+    for (const [key, doc] of cached.slice(0, Math.max(0, cached.length - 8))) {
+      if (doc === this.document) continue;
+      doc.code.release(); doc.code = null;
+      if (!doc.dirty && !doc.saving) this.documents.delete(key);
+    }
+  }
+
+  async close() {
+    this.flushDraft(); this.closed = true; this.fileRequest++;
+    this.code = null; this.document = null;
+    for (const doc of this.documents?.values() ?? []) { doc.code?.release(); doc.code = null; }
+    // Herdr storage writes in the background. Await durability within its close grace period.
+    try { await localStorage.flush(); } catch (e) { console.error("Draft flush failed", e); }
+  }
+
   show(path, cx) {
-    this.code?.release(); this.code = null; this.file = path; this.fileError = null;
+    if (this.closed) return;
+    this.flushDraft();
+    this.code = null; this.document = null; this.file = path; this.fileError = null; this.discardConfirm = false;
+    const request = ++this.fileRequest;
     if (!path || !cx) return;
     const context = this.context, root = this.root, on = this.on;
     cx.spawn(async cx => {
       try {
-        const text = await readTextFile(`${root}/${path}`, { on });
-        if (this.file !== path || !this.current(context)) return;
-        if (text === null) { this.fileError = "This file is no longer available"; return; }
-        if (text.includes("\0")) { this.fileError = "Binary file · no text preview"; return; }
+        const absolute = fullPath(root, path), documentKey = JSON.stringify([on, absolute]);
+        const previous = this.documents.get(documentKey);
+        // A retained draft opens immediately; Save still checks its original disk snapshot.
+        const text = previous && (previous.dirty || previous.saving) ? previous.expected
+          : await readTextFile(`${root}/${path}`, { on }).catch(() => null);
+        if (request !== this.fileRequest || !this.current(context)) return;
         const t = theme(), ext = path.includes(".") ? path.split(".").pop() : "txt";
-        this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true,
-          value: text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text,
+        const document = previous && (previous.dirty || previous.saving || text === previous.expected) ? previous
+          : new FileDocument(absolute, text, { on, storage: localStorage, write: writeTextFile });
+        if (document.unavailable) { this.fileError = document.readonly; return; }
+        if (previous && previous !== document) previous.code?.release();
+        this.documents.delete(documentKey); this.documents.set(documentKey, document); this.document = document;
+        if (document.code) { this.code = document.code; return; }
+        this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: Boolean(document.readonly),
+          value: document.readonly && document.value.length > EDIT_LIMIT ? document.value.slice(0, EDIT_LIMIT) + "\n… (file truncated)" : document.value,
           font_family: settings().font_family, font_size: 12,
           syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
-      } catch { if (this.file === path && this.current(context)) this.fileError = "Cannot preview this file (binary, too large, or unreadable)"; }
+        const code = this.code;
+        document.code = code; this.trimEditors();
+        code.on("change", (_e, cx) => {
+          if (this.document !== document || this.code !== code) return;
+          const dirty = document.dirty, confirming = this.discardConfirm;
+          document.update(code.value(), false);
+          this.discardConfirm = false;
+          if (dirty !== document.dirty) {
+            // Paint the unsaved dot immediately, but don't redraw the entire window per key.
+            if (!this.flushDraft()) document.persist();
+            cx.notify();
+          } else if (!this.draftTask) {
+            // One bounded backup per typing burst; sustained typing still flushes every 300ms.
+            this.draftTask = cx.timer.after(300, cx => {
+              this.draftTask = null;
+              const error = document.backupError;
+              document.persist();
+              if (error !== document.backupError) cx.notify();
+            });
+          }
+          if (confirming && dirty === document.dirty) cx.notify();
+        });
+        code.on("blur", (_e, cx) => {
+          if (this.document !== document || this.code !== code) return;
+          const error = document.backupError;
+          this.flushDraft();
+          if (error !== document.backupError) cx.notify();
+        });
+      } catch { if (request === this.fileRequest && this.current(context)) this.fileError = "Cannot open this file (binary, too large, or unreadable)"; }
       finally { cx.notify(); }
     });
+  }
+
+  save(cx) {
+    this.flushDraft();
+    const document = this.document;
+    if (!document || document.readonly || document.saving || !document.dirty) return;
+    cx.spawn(async cx => {
+      await document.save();
+      if (this.document === document && !document.error) this.refresh(cx);
+      cx.notify();
+    });
+    cx.notify();
+  }
+
+  reload(cx) {
+    const doc = this.document;
+    if (!doc || doc.saving) return;
+    if (doc.dirty && !this.discardConfirm) { this.discardConfirm = true; cx.notify(); return; }
+    try {
+      localStorage.removeItem(doc.key);
+      this.draftTask?.cancel(); this.draftTask = null;
+      doc.code?.release(); doc.code = null;
+      this.documents.delete(JSON.stringify([this.on, doc.path]));
+      this.show(this.file, cx);
+    } catch { doc.error = "Cannot clear the draft backup. Copy your edits before leaving."; }
+    cx.notify();
   }
 
   rows(prefix, depth, out, t) {
@@ -190,13 +284,31 @@ export default class Files extends View {
     const t = theme();
     if (this.menu) return this.renderMenu(t);
     if (key() !== this.context?.key) this.refresh(cx);
-    return v_flex().id("files").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
-      .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
-        .when(Boolean(this.file), el => el.child(div().id("files-back").w(20).cursor_pointer().text_color(t.muted).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("←")))
-        .child(div().font_semibold().child("Files"))
-        .when(Boolean(this.file), el => el.child(div().id("preview-file-menu").px(5).rounded(4).text_color(t.muted)
-          .hover(s => s.bg(t.hover)).on_click((_e, cx) => this.fileMenu(this.file, cx)).child("⋯")))
-        .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.file ?? this.root?.split(/[\\/]/).pop() ?? "")))
+    const doc = this.document;
+    const warning = this.discardConfirm ? "Discard unsaved edits? Click ↻ again to reload."
+      : doc?.error || doc?.backupError || doc?.recoveryError || doc?.readonly;
+    return v_flex().id("files").track_focus(this.handle)
+      .on_key_down((e, cx) => {
+        if (this.file && (e.keystroke === "ctrl-s" || e.keystroke === "cmd-s")) { cx.stop_propagation(); this.save(cx); }
+      })
+      .size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
+      .child(h_flex().h(34).flex_none().px(10).gap(8).items_center().border_b(1).border_color(t.border)
+        .child(div().id("files-back").flex_none().cursor_pointer().text_color(this.file ? t.muted : t.foreground)
+          .tooltip(this.file ? "Back to files" : "Files")
+          .on_click((_e, cx) => { if (!this.file) return; this.show(null); this.refresh(cx); cx.notify(); })
+          .child(this.file ? "← Files" : "Files"))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).tooltip(this.file ?? this.root ?? "")
+          .child((this.file ?? this.root ?? "").split(/[\\/]/).pop()))
+        .when(Boolean(doc?.dirty), el => el.child(div().text_color(t.blocked).tooltip("Unsaved · Ctrl+S / Cmd+S to save").child("●")))
+        .when(Boolean(doc), el => el.child(div().id("file-reload").px(5).py(4).rounded(4).text_color(this.discardConfirm ? t.blocked : t.muted).cursor_pointer()
+          .tooltip(this.discardConfirm ? "Discard edits and reload" : "Reload from disk")
+          .hover(s => s.bg(t.hover)).on_click((_e, cx) => this.reload(cx)).child("↻")))
+        .when(Boolean(doc && !doc.readonly && (doc.dirty || doc.saving)), el => el.child(div().id("file-save").px(8).py(4).rounded(4)
+          .bg(t.surface).text_color(t.foreground).cursor_pointer().hover(s => s.bg(t.hover))
+          .tooltip("Save · Ctrl+S / Cmd+S").on_click((_e, cx) => this.save(cx)).child(doc.saving ? "Saving…" : "Save")))
+        .when(Boolean(this.file), el => el.child(div().id("preview-file-menu").px(5).py(4).rounded(4).text_color(t.muted)
+          .hover(s => s.bg(t.hover)).on_click((_e, cx) => this.fileMenu(this.file, cx)).child("⋯"))))
+      .when(Boolean(warning), el => el.child(div().id("file-warning").px(10).py(5).text_size(11).text_color(this.discardConfirm || doc?.error || doc?.backupError || doc?.recoveryError ? t.blocked : t.dim).child(warning)))
       .when(!this.file, el => el.child(v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(this.rows("", 0, [], t))
         .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
         .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))))

@@ -15,7 +15,7 @@ export const BINDINGS = [
   ["j", "Focus down", "pane.go", { direction: "down" }],
   ["k", "Focus up", "pane.go", { direction: "up" }],
   ["l", "Focus right", "pane.go", { direction: "right" }],
-  ["x", "Close pane", "pane.close"],
+  ["x", "Close pane immediately", "close-pane"],
   ["z", "Zoom pane", "pane.zoom"],
   ["b", "Toggle sidebar", "layout.toggle", { id: "sidebar" }],
   ["s", "Settings", "app.settings"],
@@ -28,12 +28,20 @@ export const BINDINGS = [
 
 export default class LegacyPrefix extends View {
   init(_props, cx) {
+    this.target = focused();
     this.handle = cx.focus_handle();
     this.handle.focus();
     this.message = "Press a key below; Shift gives uppercase. Esc cancels.";
   }
 
   finish(command, args) {
+    if (command === "close-pane") {
+      if (!this.target?.pane) return;
+      closeOverlay(props().overlay);
+      if (this.target.terminal) run("terminal.kill", { terminal: this.target.terminal });
+      else run("pane.close", { pane: this.target.pane });
+      return;
+    }
     closeOverlay(props().overlay);
     run(command, args);
   }

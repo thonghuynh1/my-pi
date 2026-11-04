@@ -29,4 +29,16 @@ test('bundled Ctrl+B prefix dispatches tab and pane shortcuts after closing itse
   calls.length=0;
   view.key({key:'v',key_char:'v',modifiers:{}},cx);
   assert.deepEqual(calls,[['close','prefix'],['run','pane.split',{direction:'right'}]]);
+  calls.length=0;
+  view.target={pane:'pane-original',terminal:'t-original'};
+  view.key({key:'x',key_char:'x',modifiers:{}},cx);
+  assert.deepEqual(calls,[['close','prefix'],['run','terminal.kill',{terminal:'t-original'}]]);
+  calls.length=0;
+  view.target={pane:'mod-pane'};
+  view.key({key:'x',key_char:'x',modifiers:{}},cx);
+  assert.deepEqual(calls,[['close','prefix'],['run','pane.close',{pane:'mod-pane'}]]);
+  calls.length=0;
+  view.target={terminal:'composition-terminal'};
+  view.key({key:'x',key_char:'x',modifiers:{}},cx);
+  assert.deepEqual(calls,[]);
 });

@@ -66,7 +66,9 @@ the installed file. Herdr applies key-file changes live.
 
 The preset includes **Ctrl+B** then a second key for the prefix menu, **Alt+1–9**
 for spaces, **Ctrl+1–9** for tabs, **Alt+H/J/K/L** for pane focus, and terminal
-copy/paste and word-editing shortcuts. These are this computer's Windows-oriented
+copy/paste and word-editing shortcuts. **Ctrl+B, then X** immediately ends the
+captured terminal (and its sub-agents) and closes its pane, without confirmation.
+These are this computer's Windows-oriented
 bindings: Ctrl+B is taken from the terminal program, AltGr can conflict with
 Ctrl+Alt, and Option combinations can affect character entry on macOS. Review
 `keys.json` before applying it on a different OS or keyboard layout.

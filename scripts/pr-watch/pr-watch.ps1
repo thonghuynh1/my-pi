@@ -140,7 +140,7 @@ function Format-Events($pr, $ev) {
   if ($ev.failing.Count) { $parts += 'CI failed: ' + (($ev.failing | Select-Object -First 3) -join ', ') + $(if ($ev.failing.Count -gt 3) { " +$($ev.failing.Count - 3) more" } else { '' }) }
   if ($ev.comments.Count) {
     $by = $ev.comments | Group-Object | ForEach-Object { "@$($_.Name)" + $(if ($_.Count -gt 1) { " x$($_.Count)" } else { '' }) }
-    $parts += "$($ev.comments.Count) new comment$(if ($ev.comments.Count -gt 1) { 's' }) from " + ($by -join ', ')
+    $parts += "+$($ev.comments.Count) comment$(if ($ev.comments.Count -gt 1) { 's' }) (" + ($by -join ', ') + ')'
   }
   $other = @($ev.reviews | Where-Object state -ne 'CHANGES_REQUESTED')
   foreach ($g in ($other | Group-Object state)) {
@@ -171,7 +171,8 @@ try {
     $lines = @(Format-Events $pr $ev)
     if ($lines.Count) {
       $repo = $pr.repository.nameWithOwner.Split('/')[1]
-      $notifications += [pscustomobject]@{ title = "$repo #$($pr.number): $($pr.title)"; body = ($lines -join "`n"); url = $pr.url }
+      $notifications += [pscustomobject]@{ title = "$repo #$($pr.number): $($pr.title)"; short = "$repo #$($pr.number)"
+        lines = $lines; comments = $ev.comments.Count; url = $pr.url }
     }
   }
   # Write state before toasting so a toast failure never repeats notifications.
@@ -179,10 +180,16 @@ try {
     ConvertTo-Json -Depth 6 | Set-Content -Path $statePath -Encoding UTF8
 
   if ($baseline) { Write-Log "baseline: $($newPrs.Count) open PRs, no notifications"; return }
-  $max = 5
-  foreach ($n in ($notifications | Select-Object -First $max)) { Show-Toast $n.title $n.body $n.url }
-  if ($notifications.Count -gt $max) {
-    Show-Toast 'pr-watch' "$($notifications.Count - $max) more PRs have new activity." "https://github.com/pulls?q=is%3Apr+is%3Aopen+author%3A%40me+org%3A$Org"
+  # One toast per scan: a single PR gets its own detail toast; several PRs get one summary toast.
+  if ($notifications.Count -eq 1) {
+    $n = $notifications[0]; Show-Toast $n.title ($n.lines -join "`n") $n.url
+  } elseif ($notifications.Count -gt 1) {
+    $total = [int](($notifications | Measure-Object comments -Sum).Sum)
+    $title = "$($notifications.Count) PRs with new activity" + $(if ($total) { " (+$total comments)" } else { '' })
+    $max = 4
+    $body = @($notifications | Select-Object -First $max | ForEach-Object { "$($_.short): $($_.lines -join " $([char]0x00B7) ")" })
+    if ($notifications.Count -gt $max) { $body += "+$($notifications.Count - $max) more PRs" }
+    Show-Toast $title ($body -join "`n") "https://github.com/pulls?q=is%3Apr+is%3Aopen+author%3A%40me+org%3A$Org"
   }
   Write-Log "ok: $($newPrs.Count) open PRs, $($notifications.Count) notified"
 } catch {

@@ -33,7 +33,7 @@ $t = $out -join "`n"
 Check 'one toast for the PR' ($out.Count -eq 1)
 Check 'changes requested' ($t -match 'Changes requested by @carol')
 Check 'CI failed' ($t -match 'CI failed: Tickets \(CI \.NET\)')
-Check 'comments incl bot, excl me and old' ($t -match '3 new comments from' -and $t -match '@Copilot x2' -and $t -match '@bob' -and $t -notmatch '@me' -and $t -notmatch '@alice')
+Check 'comments incl bot, excl me and old' ($t -match '\+3 comments \(' -and $t -match '@Copilot x2' -and $t -match '@bob' -and $t -notmatch '@me' -and $t -notmatch '@alice')
 Check 'Copilot inline review not double-counted' ($t -notmatch 'Reviewed by @Copilot')
 Check 'own approval ignored' ($t -notmatch 'Approved')
 Check 'toast links PR' ($t -match 'pull/812')
@@ -48,6 +48,13 @@ Check 'new commit still failing -> notify again' ($out.Count -eq 1 -and ($out -j
 $pr4 = New-Pr 'ccc' @((& $c 'IC1' 'alice'), (& $c 'IC2' 'bob'), (& $c 'IC3' 'me')) ($pr2.reviews.nodes + @(@{ id = 'R4'; state = 'APPROVED'; author = @{ login = 'dave' } })) @((& $c 'TC1' 'Copilot' 'R2'), (& $c 'TC2' 'Copilot' 'R2')) @($okCheck)
 $out = Run $pr4
 Check 'approval by other notifies, green CI silent' ($out.Count -eq 1 -and ($out -join '') -match 'Approved by @dave' -and ($out -join '') -notmatch 'CI failed')
+
+$pr5 = New-Pr 'ccc' @($pr4.comments.nodes + @(& $c 'IC4' 'erin')) $pr4.reviews.nodes $pr4.reviewThreads.nodes.comments.nodes @($okCheck)
+$pr6 = New-Pr 'ddd' @((& $c 'IC10' 'alice'), (& $c 'IC11' 'alice')); $pr6.number = 813; $pr6.url = $pr6.url -replace '812', '813'
+$out = Run @($pr5, $pr6)
+$t = $out -join "`n"
+Check 'several PRs -> one summary toast' ($out.Count -eq 1 -and $t -match '2 PRs with new activity \(\+3 comments\)')
+Check 'summary lists +N by whom per PR' ($t -match 'Tickets #812: \+1 comment \(@erin\)' -and $t -match 'Tickets #813: \+2 comments \(@alice x2\)')
 
 $f = Join-Path $tmp 'in.json'; '{ "errors": [ { "message": "Bad credentials" } ] }' | Set-Content $f
 & powershell -NoProfile -File $script -StateDir $tmp -InputJson $f -NoToast -Me me | Out-Null

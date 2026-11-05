@@ -10,3 +10,8 @@ node_modules/
 .audit/
 .lavish/
 .aiknow/cache/
+
+# pr-watch runtime files
+scripts/pr-watch/state.json
+scripts/pr-watch/pr-watch.log.tmp
+scripts/pr-watch/last-error-notified

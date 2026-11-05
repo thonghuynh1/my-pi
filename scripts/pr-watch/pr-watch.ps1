@@ -32,15 +32,15 @@ function Write-Log([string]$msg) {
   }
 }
 
-function Show-Toast([string]$title, [string]$body, [string]$url) {
-  if ($NoToast) { Write-Output "TOAST | $title | $body | $url"; return }
+function Show-Toast([string]$title, [string]$body, [string]$url, [string]$triage, [string]$triageLabel = 'Triage in pi', [string]$openLabel = 'Open PR') {
+  if ($NoToast) { Write-Output ("TOAST | $title | $body | $url" + $(if ($triage) { " | $triage" } else { '' })); return }
   [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
   [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
   $esc = { param($s) [Security.SecurityElement]::Escape($s) }
   $xml = @"
 <toast activationType="protocol" launch="$(& $esc $url)" scenario="reminder">
   <visual><binding template="ToastGeneric"><text>$(& $esc $title)</text><text>$(& $esc $body)</text></binding></visual>
-  <actions><action content="Open PR" activationType="protocol" arguments="$(& $esc $url)"/><action content="Dismiss" activationType="system" arguments="dismiss"/></actions>
+  <actions>$(if ($triage) { "<action content=`"$(& $esc $triageLabel)`" activationType=`"protocol`" arguments=`"$(& $esc $triage)`"/>" })<action content="$(& $esc $openLabel)" activationType="protocol" arguments="$(& $esc $url)"/><action content="Dismiss" activationType="system" arguments="dismiss"/></actions>
 </toast>
 "@
   $doc = New-Object Windows.Data.Xml.Dom.XmlDocument; $doc.LoadXml($xml)
@@ -171,7 +171,7 @@ try {
     $lines = @(Format-Events $pr $ev)
     if ($lines.Count) {
       $repo = $pr.repository.nameWithOwner.Split('/')[1]
-      $notifications += [pscustomobject]@{ title = "$repo #$($pr.number): $($pr.title)"; short = "$repo #$($pr.number)"
+      $notifications += [pscustomobject]@{ title = "$repo #$($pr.number): $($pr.title)"; short = "$repo #$($pr.number)"; ref = "$($repo):$($pr.number)"
         lines = $lines; comments = $ev.comments.Count; url = $pr.url }
     }
   }
@@ -180,16 +180,20 @@ try {
     ConvertTo-Json -Depth 6 | Set-Content -Path $statePath -Encoding UTF8
 
   if ($baseline) { Write-Log "baseline: $($newPrs.Count) open PRs, no notifications"; return }
+  # "Triage in pi" button -> prwatch:// protocol -> triage.ps1 (see install.ps1). Since = previous scan.
+  $since = if ($state.lastRun) { ([datetime]$state.lastRun).ToUniversalTime() } else { (Get-Date).ToUniversalTime().AddMinutes(-15) }
+  $triage = if ($notifications.Count) { 'prwatch://triage?prs=' + ((@($notifications | Select-Object -First 8 | ForEach-Object ref)) -join ',') +
+    '&since=' + $since.ToString('yyyy-MM-ddTHH:mm:ssZ') } else { $null }
   # One toast per scan: a single PR gets its own detail toast; several PRs get one summary toast.
   if ($notifications.Count -eq 1) {
-    $n = $notifications[0]; Show-Toast $n.title ($n.lines -join "`n") $n.url
+    $n = $notifications[0]; Show-Toast $n.title ($n.lines -join "`n") $n.url $triage
   } elseif ($notifications.Count -gt 1) {
     $total = [int](($notifications | Measure-Object comments -Sum).Sum)
     $title = "$($notifications.Count) PRs with new activity" + $(if ($total) { " (+$total comments)" } else { '' })
     $max = 4
     $body = @($notifications | Select-Object -First $max | ForEach-Object { "$($_.short): $($_.lines -join " $([char]0x00B7) ")" })
     if ($notifications.Count -gt $max) { $body += "+$($notifications.Count - $max) more PRs" }
-    Show-Toast $title ($body -join "`n") "https://github.com/pulls?q=is%3Apr+is%3Aopen+author%3A%40me+org%3A$Org"
+    Show-Toast $title ($body -join "`n") "https://github.com/pulls?q=is%3Apr+is%3Aopen+author%3A%40me+org%3A$Org" $triage 'Triage all in pi' 'Open PR list'
   }
   Write-Log "ok: $($newPrs.Count) open PRs, $($notifications.Count) notified"
 } catch {

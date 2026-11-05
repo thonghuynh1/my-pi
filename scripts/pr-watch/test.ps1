@@ -54,12 +54,25 @@ $pr6 = New-Pr 'ddd' @((& $c 'IC10' 'alice'), (& $c 'IC11' 'alice')); $pr6.number
 $out = Run @($pr5, $pr6)
 $t = $out -join "`n"
 Check 'several PRs -> one summary toast' ($out.Count -eq 1 -and $t -match '2 PRs with new activity \(\+3 comments\)')
+Check 'summary toast has Triage-all link' ($t -match '\| prwatch://triage\?prs=Tickets:812,Tickets:813&since=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
 Check 'summary lists +N by whom per PR' ($t -match 'Tickets #812: \+1 comment \(@erin\)' -and $t -match 'Tickets #813: \+2 comments \(@alice x2\)')
 
 $f = Join-Path $tmp 'in.json'; '{ "errors": [ { "message": "Bad credentials" } ] }' | Set-Content $f
 & powershell -NoProfile -File $script -StateDir $tmp -InputJson $f -NoToast -Me me | Out-Null
 Check 'error exits 1 and is logged' ($LASTEXITCODE -eq 1 -and (Get-Content "$tmp\pr-watch.log" -Raw) -match 'Bad credentials')
 Check 'state keeps ids only, no text' ((Get-Content "$tmp\state.json" -Raw) -notmatch 'Fix tickets')
+
+$triage = Join-Path $PSScriptRoot 'triage.ps1'
+$plan = & powershell -NoProfile -File $triage -Uri 'prwatch://triage?prs=Tickets:443&since=2026-11-05T09:00:00Z' -DryRun
+Check 'triage plan: pi with name and prompt file' ($LASTEXITCODE -eq 0 -and "$plan" -match '^(HERDR|WINDOW) \|' -and "$plan" -match 'pi --name "PR triage Tickets#443"' -and "$plan" -match '"@.+triage-\d{8}-\d{6}\.md"')
+$pf = (("$plan" -split ' \| ')[-1]).Trim()
+$pt = Get-Content $pf -Raw
+Check 'triage prompt filled' ($pt -match 'Tickets #443: https://github.com/Aspia-MyBusiness/Tickets/pull/443' -and $pt -match '2026-11-05T09:00:00Z' -and $pt -notmatch '\{\{')
+Remove-Item $pf
+$ErrorActionPreference = 'Continue'
+& powershell -NoProfile -File $triage -Uri 'prwatch://triage?prs=Tickets:443;calc&since=2026-11-05T09:00:00Z' -DryRun 2>&1 | Out-Null
+$ErrorActionPreference = 'Stop'
+Check 'triage rejects crafted link' ($LASTEXITCODE -ne 0)
 
 Remove-Item $tmp -Recurse -Force
 if ($fail) { "$fail FAILED"; exit 1 } else { 'ALL PASSED' }

@@ -11,4 +11,10 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopIfGoingOnB
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName 'pr-watch' -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
   -Description 'Notify-only watcher for my open PRs (comments, reviews, failed CI). ~/.pi/agent/pr-watch' -Force | Out-Null
+# prwatch:// protocol for the toast's "Triage in pi" button (current user only, no admin).
+$key = 'HKCU:\Software\Classes\prwatch'
+New-Item -Path "$key\shell\open\command" -Force | Out-Null
+Set-ItemProperty -Path $key -Name '(default)' -Value 'URL:pr-watch triage'
+Set-ItemProperty -Path $key -Name 'URL Protocol' -Value ''
+Set-ItemProperty -Path "$key\shell\open\command" -Name '(default)' -Value "wscript.exe `"$dir\run-hidden.vbs`" triage `"%1`""
 Write-Output "pr-watch scheduled every $IntervalMinutes min. First run in ~1 min (silent baseline). Log: $dir\pr-watch.log"

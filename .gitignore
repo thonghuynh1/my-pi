@@ -15,3 +15,4 @@ node_modules/
 scripts/pr-watch/state.json
 scripts/pr-watch/pr-watch.log.tmp
 scripts/pr-watch/last-error-notified
+scripts/pr-watch/runs/

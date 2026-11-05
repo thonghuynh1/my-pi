@@ -12,6 +12,7 @@ import { createManagedExtension, loadCapabilityVisibilitySettings } from "./lib/
 import { DurableJobStore, durableSessionDirectory, hasRecordedUserMessage, readJson, writeAtomicJson } from "./lib/durable-jobs.ts";
 
 import { registerBackgroundCacheWarming, commandExpectsContinuation } from "./lib/background-cache-warming.ts";
+import { BACKGROUND_START_CHANNEL, isBackgroundStartRequest, type BackgroundJobState } from "./lib/background-start.ts";
 
 export const piExtension = { id: "background-jobs" };
 const WORKER_PATH = fileURLToPath(new URL("./lib/background-job-worker.mjs", import.meta.url));
@@ -195,6 +196,63 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
   function sendControl(job: BackgroundJob, action: "kill" | "input", input?: string): void {
     writeAtomicJson(join(job.directory, "controls", `${Date.now()}-${randomUUID()}.json`), { token: job.token, action, input });
   }
+  function startJob(request: { requestId: string; command: string; cwd: string; timeoutSeconds?: number; notifyOnFinish: boolean }): BackgroundJob {
+    const id = `bg-${++counter}`;
+    const directory = join(store!.directory, id);
+    const job: BackgroundJob = {
+      id, requestId: request.requestId, directory, token: randomUUID(), command: request.command, cwd: request.cwd,
+      status: "running", startedAt: Date.now(), logFilePath: join(directory, "output.log"),
+      notifyOnFinish: request.notifyOnFinish, delivered: false,
+    };
+    // Intent precedes execution. The admission gap is never auto-replayed.
+    writeAtomicJson(join(directory, "request.json"), { ...job, timeoutSeconds: request.timeoutSeconds });
+    jobs.set(id, job);
+    try { persist(); } catch (error) { jobs.delete(id); throw error; }
+    try {
+      const diagnostics = openSync(join(directory, "supervisor.log"), "a", 0o600);
+      let worker;
+      try { worker = spawn(process.execPath, [WORKER_PATH, directory], { detached: true, stdio: ["ignore", diagnostics, diagnostics], windowsHide: true }); }
+      finally { closeSync(diagnostics); }
+      job.supervisorPid = worker.pid;
+      worker.on("error", (error) => {
+        if (!active || jobs.get(id) !== job) return;
+        job.status = "failed"; job.error = error.message; job.endedAt = Date.now();
+        dirty = true;
+        try { reconcile(); } catch (commitError) { console.error("[background-jobs] failed to commit spawn failure", commitError); }
+      });
+      worker.unref();
+      persist();
+    } catch (error) {
+      job.status = "interrupted"; job.error = String(error); job.endedAt = Date.now(); persist();
+    }
+    updateStatusWidget();
+    return job;
+  }
+  function stateOf(job: BackgroundJob): BackgroundJobState {
+    switch (job.status) {
+      case "running": return { status: "running" };
+      case "completed": case "failed": return { status: job.status, exitCode: job.exitCode ?? null };
+      case "killed": case "timed_out": case "interrupted": return { status: job.status, error: job.error };
+      default: { const _exhaustive: never = job.status; return _exhaustive; }
+    }
+  }
+
+  pi.events?.on(BACKGROUND_START_CHANNEL, (data) => {
+    if (!isBackgroundStartRequest(data) || data.handle) return;
+    try {
+      attach(data.ctx);
+      const job = startJob({ requestId: data.requestId, command: data.command, cwd: data.cwd, notifyOnFinish: false });
+      data.handle = {
+        id: job.id,
+        logFilePath: job.logFilePath,
+        poll: () => { reconcile(); return stateOf(job); },
+        notifyWhenFinished: () => { job.notifyOnFinish = true; persist(); reconcile(); },
+        kill: () => { if (job.status === "running") sendControl(job, "kill"); },
+      };
+    } catch (error) {
+      data.error = error instanceof Error ? error.message : String(error);
+    }
+  });
 
   pi.on("session_start", async (_event, ctx) => attach(ctx));
   pi.on("session_shutdown", async () => {
@@ -247,35 +305,8 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
         if (existing.command !== params.command || existing.cwd !== (params.cwd ?? ctx.cwd)) throw new Error("Job request ID reused with different command/cwd.");
         return { content: [{ type: "text", text: `Existing background job: ${existing.id} [${existing.status}]. Log: ${existing.logFilePath}` }], details: { jobId: existing.id, status: existing.status, logFilePath: existing.logFilePath } };
       }
-      const id = `bg-${++counter}`;
-      const directory = join(store!.directory, id);
-      const job: BackgroundJob = {
-        id, requestId: _toolCallId, directory, token: randomUUID(), command: params.command, cwd: params.cwd ?? ctx.cwd,
-        status: "running", startedAt: Date.now(), logFilePath: join(directory, "output.log"),
-        notifyOnFinish: params.notifyOnFinish ?? true, delivered: false,
-      };
-      // Intent precedes execution. The admission gap is never auto-replayed.
-      writeAtomicJson(join(directory, "request.json"), { ...job, timeoutSeconds: params.timeoutSeconds });
-      jobs.set(id, job);
-      try { persist(); } catch (error) { jobs.delete(id); throw error; }
-      try {
-        const diagnostics = openSync(join(directory, "supervisor.log"), "a", 0o600);
-        let worker;
-        try { worker = spawn(process.execPath, [WORKER_PATH, directory], { detached: true, stdio: ["ignore", diagnostics, diagnostics], windowsHide: true }); }
-        finally { closeSync(diagnostics); }
-        job.supervisorPid = worker.pid;
-        worker.on("error", (error) => {
-          if (!active || jobs.get(id) !== job) return;
-          job.status = "failed"; job.error = error.message; job.endedAt = Date.now();
-          dirty = true;
-          try { reconcile(); } catch (commitError) { console.error("[background-jobs] failed to commit spawn failure", commitError); }
-        });
-        worker.unref();
-        persist();
-      } catch (error) {
-        job.status = "interrupted"; job.error = String(error); job.endedAt = Date.now(); persist();
-      }
-      updateStatusWidget();
+      const job = startJob({ requestId: _toolCallId, command: params.command, cwd: params.cwd ?? ctx.cwd, timeoutSeconds: params.timeoutSeconds, notifyOnFinish: params.notifyOnFinish ?? true });
+      const id = job.id;
       return {
         content: [{ type: "text", text: [
           `Background job started: ${id}`, `Shell: ${resolveShell().label}`, `Command: \`${job.command}\``,

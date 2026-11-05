@@ -32,29 +32,51 @@ test('approval and changes-requested events preserve kind and actor', () => {
   }
 });
 
-test('dashboard deduplicates direct/team requests and preserves assignment labels', async () => {
+test('dashboard deduplicates authored/direct/team PRs and preserves discovery labels', async () => {
   const calls = [];
   const exec = async (_cmd,args) => {
     calls.push(args);
     if(args[1].startsWith('user/teams')) return ok([{organization:{login:'org'},slug:'devs'}]);
+    assert.match(args[3],/author:@me/);
     assert.match(args[3],/review-requested:@me/);
     assert.match(args[3],/team-review-requested:org\/devs/);
-    return ok({data:{viewer:{login:'me'},s0:{nodes:[pr()],pageInfo:{hasNextPage:false}},s1:{nodes:[pr()],pageInfo:{hasNextPage:false}}}});
+    return ok({data:{viewer:{login:'me'},s0:{nodes:[pr()],pageInfo:{hasNextPage:false}},s1:{nodes:[pr()],pageInfo:{hasNextPage:false}},s2:{nodes:[pr()],pageInfo:{hasNextPage:false}}}});
   };
   const result = await dashboard(exec);
   assert.equal(result.rows.length,1);
-  assert.deepEqual(result.rows[0].assignments,['Your review requested','Team · org/devs']);
+  assert.deepEqual(result.rows[0].assignments,['Your PR','Your review requested','Team · org/devs']);
   assert.equal(result.warning,''); assert.equal(calls.length,2);
   assert.ok(calls.every(args => !args.includes('-X') && !args.includes('PATCH')));
 });
 
-test('team permission failure keeps direct requests and reports partial coverage', async () => {
+test('team permission failure keeps authored and direct PRs and reports partial coverage', async () => {
   const result = await dashboard(async (_cmd,args) => args[1].startsWith('user/teams')
     ? {code:1,stdout:'',stderr:'HTTP 403'}
-    : ok({data:{viewer:{login:'me'},s0:{nodes:[pr()],pageInfo:{hasNextPage:true}}}}));
-  assert.equal(result.rows.length,1);
+    : ok({data:{viewer:{login:'me'},s0:{nodes:[pr()],pageInfo:{hasNextPage:true}},s1:{nodes:[pr(2)],pageInfo:{hasNextPage:false}}}}));
+  assert.equal(result.rows.length,2);
   assert.match(result.warning,/Team assignments unavailable/);
   assert.match(result.warning,/25 most recently/);
+});
+
+test('authored PR returns after dismissal when external feedback arrives without a review request', async () => {
+  const old = {...pr(442), updatedAt:'2026-11-03T08:26:39Z'};
+  const updated = {...old, updatedAt:'2026-11-05T06:48:05Z', reviews:{nodes:[
+    {id:'approval', state:'APPROVED', submittedAt:'2026-11-05T06:48:05Z', author:{login:'reviewer'}}
+  ]}};
+  const state = dismissDashboardPR(old, {seen:{[prKey(old)]:'2026-11-02T09:53:33Z'}});
+  const result = await dashboard(async (_cmd,args) => {
+    if (args[1].startsWith('user/teams')) return ok([]);
+    assert.match(args[3], /is:pr is:open author:@me sort:updated-desc/);
+    return ok({data:{viewer:{login:'me'},
+      s0:{nodes:[updated],pageInfo:{hasNextPage:false}},
+      s1:{nodes:[],pageInfo:{hasNextPage:false}}}});
+  });
+  assert.equal(result.rows.length,1);
+  assert.deepEqual(result.rows[0].assignments,['Your PR']);
+  assert.equal(dashboardHidden(result.rows[0],state),false);
+  const next = trackFeedback(result.rows,result.viewer,state);
+  assert.equal(feedbackTooltip(unseenFeedback(result.rows[0],result.viewer,next.seen,next.pending)), '@reviewer · Approved');
+  assert.equal(dashboardHidden(result.rows[0],toggleDashboardPR(updated,state)),true);
 });
 
 test('cancellation discards dashboard results', async () => {
@@ -63,7 +85,7 @@ test('cancellation discards dashboard results', async () => {
   assert.equal(result,null);
 });
 
-test('bounded team discovery reports cap and searches at most 20 teams plus viewer', async () => {
+test('bounded team discovery reports cap and searches at most 20 teams plus authored and direct searches', async () => {
   let searches = 0;
   const result = await dashboard(async (_cmd,args) => {
     if(args[1].startsWith('user/teams')) return ok(Array.from({length:21},(_,i)=>({organization:{login:'org'},slug:`team${i}`})));
@@ -72,7 +94,7 @@ test('bounded team discovery reports cap and searches at most 20 teams plus view
     for(const [,i] of aliases) data[`s${i}`]={nodes:[],pageInfo:{hasNextPage:false}};
     return ok({data});
   });
-  assert.equal(searches,21); assert.match(result.warning,/first 20 teams/);
+  assert.equal(searches,22); assert.match(result.warning,/first 20 teams/);
 });
 
 test('My PR summaries retain viewer and only authored PRs', async () => {

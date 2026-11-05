@@ -11,11 +11,11 @@ import type { ManagedExtensionPiApi } from "../lib/capability-visibility.ts";
 interface FakePi extends ManagedExtensionPiApi {
 	tools: Map<string, unknown>;
 	execCalls: Array<{ shell: string; args: string[]; cwd: string; timeout?: number }>;
-	exec(shell: string, args: string[], options: { cwd: string; timeout?: number }): Promise<{ code: number; stdout: string; stderr: string }>;
+	exec(shell: string, args: string[], options: { cwd: string; timeout?: number }): Promise<{ code: number; stdout: string; stderr: string; killed?: boolean }>;
 	emit(event: string): void;
 }
 
-function createFakePi(execResult: { code: number; stdout: string; stderr: string }): FakePi {
+function createFakePi(execResult: { code: number; stdout: string; stderr: string; killed?: boolean }): FakePi {
 	const tools = new Map<string, unknown>();
 	let activeTools: string[] = [];
 	const handlers = new Map<string, Array<(...args: unknown[]) => void>>();
@@ -57,7 +57,7 @@ function getRunTestsTool(pi: FakePi) {
 			params: { command?: string; lines?: number; cwd?: string },
 			signal: AbortSignal | undefined,
 			onUpdate: (update: unknown) => void,
-		) => Promise<{ content: Array<{ type: string; text: string }> }>;
+		) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
 	};
 	assert.ok(tool, "run_tests tool should be registered");
 	return tool;
@@ -90,6 +90,21 @@ test("run_tests applies a 15 minute execution timeout", async () => {
 	await tool.execute("call-timeout", { command: "npm test" }, undefined, () => {});
 
 	assert.equal(pi.execCalls[0]?.timeout, 15 * 60 * 1000);
+});
+
+test("run_tests reports a timed-out run as unknown, never as passed", async () => {
+	const pi = createFakePi({ code: 0, stdout: "Passed!  - Failed: 0, Passed: 120", stderr: "", killed: true });
+	runTestsExtension(pi as any);
+	const tool = getRunTestsTool(pi);
+
+	const result = await tool.execute("call-killed", { command: "dotnet test" }, undefined, () => {});
+	const text = result.content[0]?.text ?? "";
+
+	assert.equal(text.includes("✅"), false);
+	assert.match(text, /timed out after 900s/i);
+	assert.match(text, /not a pass/i);
+	assert.match(text, /bg_run/);
+	assert.equal(result.isError, true);
 });
 
 test("run_tests lists nested test projects when the current directory has no test framework", async () => {

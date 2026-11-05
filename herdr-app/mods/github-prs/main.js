@@ -388,7 +388,7 @@ export default class GitHubPRs extends View {
             .on_click((_e, cx) => { cx.stop_propagation(); this.openPR(pr, cx); })
             .child(this.icon("external", 14, p.blue))))
         .child(div().text_size(14).font_semibold().child(pr.title))
-        .child(div().text_size(11).text_color(p.secondary).child(pr.repository.nameWithOwner))
+        .child(div().text_size(11).text_color(p.secondary).child(`${pr.repository.nameWithOwner} - #${pr.number}`))
         .when(Boolean(feedback), el => el.child(h_flex().flex_wrap().gap(5)
           .child(this.badge(summary.label, feedback?.tone)).child(div().text_size(10).text_color(p.secondary).child(summary.people))
           .when(Boolean(summary.comments), row => row.child(div().text_size(10).text_color(p.secondary).child(summary.comments)))))
@@ -419,14 +419,14 @@ export default class GitHubPRs extends View {
     return v_flex().flex_1().min_h(0).min_w(0).gap(10)
       .child(v_flex().flex_none().p(14).gap(7).rounded(14).bg(p.heroStart)
         .child(h_flex().items_center().gap(8).child(this.icon("bell", 20, p.blue)).child(div().text_size(16).font_semibold().child("Your review radar")))
-        .child(div().text_size(12).text_color(p.secondary).child(this.loading ? "Finding requests for you and your teams…" : `${active.length} PR${active.length === 1 ? "" : "s"} waiting for you or your teams`))
+        .child(div().text_size(12).text_color(p.secondary).child(this.loading ? "Finding your PRs and review requests…" : `${active.length} PR${active.length === 1 ? "" : "s"} · your PRs and requests for you or your teams`))
         .child(div().text_size(10).text_color(p.secondary).child("Hover a bell to see who approved, requested changes or commented. Dismiss hides this update; Remove stops tracking until restored.")))
       .child(h_flex().items_center().gap(6)
-        .child(div().flex_1().text_size(11).text_color(p.secondary).child(this.viewer ? `Signed in as @${this.viewer}` : "GitHub review assignments"))
+        .child(div().flex_1().text_size(11).text_color(p.secondary).child(this.viewer ? `Signed in as @${this.viewer}` : "Your PRs & GitHub review assignments"))
         .child(this.button("toggle-dismissed", this.showDismissed ? "Hide hidden" : "Show hidden", (_e, cx) => { this.showDismissed = !this.showDismissed; cx.notify(); })))
       .child(v_flex().id("dashboard-list").flex_1().min_h(0).min_w(0).overflow_y_scrollbar().gap(9)
         .children(visible.map(pr => this.prCard(pr, true)))
-        .when(!this.loading && !visible.length, el => el.child(this.emptyState(this.error ? "Nothing to show yet" : "A clear radar", this.error ? "Some assignments could not be loaded. Check the warning above." : "No matching review requests. Refresh to check for new ones."))))
+        .when(!this.loading && !visible.length, el => el.child(this.emptyState(this.error ? "Nothing to show yet" : "A clear radar", this.error ? "Some assignments could not be loaded. Check the warning above." : "No matching open PRs or review requests. Refresh to check for new ones."))))
       .when(Boolean(this.updated) && !this.loading, el => el.child(div().text_size(10).text_color(p.secondary).child(`Checked ${this.updated} · manual refresh`)));
   }
 

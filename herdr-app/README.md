@@ -166,9 +166,12 @@ exposed by this Herdr version’s mod API.
 
 ### PR dashboard
 
-Dashboard shows explicit review requests for you and up to 20 GitHub teams, without
-repository or text filters. It searches the 25 most recently updated requests per
-assignment; permission/search/coverage limits are shown, not silently hidden.
+Dashboard shows your own open PRs plus explicit review requests for you and up to
+20 GitHub teams, without repository or text filters. It searches the 25 most
+recently updated PRs per discovery search (authored PRs, direct requests, or each
+team); permission/search/coverage limits are shown, not silently hidden. Your PRs
+stay discoverable after reviewers respond, so later comments and approvals can
+surface on Refresh even without a pending review request for you.
 Refresh is manual. **Dismiss** hides only the current update; the PR returns
 when it updates. **Remove** stops following a PR on this dashboard locally;
 it stays hidden even after new updates. **Show hidden** exposes both dismissed

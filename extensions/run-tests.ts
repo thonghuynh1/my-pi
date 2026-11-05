@@ -1,6 +1,6 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { readFileSync, existsSync, appendFileSync, mkdirSync, readdirSync } from "fs";
+import { readFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, openSync, readSync, fstatSync, closeSync } from "fs";
 import type { Dirent } from "fs";
 import { join, basename } from "path";
 import { homedir } from "os";
@@ -9,6 +9,7 @@ import {
 	loadCapabilityVisibilitySettings,
 	type CapabilityVisibilitySettings,
 } from "./lib/capability-visibility.ts";
+import { BACKGROUND_START_CHANNEL, type BackgroundJobHandle, type BackgroundStartRequest } from "./lib/background-start.ts";
 
 export const piExtension = { id: "run-tests" };
 
@@ -30,7 +31,7 @@ interface TestLogEntry {
 	ts: string;
 	project: string;
 	command: string;
-	result: "pass" | "fail" | "error" | "no-framework";
+	result: "pass" | "fail" | "error" | "timeout" | "background" | "no-framework";
 	durationMs?: number;
 	summary?: string;
 	exitCode?: number;
@@ -40,6 +41,9 @@ interface TestLogEntry {
 const LOG_DIR = join(homedir(), ".pi", "agent", "logs");
 const LOG_FILE = join(LOG_DIR, "run-tests.jsonl");
 const DEFAULT_TEST_TIMEOUT_MS = 15 * 60 * 1000;
+const BACKGROUND_WAIT_MS = Number(process.env.PI_RUN_TESTS_WAIT_MS) || DEFAULT_TEST_TIMEOUT_MS;
+const BACKGROUND_POLL_MS = 500;
+const LOG_READ_MAX_BYTES = 4 * 1024 * 1024;
 
 function writeLog(entry: TestLogEntry): void {
 	try {
@@ -308,10 +312,11 @@ export default function runTestsExtension(pi: ExtensionAPI) {
 		],
 		parameters: RunTestsParams,
 		async execute(
-			_toolCallId: string,
+			toolCallId: string,
 			params: RunTestsInput,
 			signal: AbortSignal | undefined,
 			onUpdate: any,
+			ctx?: ExtensionContext,
 		) {
 			const cwd = params.cwd ?? process.cwd();
 			const tailLines = params.lines ?? 40;
@@ -330,6 +335,11 @@ export default function runTestsExtension(pi: ExtensionAPI) {
 					],
 					details: undefined,
 				};
+			}
+
+			const background = ctx ? startInBackground(pi, { command, cwd, requestId: toolCallId, ctx }) : undefined;
+			if (background) {
+				return await waitForBackgroundRun({ handle: background, command, project, cwd, tailLines, signal, onUpdate });
 			}
 
 			const isWindows = process.platform === "win32";
@@ -353,61 +363,22 @@ export default function runTestsExtension(pi: ExtensionAPI) {
 				const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 				const fullOutput = stripAnsi([result.stdout, result.stderr].filter(Boolean).join("\n"));
 
-				if (result.code === 0) {
-					const lines = fullOutput.trim().split("\n");
-					const summary = extractPassSummary(lines) ?? `All tests passed`;
-					writeLog({ ts: new Date().toISOString(), project, command, result: "pass", durationMs: Date.now() - startTime, summary });
-					return {
-						content: [{ type: "text" as const, text: `✅ ${summary} (${elapsed}s)` }],
-						details: undefined,
-					};
-				}
-
-				const outputLines = fullOutput.trim().split("\n");
-				if (outputLines.length === 0 || (outputLines.length === 1 && outputLines[0] === "")) {
-					writeLog({ ts: new Date().toISOString(), project, command, result: "error", durationMs: Date.now() - startTime, exitCode: result.code, errorMessage: "no output produced" });
+				if (result.killed) {
+					const reason = signal?.aborted ? "was aborted" : `timed out after ${DEFAULT_TEST_TIMEOUT_MS / 1000}s`;
+					writeLog({ ts: new Date().toISOString(), project, command, result: "timeout", durationMs: Date.now() - startTime, exitCode: result.code, errorMessage: reason });
 					return {
 						content: [
 							{
 								type: "text" as const,
-								text: `⚠️ Test command failed (exit ${result.code}) but produced no output. Likely a compilation or infrastructure error.\nFall back to bash for full diagnostics:\n\`\`\`\n${command}\n\`\`\``,
+								text: `⏱️ Test run ${reason} (${elapsed}s). Result unknown: this is not a pass.\nOnly the shell was stopped; the test process may still be running and writing results. Wait for it or stop it before running the same suite again.\nFor suites longer than ${DEFAULT_TEST_TIMEOUT_MS / 60000} minutes, run the command with bg_run:\n\`\`\`\n${command}\n\`\`\`\nLast output:\n${fullOutput.trim().split("\n").slice(-tailLines).join("\n")}`,
 							},
 						],
 						details: undefined,
+						isError: true,
 					};
 				}
 
-				const binaryNotFound = detectBinaryNotFound(fullOutput, command);
-				if (binaryNotFound) {
-					writeLog({ ts: new Date().toISOString(), project, command, result: "error", durationMs: Date.now() - startTime, exitCode: result.code, errorMessage: binaryNotFound.binary });
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: binaryNotFound.message,
-							},
-						],
-						details: undefined,
-					};
-				}
-
-				const failureOutput = formatFailureOutput(command, fullOutput, tailLines);
-				const nestedProjects = isMissingPackageJsonError(fullOutput, command)
-					? findNestedTestProjects(cwd)
-					: [];
-				const nestedGuidance = nestedProjects.length > 0
-					? `\n\n${formatNestedProjectGuidance(cwd, nestedProjects)}`
-					: "";
-				writeLog({ ts: new Date().toISOString(), project, command, result: "fail", durationMs: Date.now() - startTime, exitCode: result.code, summary: outputLines.slice(-3).join(" | ") });
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `❌ Tests failed (exit ${result.code}, ${elapsed}s):\n\n${failureOutput}${nestedGuidance}`,
-						},
-					],
-					details: undefined,
-				};
+				return formatOutcome({ command, project, cwd, fullOutput, code: result.code, startTime, tailLines });
 			} catch (err: any) {
 				clearInterval(updateInterval);
 				const message = err?.message ?? String(err);
@@ -425,6 +396,163 @@ export default function runTestsExtension(pi: ExtensionAPI) {
 			}
 		},
 	});
+}
+
+function startInBackground(
+	pi: ExtensionAPI,
+	request: Pick<BackgroundStartRequest, "command" | "cwd" | "requestId" | "ctx">,
+): BackgroundJobHandle | undefined {
+	const message: BackgroundStartRequest = { ...request };
+	pi.events?.emit(BACKGROUND_START_CHANNEL, message);
+	return message.handle;
+}
+
+function readLogTail(path: string): string {
+	if (!existsSync(path)) return "";
+	const fd = openSync(path, "r");
+	try {
+		const size = fstatSync(fd).size;
+		const bytes = Buffer.alloc(Math.min(size, LOG_READ_MAX_BYTES));
+		const read = readSync(fd, bytes, 0, bytes.length, size - bytes.length);
+		return bytes.subarray(0, read).toString("utf8");
+	} finally {
+		closeSync(fd);
+	}
+}
+
+interface BackgroundWaitInput {
+	handle: BackgroundJobHandle;
+	command: string;
+	project: string;
+	cwd: string;
+	tailLines: number;
+	signal: AbortSignal | undefined;
+	onUpdate: ((update: unknown) => void) | undefined;
+}
+
+async function waitForBackgroundRun({ handle, command, project, cwd, tailLines, signal, onUpdate }: BackgroundWaitInput) {
+	const startTime = Date.now();
+	let lastUpdate = startTime;
+	let state = handle.poll();
+	while (state.status === "running") {
+		if (signal?.aborted) {
+			handle.kill();
+			writeLog({ ts: new Date().toISOString(), project, command, result: "error", durationMs: Date.now() - startTime, errorMessage: `aborted; ${handle.id} killed` });
+			return {
+				content: [{ type: "text" as const, text: `⚠️ Test run aborted; background job ${handle.id} was stopped. No result: this is not a pass.` }],
+				details: { jobId: handle.id, logFilePath: handle.logFilePath },
+				isError: true,
+			};
+		}
+		if (Date.now() - startTime >= BACKGROUND_WAIT_MS) {
+			handle.notifyWhenFinished();
+			const seconds = Math.round((Date.now() - startTime) / 1000);
+			writeLog({ ts: new Date().toISOString(), project, command, result: "background", durationMs: Date.now() - startTime, summary: handle.id });
+			return {
+				content: [{
+					type: "text" as const,
+					text: `⏳ Tests are still running as background job ${handle.id} after ${seconds}s. No result yet: this is not a pass.\nYou will be notified when it finishes. End your turn and do not start the same suite again.\nLog: ${handle.logFilePath}`,
+				}],
+				details: { jobId: handle.id, logFilePath: handle.logFilePath },
+			};
+		}
+		await new Promise((resolve) => setTimeout(resolve, BACKGROUND_POLL_MS));
+		if (Date.now() - lastUpdate >= 10_000) {
+			lastUpdate = Date.now();
+			onUpdate?.({ content: [{ type: "text" as const, text: `⏳ Running tests as ${handle.id}... (${Math.round((lastUpdate - startTime) / 1000)}s)` }] });
+		}
+		state = handle.poll();
+	}
+
+	const ended = state;
+	const fullOutput = stripAnsi(readLogTail(handle.logFilePath));
+	if (ended.status === "completed" || ended.status === "failed") {
+		return formatOutcome({ command, project, cwd, fullOutput, code: ended.exitCode ?? 1, startTime, tailLines });
+	}
+	writeLog({ ts: new Date().toISOString(), project, command, result: "error", durationMs: Date.now() - startTime, errorMessage: `${handle.id} ${ended.status}` });
+	return {
+		content: [{
+			type: "text" as const,
+			text: [
+				`⚠️ Test job ${handle.id} ended as ${ended.status}. Result unknown: this is not a pass.`,
+				...("error" in ended && ended.error ? [ended.error] : []),
+				`Log: ${handle.logFilePath}`,
+				"Last output:",
+				fullOutput.trim().split("\n").slice(-tailLines).join("\n"),
+			].join("\n"),
+		}],
+		details: { jobId: handle.id, logFilePath: handle.logFilePath },
+		isError: true,
+	};
+}
+
+interface OutcomeInput {
+	command: string;
+	project: string;
+	cwd: string;
+	fullOutput: string;
+	code: number;
+	startTime: number;
+	tailLines: number;
+}
+
+function formatOutcome({ command, project, cwd, fullOutput, code, startTime, tailLines }: OutcomeInput) {
+	const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+	if (code === 0) {
+		const lines = fullOutput.trim().split("\n");
+		const summary = extractPassSummary(lines) ?? `All tests passed`;
+		writeLog({ ts: new Date().toISOString(), project, command, result: "pass", durationMs: Date.now() - startTime, summary });
+		return {
+			content: [{ type: "text" as const, text: `✅ ${summary} (${elapsed}s)` }],
+			details: undefined,
+		};
+	}
+
+	const outputLines = fullOutput.trim().split("\n");
+	if (outputLines.length === 0 || (outputLines.length === 1 && outputLines[0] === "")) {
+		writeLog({ ts: new Date().toISOString(), project, command, result: "error", durationMs: Date.now() - startTime, exitCode: code, errorMessage: "no output produced" });
+		return {
+			content: [
+				{
+					type: "text" as const,
+					text: `⚠️ Test command failed (exit ${code}) but produced no output. Likely a compilation or infrastructure error.\nFall back to bash for full diagnostics:\n\`\`\`\n${command}\n\`\`\``,
+				},
+			],
+			details: undefined,
+		};
+	}
+
+	const binaryNotFound = detectBinaryNotFound(fullOutput, command);
+	if (binaryNotFound) {
+		writeLog({ ts: new Date().toISOString(), project, command, result: "error", durationMs: Date.now() - startTime, exitCode: code, errorMessage: binaryNotFound.binary });
+		return {
+			content: [
+				{
+					type: "text" as const,
+					text: binaryNotFound.message,
+				},
+			],
+			details: undefined,
+		};
+	}
+
+	const failureOutput = formatFailureOutput(command, fullOutput, tailLines);
+	const nestedProjects = isMissingPackageJsonError(fullOutput, command)
+		? findNestedTestProjects(cwd)
+		: [];
+	const nestedGuidance = nestedProjects.length > 0
+		? `\n\n${formatNestedProjectGuidance(cwd, nestedProjects)}`
+		: "";
+	writeLog({ ts: new Date().toISOString(), project, command, result: "fail", durationMs: Date.now() - startTime, exitCode: code, summary: outputLines.slice(-3).join(" | ") });
+	return {
+		content: [
+			{
+				type: "text" as const,
+				text: `❌ Tests failed (exit ${code}, ${elapsed}s):\n\n${failureOutput}${nestedGuidance}`,
+			},
+		],
+		details: undefined,
+	};
 }
 
 interface BinaryNotFoundResult {

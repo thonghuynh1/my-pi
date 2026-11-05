@@ -1,7 +1,7 @@
 import { gh, activityFields, ciFields } from "./data.js";
 
 // Bounded summaries, not full comment histories. No notification writes or
-// organization-wide PR crawl; only GitHub's explicit review assignments.
+// organization-wide PR crawl; only authored PRs and explicit review assignments.
 export const prFields = `number title url updatedAt isDraft author { login } repository { nameWithOwner } ${ciFields} ${activityFields}`;
 export const prKey = pr => `${pr.repository.nameWithOwner.toLowerCase()}#${pr.number}`;
 
@@ -111,7 +111,8 @@ export async function dashboard(exec, current = () => true) {
     if (result.length > 20) warnings.push("Showing assignments for the first 20 teams only.");
   } catch (e) { warnings.push(`Team assignments unavailable (check GitHub read:org access): ${e.message || e}`); }
   if (!current()) return null;
-  const searches = [{ query: "is:pr is:open review-requested:@me", label: "Your review requested" },
+  const searches = [{ query: "is:pr is:open author:@me", label: "Your PR" },
+    { query: "is:pr is:open review-requested:@me", label: "Your review requested" },
     ...teams.map(team => ({ query: `is:pr is:open team-review-requested:${team}`, label: `Team · ${team}` }))];
   const rows = new Map(); let viewer = "", limited = false;
   for (let start = 0; start < searches.length && current(); start += 6) {
@@ -139,6 +140,6 @@ export async function dashboard(exec, current = () => true) {
   }
   if (!current()) return null;
   if (!viewer) throw new Error(warnings.join("; ") || "Dashboard unavailable");
-  if (limited) warnings.push("Showing the 25 most recently updated PRs per review assignment. More may exist on GitHub.");
+  if (limited) warnings.push("Showing the 25 most recently updated PRs per discovery search (your PRs or review assignments). More may exist on GitHub.");
   return { viewer, rows: [...rows.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), warning: [...new Set(warnings)].join("\n") };
 }

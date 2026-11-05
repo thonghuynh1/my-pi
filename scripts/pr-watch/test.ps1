@@ -64,8 +64,14 @@ Check 'state keeps ids only, no text' ((Get-Content "$tmp\state.json" -Raw) -not
 
 $triage = Join-Path $PSScriptRoot 'triage.ps1'
 $plan = & powershell -NoProfile -File $triage -Uri 'prwatch://triage?prs=Tickets:443&since=2026-11-05T09:00:00Z' -DryRun
-Check 'triage plan: pi with name and prompt file' ($LASTEXITCODE -eq 0 -and "$plan" -match '^(HERDR|WINDOW) \|' -and "$plan" -match 'pi --name "PR triage Tickets#443"' -and "$plan" -match '"@.+triage-\d{8}-\d{6}\.md"')
-$pf = (("$plan" -split ' \| ')[-1]).Trim()
+$pf = (("$plan" -split ' \| ')[-1]).Trim(); $lf = [IO.Path]::ChangeExtension($pf, '.ps1')
+Check 'triage plan: quote-free command runs launcher' ($LASTEXITCODE -eq 0 -and "$plan" -match '^(HERDR|WINDOW) \|' -and "$plan" -match "-File \S+triage-\d{8}-\d{6}\.ps1 \|" -and ("$plan" -split ' \| ')[2] -notmatch '["'']')
+$lt = Get-Content $lf -Raw
+Check 'launcher: one pi call, args quoted' ($lt -match "pi --name 'PR triage Tickets#443' '@.+\.md' 'Follow the attached pr-watch triage instructions\.'")
+$tok = $null; [void][Management.Automation.Language.Parser]::ParseFile($lf, [ref]$tok, [ref]$null)
+$piCall = @($tok | Where-Object { $_.Kind -eq 'StringLiteralExpandable' -or $_.Kind -eq 'StringLiteral' } | ForEach-Object Value)
+Check 'launcher parses to whole message (not split words)' ($piCall -contains 'Follow the attached pr-watch triage instructions.' -and $piCall -contains 'PR triage Tickets#443')
+Remove-Item $lf
 $pt = Get-Content $pf -Raw
 Check 'triage prompt filled' ($pt -match 'Tickets #443: https://github.com/Aspia-MyBusiness/Tickets/pull/443' -and $pt -match '2026-11-05T09:00:00Z' -and $pt -notmatch '\{\{')
 Remove-Item $pf

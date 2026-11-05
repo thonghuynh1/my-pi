@@ -30,7 +30,7 @@ try {
   $prompt = (Get-Content $promptPath -Raw -Encoding UTF8).Replace('{{PRS}}', $list).Replace('{{SINCE}}', $since).Replace('{{ORG}}', $Org)
 
   $runs = Join-Path $dir 'runs'; New-Item -ItemType Directory -Force $runs | Out-Null
-  Get-ChildItem $runs -Filter 'triage-*.md' | Where-Object LastWriteTime -lt (Get-Date).AddDays(-7) | Remove-Item -ErrorAction SilentlyContinue
+  Get-ChildItem $runs -Filter 'triage-*' | Where-Object LastWriteTime -lt (Get-Date).AddDays(-7) | Remove-Item -ErrorAction SilentlyContinue
   $file = Join-Path $runs ('triage-{0:yyyyMMdd-HHmmss}.md' -f (Get-Date))
   Set-Content -Path $file -Value $prompt -Encoding UTF8
 
@@ -39,13 +39,20 @@ try {
   if ($repos.Count -eq 1 -and (Test-Path (Join-Path $cfg.reposRoot $repos[0]))) { $cwd = Join-Path $cfg.reposRoot $repos[0] }
   $label = if ($prs.Count -eq 1) { "PR triage $($prs[0].repo)#$($prs[0].number)" } else { "PR triage ($($prs.Count) PRs)" }
 
-  $q = { param($s) '"' + ($s -replace '"', '\"') + '"' }
+  # The pi call goes into a launcher .ps1 so no quoted text crosses a command line
+  # (herdr pane run / Start-Process drop inner quotes and split the message into words).
+  $q = { param($s) "'" + ([string]$s -replace "'", "''") + "'" }
   $piArgs = @('--name', (& $q $label))
   if ($cfg.model)    { $piArgs += @('--model', (& $q $cfg.model)) }
   if ($cfg.thinking) { $piArgs += @('--thinking', (& $q $cfg.thinking)) }
   foreach ($a in @($cfg.piArgs)) { if ($a) { $piArgs += (& $q $a) } }
   $piArgs += @((& $q "@$file"), (& $q 'Follow the attached pr-watch triage instructions.'))
-  $cmd = 'pi ' + ($piArgs -join ' ')
+  $launcher = [IO.Path]::ChangeExtension($file, '.ps1')
+  Set-Content -Path $launcher -Encoding UTF8 -Value @(
+    "Set-Location -LiteralPath $(& $q $cwd)",
+    ('pi ' + ($piArgs -join ' ')))
+  if ($launcher -match '\s') { Fail "Launcher path must not contain spaces: $launcher" }
+  $cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File $launcher"
 
   $useHerdr = $false
   if ($cfg.open -ne 'window') {
@@ -71,8 +78,7 @@ try {
     Write-Log "triage: herdr $pane ($label)"
   } else {
     if ($DryRun) { Write-Output "WINDOW | $cwd | $cmd | $file"; return }
-    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))   # no command-line re-quoting
-    Start-Process powershell.exe -WorkingDirectory $cwd -ArgumentList @('-NoExit', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $enc)
+    Start-Process powershell.exe -WorkingDirectory $cwd -ArgumentList @('-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $launcher)
     Write-Log "triage: window ($label)"
   }
 } catch { Fail $_.Exception.Message }

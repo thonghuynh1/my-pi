@@ -153,6 +153,9 @@ function Format-Events($pr, $ev) {
 if ($MyInvocation.InvocationName -eq '.') { return }   # dot-sourced by tests: functions only
 
 New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+# Locked screen (LogonUI running): skip the whole scan and leave state.json untouched, so
+# everything that happens while locked is reported in one toast by the unlock-triggered run.
+if (-not $InputJson -and (Get-Process LogonUI -ErrorAction SilentlyContinue)) { Write-Log 'skipped: screen locked'; return }
 try {
   $data = Get-Data
   if ($data.errors) { throw "GraphQL errors: $((@($data.errors) | ForEach-Object message) -join '; ')" }

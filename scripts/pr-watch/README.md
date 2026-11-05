@@ -7,6 +7,8 @@ extension (pi loads only `extensions/` and `prompts/` from my-pi); tracked here 
   `~/.pi/agent/pr-watch`, a junction to this folder.
 - Each run: `gh api graphql` â†’ compare with `state.json` â†’ Windows toast for new comments/reviews
   from anyone but me (bots included) and CI failing on the head commit.
+- Locked screen: scans are skipped (state untouched); a second trigger runs a scan 20 s after unlock,
+  so everything from the locked/asleep period arrives as one toast. Missed runs during sleep also run at wake.
 - `state.json`, `pr-watch.log`, `last-error-notified` are runtime files (gitignored).
 
 ```powershell

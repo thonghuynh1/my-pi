@@ -1,6 +1,6 @@
-export type ProviderId = "codex" | "antigravity" | "copilot" | "cursor" | "claude-work" | "claude-personal";
+export type ProviderId = "codex" | "antigravity" | "copilot" | "cursor" | "claude-work" | "claude-personal" | "muse";
 export type QuotaWindow = { id: string; label: string; usedPercent: number; resetsAt?: number };
-export type QuotaGroup = { id: string; name: string; shortName: string; windows: QuotaWindow[] };
+export type QuotaGroup = { id: string; name: string; shortName: string; windows: QuotaWindow[]; asOf?: number };
 export type UsageMetric =
   | { kind: "quota"; groups: QuotaGroup[] }
   | { kind: "credits"; consumed: number; resetsAt?: number }
@@ -34,7 +34,7 @@ export function parseCodex(raw: unknown): UsageMetric {
     const w = record(bucket[key]);
     const minutes = w.windowDurationMins;
     if (!finite(minutes) || minutes <= 0 || !finite(w.usedPercent) || w.usedPercent < 0 || w.usedPercent > 100) continue;
-    const id = minutes === 300 ? "5h" : minutes === 10080 ? "week" : `${minutes}m`;
+    const id = minutes === 300 ? "5h" : minutes === 10080 ? "week" : minutes === 43200 ? "month" : `${minutes}m`;
     if (!windows.some((item) => item.id === id)) windows.push({ id, label: id, usedPercent: w.usedPercent, resetsAt: reset(w.resetsAt, true) });
   }
   if (!windows.length) return unavailable();
@@ -91,6 +91,27 @@ export function parseCursor(raw: unknown): UsageMetric {
     if (finite(value) && value >= 0) windows.push({ id, label, usedPercent: value });
   }
   return { kind: "quota", groups: [{ id: "cursor", name: "Cursor included plan", shortName: "Cursor", windows }] };
+}
+
+// Source: the patched pi-meta-oauth snapshot of the Muse Code key-mint `subs_usage`.
+// It only changes when Pi re-mints the Meta key, so details show its observed time.
+export function parseMuse(raw: unknown): UsageMetric {
+  const data = record(raw);
+  if (data.version !== 1 || !finite(data.observedAt) || data.observedAt <= 0) return unavailable();
+  const windows: QuotaWindow[] = [];
+  for (const key of ["window", "weekly"]) {
+    const w = record(data[key]);
+    if (!finite(w.usedPercent) || w.usedPercent < 0) continue;
+    const minutes = w.windowMinutes;
+    const id = key === "weekly" || minutes === 10080 ? "week" : minutes === 300 ? "5h"
+      : finite(minutes) && minutes > 0 ? `${Math.round(minutes)}m` : "window";
+    if (windows.some((item) => item.id === id)) continue;
+    const resetsAt = finite(w.resetsAt) && w.resetsAt > 0 && w.resetsAt <= 8.64e15 ? w.resetsAt : undefined;
+    windows.push({ id, label: id, usedPercent: w.usedPercent, resetsAt });
+  }
+  if (!windows.length) return unavailable();
+  const tier = typeof data.tier === "string" && data.tier ? ` ${data.tier}` : "";
+  return { kind: "quota", groups: [{ id: "muse", name: `Muse Code${tier} subscription · as of ${new Date(data.observedAt).toLocaleString()}`, shortName: "Muse", windows, asOf: data.observedAt }] };
 }
 
 function money(value: unknown, exponent: unknown): number | undefined {
@@ -155,43 +176,129 @@ export function footerRows(states: readonly ProviderState[]): string[] {
     });
   });
 }
-// Two summary rows beneath the model. Full precision and reset times stay in details.
-export function compactFooterRows(states: readonly ProviderState[]): string[] {
+export type UsageLevel = "ok" | "warn" | "high";
+export type UsagePaint = (level: UsageLevel, text: string) => string;
+const BAR_CELLS = 7;
+const levelOf = (n: number): UsageLevel => n >= 90 ? "high" : n >= 70 ? "warn" : "ok";
+// Overages can exceed 100%; the bar saturates while the label keeps the provider's value.
+export function usageBar(usedPercent: number, cells = BAR_CELLS): string {
+  const filled = Math.max(0, Math.min(cells, Math.round(Math.min(usedPercent, 100) / 100 * cells)));
+  return "▰".repeat(filled) + "▱".repeat(cells - filled);
+}
+// Two summary rows beneath the model: one five-hour bar per provider, labelled 5h/week.
+// Per-window values, reset times and refresh status stay in /provider-usage details.
+export function compactFooterRows(states: readonly ProviderState[], paint: UsagePaint = (_level, text) => text): string[] {
   const quota: string[] = [];
   const accounts: string[] = [];
   const pct = (n: number) => n > 0 && n < 1 ? "<1%" : `${Math.round(n)}%`;
+  const chip = (name: string, windows: readonly QuotaWindow[], suffix = ""): string | undefined => {
+    if (!windows.length) return undefined;
+    const most = (id: string) => {
+      const values = windows.filter((w) => w.id === id).map((w) => w.usedPercent);
+      return values.length ? Math.max(...values) : undefined;
+    };
+    const five = most("5h");
+    const week = most("week");
+    // The bar tracks the five-hour window; providers without one fall back to their own window.
+    const barValue = five ?? week ?? Math.max(...windows.map((w) => w.usedPercent));
+    const label = five !== undefined && week !== undefined ? `${pct(five)}/${pct(week)}`
+      : five !== undefined ? pct(five) : week !== undefined ? `wk ${pct(week)}` : pct(barValue);
+    // Colour warns on whichever window is closer to its limit.
+    return paint(levelOf(Math.max(barValue, week ?? 0)), `${name} ${usageBar(barValue)} ${label}${suffix}`);
+  };
   for (const state of states) {
-    const rateLimited = state.id === "claude-personal" && state.error === "Claude usage refresh rate limited";
-    if (rateLimited) {
+    const stale = state.error ? "*" : "";
+    if (state.id === "claude-personal" && state.error === "Claude usage refresh rate limited") {
+      // The five-hour read is rate limited; only a cached weekly value is meaningful.
       const weekly = state.value?.kind === "spend" ? state.value.windows.find((window) => window.id === "week") : undefined;
-      quota.push(`${claudeShort(state)} 5h-RL wk-${weekly ? `${pct(weekly.usedPercent)}*` : "?"}`);
+      quota.push(paint(weekly && levelOf(weekly.usedPercent) === "high" ? "high" : "warn",
+        `${claudeShort(state)} RL${weekly ? `/${pct(weekly.usedPercent)}*` : ""}`));
+      continue;
     }
     if (!state.value) continue;
-    const stale = state.error ? "*" : "";
     if (state.value.kind === "credits") {
       // User-requested credit-equivalent display, not a verified billing amount.
-      accounts.push(`Copilot $${Math.round(state.value.consumed / 100).toLocaleString("en-US")}${stale}`);
+      accounts.push(paint("ok", `Copilot $${Math.round(state.value.consumed / 100).toLocaleString("en-US")}${stale}`));
       continue;
     }
     if (state.value.kind === "spend") {
       const { spend, windows } = state.value;
-      if (windows.length && !rateLimited) quota.push(`${claudeShort(state)} ${windows.map((w) => `${w.id === "week" ? "wk" : w.label}-${pct(w.usedPercent)}`).join(" ")}${stale}`);
+      const quotaChip = chip(claudeShort(state), windows, stale);
+      if (quotaChip) quota.push(quotaChip);
       if (spend) {
         const amount = `${dollars(spend.used, spend.currency, 0)}${spend.limit !== undefined ? `/${dollars(spend.limit, spend.currency, 0)}` : ""}`;
-        accounts.push(`${claudeShort(state)} ${amount}${spend.usedPercent !== undefined ? ` ${pct(spend.usedPercent)}` : ""}${stale}`);
+        accounts.push(paint(levelOf(spend.usedPercent ?? 0), `${claudeShort(state)} ${amount}${spend.usedPercent !== undefined ? ` ${pct(spend.usedPercent)}` : ""}${stale}`));
       }
       continue;
     }
+    if (state.id === "cursor") {
+      // Auto and API are separate, non-additive pools: one bar each, falling back to the month total.
+      const windows = state.value.groups.flatMap((g) => g.windows);
+      const pools = windows.filter((w) => w.id === "auto" || w.id === "api");
+      const bars = (pools.length ? pools : windows.filter((w) => w.id === "month"))
+        .map((w) => paint(levelOf(w.usedPercent), `${w.id === "month" ? "" : `${w.label} `}${usageBar(w.usedPercent)} ${pct(w.usedPercent)}`));
+      if (bars.length) accounts.push(`Cursor ${bars.join(" ")}${stale}`);
+      continue;
+    }
+    const windows = state.value.groups.flatMap((g) => g.windows);
+    const name = state.id === "antigravity" ? "AG" : state.value.groups[0]?.shortName ?? state.name;
+    const value = chip(name, windows, stale);
+    if (value) quota.push(value);
+  }
+  return [quota.join("  "), accounts.join("  ")];
+}
+const shortNames: Partial<Record<ProviderId, string>> = { codex: "Codex", antigravity: "Antigravity", copilot: "Copilot", cursor: "Cursor", muse: "Muse" };
+const clockTime = (t: number): string => new Date(t).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+// Resets within a day show a time; later ones add the weekday and date.
+function resetTime(t: number, now: number): string {
+  if (t >= now && t - now < 86_400_000) return clockTime(t);
+  return `${new Date(t).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })} ${clockTime(t)}`;
+}
+const NAME_WIDTH = 14;
+const CELL_WIDTH = 12;
+// One row per provider group for the /provider-usage modal; full text stays in detailText.
+export function usageTable(states: readonly ProviderState[], now = Date.now(), paint: UsagePaint = (_level, text) => text): string[] {
+  const pct = (n: number) => n > 0 && n < 1 ? "<1%" : `${Math.round(n)}%`;
+  const cell = (w: QuotaWindow | undefined): string => {
+    if (!w) return "\u2013".padEnd(CELL_WIDTH);
+    return paint(levelOf(w.usedPercent), `${usageBar(w.usedPercent, 5)} ${pct(w.usedPercent)}`.padEnd(CELL_WIDTH));
+  };
+  const row = (name: string, windows: readonly QuotaWindow[], notes: string[]): string =>
+    `${name.slice(0, NAME_WIDTH - 1).padEnd(NAME_WIDTH)}${cell(windows.find((w) => w.id === "5h"))}${cell(windows.find((w) => w.id === "week"))}${notes.filter(Boolean).join(" \u00b7 ")}`;
+  const resets = (windows: readonly QuotaWindow[]): string => {
+    const parts = windows.filter((w) => w.resetsAt !== undefined && ["5h", "week", "month"].includes(w.id))
+      .map((w) => `${w.id === "week" ? "wk" : w.id} ${resetTime(w.resetsAt!, now)}`);
+    return parts.length ? `\u21bb ${parts.join(", ")}` : "";
+  };
+  const lines = [`${"Provider".padEnd(NAME_WIDTH)}${"5h".padEnd(CELL_WIDTH)}${"Week".padEnd(CELL_WIDTH)}Resets / notes`];
+  for (const state of states) {
+    const name = shortNames[state.id] ?? claudeShort(state);
+    const status = state.error === "Claude usage refresh rate limited" ? paint("warn", "rate limited")
+      : state.value && state.error ? paint("warn", "stale") : "";
+    if (!state.value) {
+      lines.push(row(name, [], [state.status === "loading" ? "loading\u2026" : state.error ?? "unavailable"]));
+      continue;
+    }
+    if (state.value.kind === "credits") {
+      const credits = state.value.consumed;
+      lines.push(row(name, [], [`$${Math.round(credits / 100).toLocaleString("en-US")} (${credits.toLocaleString("en-US")} credits)`,
+        state.value.resetsAt === undefined ? "" : `\u21bb ${resetTime(state.value.resetsAt, now)}`, status]));
+      continue;
+    }
+    if (state.value.kind === "spend") {
+      const { spend, windows } = state.value;
+      const amount = spend ? `${dollars(spend.used, spend.currency, 0)}${spend.limit !== undefined ? `/${dollars(spend.limit, spend.currency, 0)}` : ""}${spend.usedPercent !== undefined ? ` ${pct(spend.usedPercent)}` : ""}` : "";
+      lines.push(row(name, windows, [resets(windows), amount, status]));
+      continue;
+    }
+    const multiple = state.value.groups.length > 1;
     for (const g of state.value.groups) {
-      const name = g.id === "gemini" ? "AG-G" : g.id === "third-party" ? "AG-C/G" : g.shortName;
-      const windows = g.windows.map((w) => {
-        const label = w.id === "week" ? "wk" : w.id === "month" ? "M" : w.id === "auto" ? "A" : w.label;
-        return `${label}-${pct(w.usedPercent)}`;
-      }).join(" ");
-      (state.id === "cursor" ? accounts : quota).push(`${name} ${windows}${stale}`);
+      const others = g.windows.filter((w) => w.id !== "5h" && w.id !== "week").map((w) => w.id === "auto" || w.id === "api"
+        ? paint(levelOf(w.usedPercent), `${w.label} ${usageBar(w.usedPercent, 5)} ${pct(w.usedPercent)}`) : `${w.label} ${pct(w.usedPercent)}`).join("  ");
+      lines.push(row(multiple ? g.shortName : name, g.windows, [others, resets(g.windows), g.asOf === undefined ? "" : `as of ${clockTime(g.asOf)}`, status]));
     }
   }
-  return [quota.join(" · "), accounts.join(" · ")];
+  return lines;
 }
 const localized = (timestamp: number | undefined): string => timestamp === undefined ? "unavailable" : new Date(timestamp).toLocaleString();
 export function detailText(states: readonly ProviderState[]): string {
@@ -219,7 +326,7 @@ export function detailText(states: readonly ProviderState[]): string {
         continue;
       }
       for (const id of ["5h", "week"]) if (!g.windows.some((w) => w.id === id)) lines.push(`    ${id === "5h" ? "Five-hour window (5h)" : "Weekly window (week)"}: unavailable / not applicable`);
-      for (const w of g.windows) lines.push(`    ${w.id === "5h" ? "Five-hour window (5h)" : w.id === "week" ? "Weekly window (week)" : w.id === "month" ? "Monthly included plan (month)" : w.label}: ${percent(w.usedPercent)} used · resets: ${localized(w.resetsAt)}`);
+      for (const w of g.windows) lines.push(`    ${w.id === "5h" ? "Five-hour window (5h)" : w.id === "week" ? "Weekly window (week)" : w.id === "month" ? "30-day window (month)" : w.label}: ${percent(w.usedPercent)} used · resets: ${localized(w.resetsAt)}`);
     }
     return [...lines, ""];
   })].join("\n");

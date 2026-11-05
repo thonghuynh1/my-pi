@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { Text, matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { ProviderUsageMonitor } from "./lib/provider-usage/monitor.ts";
 import { providerReaders, UsageReadError } from "./lib/provider-usage/readers.ts";
-import { detailText, compactFooterRows } from "./lib/provider-usage/model.ts";
+import { detailText, compactFooterRows, usageTable, type UsagePaint } from "./lib/provider-usage/model.ts";
 import {
   createManagedExtension,
   loadCapabilityVisibilitySettings,
@@ -254,7 +254,8 @@ export function installUsageFooter(pi: ExtensionAPI, ctx: ExtensionContext, moni
           `in ${compactNumber(totals.input)} · out ${compactNumber(totals.output)} · cache ${compactNumber(totals.cache)}`, cost];
         return layoutUsageLines(left.map((line) => theme.fg("warning", line)),
           theme.fg("accent", getModelLine(pi, ctx)),
-          compactFooterRows(monitor.snapshot()).map((line) => theme.fg("accent", line)), width);
+          compactFooterRows(monitor.snapshot(), (level, text) =>
+            theme.fg(level === "high" ? "error" : level === "warn" ? "warning" : "accent", text)), width);
       },
     };
   });
@@ -262,9 +263,12 @@ export function installUsageFooter(pi: ExtensionAPI, ctx: ExtensionContext, moni
 
 function isTui(ctx: ExtensionContext): boolean { return ctx.mode === "tui" && ctx.hasUI; }
 
-export function usageDetailPanel(monitor: ProviderUsageMonitor, requestRender: () => void, close: () => void, height: () => number): Component & { dispose(): void } {
+// Bordered modal: compact table by default, `d` toggles the full detail text.
+export function usageDetailPanel(monitor: ProviderUsageMonitor, requestRender: () => void, close: () => void, height: () => number,
+  paint: UsagePaint = (_level, text) => text, frame: (text: string) => string = (text) => text): Component & { dispose(): void } {
   const text = new Text("", 0, 0);
   let offset = 0;
+  let detailed = false;
   let disposed = false;
   const unsubscribe = monitor.subscribe(() => { if (!disposed) requestRender(); });
   return {
@@ -273,18 +277,42 @@ export function usageDetailPanel(monitor: ProviderUsageMonitor, requestRender: (
     handleInput(data: string) {
       if (matchesKey(data, "escape") || matchesKey(data, "q")) { close(); return; }
       if (matchesKey(data, "r")) { void monitor.refresh(); return; }
-      if (matchesKey(data, "up")) offset = Math.max(0, offset - 1);
+      if (matchesKey(data, "d")) { detailed = !detailed; offset = 0; }
+      else if (matchesKey(data, "up")) offset = Math.max(0, offset - 1);
       else if (matchesKey(data, "down")) offset++;
       else if (matchesKey(data, "pageUp")) offset = Math.max(0, offset - 10);
       else if (matchesKey(data, "pageDown")) offset += 10;
       requestRender();
     },
     render(width: number) {
-      text.setText(detailText(monitor.snapshot()));
-      const lines = text.render(Math.max(1, width));
+      const boxed = width >= 12;
+      const inner = Math.max(1, boxed ? width - 4 : width);
+      const states = monitor.snapshot();
+      let body: string[];
+      if (detailed) {
+        // detailText starts with its own title and key hints; the frame supplies both.
+        text.setText(detailText(states).split("\n").slice(3).join("\n"));
+        body = text.render(inner);
+      } else body = usageTable(states, Date.now(), paint);
+      const updated = Math.max(0, ...states.map((state) => state.lastAttempt ?? 0));
+      const hint = `r refresh · d ${detailed ? "summary" : "details"} · ↑/↓ scroll · Esc close${updated ? ` · updated ${new Date(updated).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : ""}`;
       const size = Math.max(1, height() - 4);
-      offset = Math.max(0, Math.min(offset, lines.length - size));
-      return lines.slice(offset, offset + size).map((line) => truncateToWidth(line, width));
+      offset = Math.max(0, Math.min(offset, body.length - size));
+      const visible = body.slice(offset, offset + size);
+      const title = " Provider account usage ";
+      if (!boxed) return [title.trim(), ...visible, hint].map((line) => truncateToWidth(line, width));
+      const pad = (line: string) => {
+        const fitted = truncateToWidth(line, inner);
+        return `${frame("│")} ${fitted}${" ".repeat(Math.max(0, inner - visibleWidth(fitted)))} ${frame("│")}`;
+      };
+      const heading = truncateToWidth(title, width - 4);
+      return [
+        frame(`╭─${heading}${"─".repeat(Math.max(0, width - 3 - visibleWidth(heading)))}╮`),
+        ...visible.map(pad),
+        pad(""),
+        pad(hint),
+        frame(`╰${"─".repeat(width - 2)}╯`),
+      ];
     },
   };
 }
@@ -351,13 +379,15 @@ export default function usageFooter(pi: ExtensionAPI, suppliedMonitor?: Provider
     description: "Provider account usage details (r refresh, Esc/q close)",
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
       if (!isTui(ctx)) return;
-      await ctx.ui.custom<void>((tui, _theme, _keys, done) => {
+      await ctx.ui.custom<void>((tui, theme, _keys, done) => {
         const close = () => { panel.dispose(); if (closeDetails === close) closeDetails = undefined; done(); };
-        const panel = usageDetailPanel(monitor, () => tui.requestRender(), close, () => tui.terminal.rows);
+        const panel = usageDetailPanel(monitor, () => tui.requestRender(), close, () => Math.floor(tui.terminal.rows * 0.8),
+          (level, text) => theme.fg(level === "high" ? "error" : level === "warn" ? "warning" : "accent", text),
+          (text) => theme.fg("dim", text));
         closeDetails = close;
         void monitor.refresh();
         return panel;
-      });
+      }, { overlay: true, overlayOptions: { anchor: "center", width: "80%", minWidth: 60, maxHeight: "80%" } });
     },
   });
 }

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import path from "node:path";
 import { CLAUDE_USAGE_REQUEST, readClaudeUsageAt } from "../lib/provider-usage/claude.ts";
 import { CODEX_INITIALIZE, COPILOT_FIELDS, createProcessRunner, createTreeTerminator, providerReaders, resolveLaunch, type ProcessRequest } from "../lib/provider-usage/readers.ts";
 
@@ -39,11 +40,11 @@ test("registry uses verified CLI commands plus the isolated experimental Cursor 
     work: { id: "work", name: "Claude Work", shortName: "Claude-W", configDir: "/cfg-work" },
     personal: { id: "personal", name: "Claude Personal", shortName: "Claude-P", configDir: "/cfg-personal" },
   });
-  await Promise.all(readers.map((reader) => reader.read(signal())));
+  await Promise.all(readers.filter((reader) => reader.id !== "muse").map((reader) => reader.read(signal())));
   assert.deepEqual(requests, [codexRequest, jsonRequest, { command: "gh", args: ["api", "/copilot_internal/user", "--jq", COPILOT_FIELDS] },
     { ...CLAUDE_USAGE_REQUEST, env: { CLAUDE_CONFIG_DIR: "/cfg-work", ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: undefined, DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", DISABLE_AUTOUPDATER: "1" } },
     { ...CLAUDE_USAGE_REQUEST, env: { CLAUDE_CONFIG_DIR: "/cfg-personal", ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: undefined, DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", DISABLE_AUTOUPDATER: "1" } }]);
-  assert.deepEqual(readers.map((r) => r.id), ["codex", "antigravity", "copilot", "cursor", "claude-work", "claude-personal"]);
+  assert.deepEqual(readers.map((r) => r.id), ["codex", "antigravity", "copilot", "cursor", "claude-work", "claude-personal", "muse"]);
   assert.equal(readers[2].experimental, true);
 });
 
@@ -165,4 +166,22 @@ test("tree cleanup targets only owned POSIX group and Windows PID tree with boun
     events.emit("exit", 0);
     assert.equal(windows.signals.length, 1);
   }
+});
+
+test("Muse reads only the local subscription snapshot and explains a missing one", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(path.join(tmpdir(), "muse-usage-"));
+  try {
+    const file = path.join(dir, "meta-subscription-usage.json");
+    const muse = () => providerReaders(async () => { throw new Error("no process"); }, async () => ({}), readClaudeUsageAt, undefined, { museUsageFile: file })
+      .find((reader) => reader.id === "muse")!;
+    await assert.rejects(muse().read(signal()), /No Muse usage recorded yet/);
+    writeFileSync(file, JSON.stringify({ version: 1, observedAt: 1_800_000_000_000, weekly: { usedPercent: 34 } }));
+    const value = await muse().read(signal());
+    assert.equal(value.kind, "quota");
+    assert.deepEqual(value.kind === "quota" && value.groups[0].windows, [{ id: "week", label: "week", usedPercent: 34, resetsAt: undefined }]);
+    writeFileSync(file, "{not json");
+    await assert.rejects(muse().read(signal()), /Muse usage file invalid/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

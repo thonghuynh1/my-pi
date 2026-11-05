@@ -12,6 +12,7 @@ export interface ScopeDependencies {
   readFile?: (file: string) => Buffer | undefined;
   cursorApiKey?: () => Promise<string | undefined>;
   codexApiKey?: () => Promise<string | undefined>;
+  museUsageFile?: string;
 }
 const digest = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 const hash = (value: unknown): string => digest(JSON.stringify(value));

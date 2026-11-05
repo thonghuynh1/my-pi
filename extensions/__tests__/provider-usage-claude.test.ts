@@ -104,7 +104,7 @@ test("Pro/Max subscription windows map to 5h/week with resets; spend optional", 
     { id: "week", label: "week", usedPercent: 41.2, resetsAt: Date.parse("2026-01-05T10:00:00Z") },
   ]);
   const state: ProviderState = { id: "claude-work", name: "Claude Work", status: "available", value };
-  assert.deepEqual(compactFooterRows([state]), ["Claude-W 5h-24% wk-41%", ""]);
+  assert.deepEqual(compactFooterRows([state]), ["Claude-W ▰▰▱▱▱▱▱ 24%/41%", ""]);
 });
 
 test("footer, stale marker and details for enterprise spend", () => {

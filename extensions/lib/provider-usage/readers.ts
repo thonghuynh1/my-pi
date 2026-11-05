@@ -1,5 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { usageScope, type UsageScope, type ScopeDependencies } from "./scope.ts";
@@ -7,7 +9,7 @@ import { createCursorUsageReader } from "./cursor.ts";
 import { createCodexUsageReader } from "./codex.ts";
 import { ClaudeUsageError, readClaudeUsageAt } from "./claude.ts";
 import { claudeProfiles, type ClaudeProfileMap } from "../claude-profiles.ts";
-import { parseAntigravity, parseClaude, parseCodex, parseCopilot, parseCursor, type ProviderId, type UsageMetric } from "./model.ts";
+import { parseAntigravity, parseClaude, parseCodex, parseCopilot, parseCursor, parseMuse, type ProviderId, type UsageMetric } from "./model.ts";
 
 export class UsageReadError extends Error {}
 export type ProcessRequest = { command: "codex" | "agy" | "gh" | "claude"; args: readonly string[]; protocol?: "codex" | "claude"; env?: Record<string, string | undefined> };
@@ -50,6 +52,19 @@ export function providerReaders(run: ProcessRunner = runProcess, cursorRead: ((s
     } },
     claudeReader("claude-work", profiles.work.name, profiles.work.configDir),
     claudeReader("claude-personal", profiles.personal.name, profiles.personal.configDir),
+    // Local file only: the patched pi-meta-oauth writes it on each key mint; never mint from here.
+    { id: "muse", name: "Meta Muse", experimental: true, read: async (signal) => {
+      const file = scopeDependencies.museUsageFile ?? path.join(getAgentDir(), "provider-usage", "meta-subscription-usage.json");
+      let text: string;
+      try { text = await readFile(file, { encoding: "utf8", signal }); }
+      catch (error) {
+        throw new UsageReadError((error as NodeJS.ErrnoException).code === "ENOENT"
+          ? "No Muse usage recorded yet; needs patched pi-meta-oauth and a Meta key refresh" : "Muse usage file unreadable");
+      }
+      if (text.length > 65_536) throw new UsageReadError("Muse usage file exceeded safety limit");
+      try { return parseMuse(JSON.parse(text)); }
+      catch { throw new UsageReadError("Muse usage file invalid"); }
+    } },
   ];
 }
 

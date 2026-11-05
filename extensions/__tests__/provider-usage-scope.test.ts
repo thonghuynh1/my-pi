@@ -175,8 +175,11 @@ test("production registry attaches all six scope resolvers with fixed Claude pro
   };
   const noTransport = async (): Promise<never> => { throw new Error("must not invoke transports"); };
   const registry = providerReaders(noTransport, noTransport, noTransport, profiles, f.deps);
-  assert.equal(registry.length, 6);
-  for (const entry of registry) {
+  // Muse reads a local snapshot file and has no shared-cache scope.
+  assert.equal(registry.find((entry) => entry.id === "muse")?.scope, undefined);
+  const scoped = registry.filter((entry) => entry.id !== "muse");
+  assert.equal(scoped.length, 6);
+  for (const entry of scoped) {
     assert.equal(typeof entry.scope, "function");
     const dir = entry.id === "claude-work" ? profiles.work.configDir : entry.id === "claude-personal" ? profiles.personal.configDir : undefined;
     assert.deepEqual(await entry.scope!(), await usageScope(entry.id, dir, f.deps)());

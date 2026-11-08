@@ -135,7 +135,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
       const state = readJson<Partial<BackgroundJob>>(join(job.directory, "state.json"));
       if (state?.token === job.token && !(job.status === "interrupted" && state.status === "running")) {
         const before = JSON.stringify([job.status, job.pid, job.endedAt, job.exitCode]);
-        const recoveredOutcome = job.status === "interrupted" && state.status !== "running";
+        const recoveredOutcome = job.status === "interrupted" && state.status !== "running" && state.endedAt !== job.endedAt;
         Object.assign(job, state);
         if (recoveredOutcome) { job.delivered = false; if (!state.error) delete job.error; }
         changed ||= before !== JSON.stringify([job.status, job.pid, job.endedAt, job.exitCode]);

@@ -411,6 +411,53 @@ test("unconfirmed completion is redelivered after reopening", async () => {
   await (resumed as any).emit("session_shutdown", {}, ctx);
 });
 
+function seedJob(ctx: ExtensionContext, job: Record<string, unknown>, state: Record<string, unknown>): void {
+  const store = new DurableJobStore<any>(durableSessionDirectory(ctx, "background", "unused"));
+  store.load();
+  const directory = join(store.directory, "bg-1");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "state.json"), JSON.stringify({ token: "seed-token", ...state }));
+  store.save(1, [{ id: "bg-1", token: "seed-token", directory, command: "seeded-not-spawned", cwd: process.cwd(),
+    startedAt: 1, logFilePath: join(directory, "output.log"), notifyOnFinish: true, ...job }]);
+}
+
+async function settleRepeatedly(pi: MockPi, ctx: ExtensionContext): Promise<void> {
+  for (let i = 0; i < 3; i++) {
+    for (const sent of pi.sentMessages.splice(0)) {
+      await (pi as any).emit("input", { source: "extension", text: sent.message });
+      await (pi as any).emit("agent_start");
+      (ctx.sessionManager.getEntries() as any[]).push({ type: "message", message: { role: "user", content: sent.message } });
+      (pi as any).delivered = ((pi as any).delivered ?? 0) + 1;
+    }
+    await (pi as any).emit("agent_settled");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+}
+
+test("supervisor-committed interrupted outcome is delivered once, not on every reconcile", async () => {
+  const ctx = createMockContext();
+  const state = { status: "interrupted", exitCode: 1, endedAt: 2, error: "taskkill exited 128; process-tree termination could not be confirmed" };
+  seedJob(ctx, { ...state, delivered: true }, state);
+  const pi = createMockPi();
+  backgroundJobsExtension(pi);
+  await (pi as any).emit("session_start", {}, ctx);
+  await settleRepeatedly(pi, ctx);
+  assert.equal((pi as any).delivered ?? 0, 0, "confirmed interrupted outcome must not be redelivered");
+  await (pi as any).emit("session_shutdown", {}, ctx);
+});
+
+test("supervisor outcome that replaces a host-declared interruption is delivered exactly once", async () => {
+  const ctx = createMockContext();
+  seedJob(ctx, { status: "interrupted", endedAt: 2, error: "Supervisor disappeared", delivered: true },
+    { status: "completed", exitCode: 0, endedAt: 3 });
+  const pi = createMockPi();
+  backgroundJobsExtension(pi);
+  await (pi as any).emit("session_start", {}, ctx);
+  await settleRepeatedly(pi, ctx);
+  assert.equal((pi as any).delivered, 1);
+  await (pi as any).emit("session_shutdown", {}, ctx);
+});
+
 for (const notifyOnFinish of [true, false]) {
   test(`native warming follows recovered command notification eligibility (${notifyOnFinish})`, {
     skip: !supportsNativeCacheWarming(VERSION),

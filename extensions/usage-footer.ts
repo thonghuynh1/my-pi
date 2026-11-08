@@ -4,6 +4,8 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { Text, matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { ProviderUsageMonitor } from "./lib/provider-usage/monitor.ts";
 import { providerReaders, UsageReadError } from "./lib/provider-usage/readers.ts";
+import { defaultCodexPaths, loadCodexSlots } from "./lib/codex-accounts.ts";
+import { isClaudeBridgeProvider } from "./lib/claude-profiles.ts";
 import { detailText, compactFooterRows, usageTable, type UsagePaint } from "./lib/provider-usage/model.ts";
 import {
   createManagedExtension,
@@ -103,6 +105,7 @@ function getSubagentTotals(): {
 // Subscription providers contribute reported dollars to the session total,
 // or Claude list-price estimates when reported dollars are nonpositive.
 const SUBSCRIPTION_PROVIDERS = new Set(["claude-bridge", "claude-code-cli"]);
+const isSubscriptionProvider = (provider: string): boolean => SUBSCRIPTION_PROVIDERS.has(provider) || isClaudeBridgeProvider(provider);
 
 // Bridge models deliberately have zero prices; estimate from Anthropic's exact catalog IDs.
 const CLAUDE_LIST_MODELS = new Map(getBuiltinModels("anthropic").map((model) => [model.id, model]));
@@ -188,7 +191,7 @@ function getTokenTotals(ctx: ExtensionContext): {
       parentCost += estimate ?? 0;
       if (estimate !== undefined && messageInput + messageOutput + messageCache > 0) cursorEstimated = true;
       else if (estimate === undefined && (usage.totalTokens ?? messageInput + messageOutput + messageCache) > 0) cursorUnpriced = true;
-    } else if (typeof provider === "string" && SUBSCRIPTION_PROVIDERS.has(provider) && reported <= 0) {
+    } else if (typeof provider === "string" && isSubscriptionProvider(provider) && reported <= 0) {
       const model = (entry.message as { model?: unknown }).model;
       parentCost += estimateClaudePlanCost(usage, model) ?? 0;
     } else parentCost += reported;
@@ -322,9 +325,10 @@ export const piExtension = { id: "usage-footer" };
 export default function usageFooter(pi: ExtensionAPI, suppliedMonitor?: ProviderUsageMonitor) {
   let latestCtx: ExtensionContext | undefined;
   const monitor = suppliedMonitor ?? new ProviderUsageMonitor(providerReaders(undefined, undefined, undefined, undefined, {
+    codexSlots: loadCodexSlots(defaultCodexPaths().configFile),
     cursorApiKey: async () => latestCtx?.modelRegistry.getApiKeyForProvider("cursor"),
-    codexApiKey: async () => {
-      const auth = await latestCtx?.modelRegistry.getProviderAuth("openai-codex");
+    codexApiKey: async (provider = "openai-codex") => {
+      const auth = await latestCtx?.modelRegistry.getProviderAuth(provider === "codex" ? "openai-codex" : provider);
       if (!auth) return undefined;
       if (auth.source !== "OAuth" || !auth.auth.apiKey) throw new UsageReadError("Codex account usage requires Pi OAuth login");
       return auth.auth.apiKey;

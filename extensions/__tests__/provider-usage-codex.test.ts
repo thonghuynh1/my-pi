@@ -38,7 +38,7 @@ test("Pi Codex personal and Team/Business usage wins over an unrelated Free CLI 
     account = `synthetic-${plan}`;
     currentToken = token(account, plan);
     const value = await reader.read(new AbortController().signal);
-    assert.equal(compactFooterRows([{ id: "codex", name: "Codex", status: "available", value }])[0], "Codex ▰▱▱▱▱▱▱ 8%/1%");
+    assert.equal(compactFooterRows([{ id: "codex", name: "Codex", status: "available", value }])[0], "Codex 1 ▰▱▱▱▱▱▱ 8%/1%");
     assert(value.kind === "quota");
     assert.deepEqual(value.groups[0].windows.map(w => w.resetsAt), [1793310080000, 1793896880000]);
     assert(!JSON.stringify(value).includes("synthetic"));
@@ -56,7 +56,7 @@ test("Codex falls back to the existing CLI only when Pi has no Codex credential"
       return { rateLimits: { primary: { usedPercent: 25, windowDurationMins: 300 } } };
     }, undefined, undefined, undefined, { codexApiKey })[0];
     const value = await reader.read(new AbortController().signal);
-    assert.equal(compactFooterRows([{ id: "codex", name: "Codex", status: "available", value }])[0], "Codex ▰▰▱▱▱▱▱ 25%");
+    assert.equal(compactFooterRows([{ id: "codex", name: "Codex", status: "available", value }])[0], "Codex 1 ▰▰▱▱▱▱▱ 25%");
   }
   assert.equal(cliReads, 2);
 });
@@ -176,6 +176,23 @@ test("the default TUI footer resolves Pi Codex OAuth and renders that account's 
   assert(component);
   const lines = component.render(180);
   assert.equal(lines.length, 3);
-  assert.match(lines[1], /Codex ▰▱▱▱▱▱▱ 8%\/1%/);
+  assert.match(lines[1], /Codex 1 ▰▱▱▱▱▱▱ 8%\/1%/);
   assert(!lines.join("\n").includes("43200m"));
+});
+
+test("Codex clone usage uses its own provider token and gets a distinct footer row", async (t) => {
+  let currentToken = token("clone-account", "plus");
+  t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+    const auth = new Headers(init.headers).get("authorization");
+    assert.equal(auth, `Bearer ${currentToken}`);
+    return Response.json({ rate_limit: { primary_window: { used_percent: 44, limit_window_seconds: 18000 }, secondary_window: { used_percent: 9, limit_window_seconds: 604800 } } });
+  });
+  const readers = providerReaders(undefined, undefined, undefined, undefined, { codexSlots: [{ provider: "openai-codex", label: "Work" }, { provider: "codex-2", label: "Personal" }], codexApiKey: async (provider) => {
+    assert.equal(provider, "codex-2");
+    return currentToken;
+  } });
+  const reader = readers.find((reader) => reader.id === "codex-2")!;
+  const value = await reader.read(new AbortController().signal);
+  assert.equal(value.kind, "quota");
+  assert.equal(compactFooterRows([{ id: "codex-2", name: "Codex 2", status: "available", value }])[0], "Codex 2 ▰▰▰▱▱▱▱ 44%/9%");
 });

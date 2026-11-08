@@ -1147,6 +1147,57 @@ function findSavedModel(id: string, registry: ExtensionContext["modelRegistry"])
 	return slash > 0 ? registry.find(modelId.slice(0, slash), modelId.slice(slash + 1)) : undefined;
 }
 
+// Child sessions load no extensions, so their model runtime lacks every
+// extension-registered provider (claude-bridge, claude-bridge-N, codex-N).
+// Copy the parent's registrations so the selected model can stream and auth.
+type ProviderSink = Pick<Awaited<ReturnType<typeof createAgentSessionServices>>["modelRuntime"], "registerProvider" | "registerNativeProvider">;
+export function inheritExtensionProviders(parent: ExtensionContext["modelRegistry"], child: ProviderSink | undefined): void {
+	if (!child || typeof parent.getRegisteredProviderIds !== "function") return;
+	for (const id of parent.getRegisteredProviderIds()) {
+		try {
+			const native = parent.getRegisteredNativeProvider(id);
+			if (native) child.registerNativeProvider(native);
+			else {
+				const config = parent.getRegisteredProviderConfig(id);
+				if (config) child.registerProvider(id, config);
+			}
+		} catch (error) {
+			console.warn(`[subagents] could not pass provider ${id} to subagent: ${(error as Error).message}`);
+		}
+	}
+}
+
+// pi-claude-bridge maps each system prompt to its parts (context files,
+// skills, appended instructions) from its before_agent_start/turn_start hooks.
+// Child sessions run no extensions, so record the child's prompt in the
+// bridge's shared registry ourselves; otherwise claude-bridge turns fail with
+// "prompt-capture: no capture for this system prompt".
+const BRIDGE_PROMPT_CAPTURES = Symbol.for("claude-bridge:promptCaptures");
+type PromptOptions = {
+	customPrompt?: string;
+	appendSystemPrompt?: string;
+	contextFiles?: { path: string; content: string }[];
+	skills?: unknown[];
+	sections?: Record<string, string>;
+	selectedTools?: string[];
+};
+export function recordBridgePromptCapture(session: { systemPrompt: string }, source: string): void {
+	const captures = (globalThis as Record<symbol, { record?: (prompt: string, input: unknown, source?: string) => void } | undefined>)[BRIDGE_PROMPT_CAPTURES];
+	if (typeof captures?.record !== "function" || !session.systemPrompt) return;
+	// AgentSession keeps the options it rendered the prompt from privately; they
+	// are the exact inputs the bridge's hooks would have received.
+	const internals = session as unknown as { _runSystemPromptOptions?: PromptOptions; _baseSystemPromptOptions?: PromptOptions };
+	const options = internals._runSystemPromptOptions ?? internals._baseSystemPromptOptions;
+	const hasRead = !options?.selectedTools || options.selectedTools.includes("read");
+	captures.record(session.systemPrompt, {
+		custom: options?.customPrompt,
+		append: options?.appendSystemPrompt,
+		contextFiles: options?.contextFiles ?? [],
+		skills: hasRead ? options?.skills ?? [] : [],
+		sections: options?.sections,
+	}, `subagent:${source}`);
+}
+
 export function selectSubagentModel(
 	requestedModel: string | undefined,
 	inheritedModel: ExtensionContext["model"],
@@ -1525,6 +1576,7 @@ async function runSubagent(
 				appendSystemPrompt: [config.prompt],
 			},
 		});
+		inheritExtensionProviders(ctx.modelRegistry, services.modelRuntime);
 
 		const reportTool = packet ? {
 			name: "report_verification",
@@ -1618,7 +1670,9 @@ async function runSubagent(
 			context.window = resolvedModel.contextWindow;
 			context.budget = nextPolicy.budget;
 			publishStatus();
+			recordBridgePromptCapture(nextSession, "session");
 			unsubscribeSession = nextSession.subscribe((event) => {
+				if (event.type === "agent_start" || event.type === "turn_start") recordBridgePromptCapture(nextSession, event.type);
 				switch (event.type) {
 				case "agent_start": {
 					liveStatus.preview = "agent session started";

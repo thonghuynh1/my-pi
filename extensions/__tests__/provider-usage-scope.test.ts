@@ -13,7 +13,7 @@ function fixture(env: NodeJS.ProcessEnv = {}, platform: NodeJS.Platform = "linux
   const deps: ScopeDependencies = { env, platform, home, readFile: (file) => { reads.push(file); return files.get(file); } };
   return { files, reads, deps, env };
 }
-const ids: ProviderId[] = ["codex", "antigravity", "copilot", "cursor", "claude-work", "claude-personal"];
+const ids: ProviderId[] = ["codex", "antigravity", "copilot", "cursor", "claude-1", "claude-2"];
 
 test("all six scopes are deterministic opaque hashes and never contain credential or directory values", async () => {
   const f = fixture({ GH_TOKEN: "synthetic-secret-gh", CLAUDE_CODE_OAUTH_TOKEN: "synthetic-secret-claude" });
@@ -34,7 +34,7 @@ test("same-size, same-time credential replacement changes generation while keepi
   const auth = path.join(home, ".credentials.json");
   writeFileSync(auth, "synthetic-login-one", { mode: 0o600 });
   const before = statSync(auth);
-  const resolve = usageScope("claude-work", home, { env: {}, home });
+  const resolve = usageScope("claude-1", home, { env: {}, home });
   const first = await resolve();
   writeFileSync(auth, "synthetic-login-two");
   utimesSync(auth, before.atime, before.mtime);
@@ -49,7 +49,7 @@ test("same-size, same-time credential replacement changes generation while keepi
 
 test("Claude uses fixed actual profile dirs and identity only, not mutable .claude.json usage", async () => {
   const f = fixture({ CLAUDE_CONFIG_DIR: "/unrelated-current-profile", ANTHROPIC_API_KEY: "cleared-by-reader" });
-  const work = usageScope("claude-work", "/fixed-work", f.deps);
+  const work = usageScope("claude-1", "/fixed-work", f.deps);
   f.files.set("/fixed-work/.credentials.json", Buffer.from("synthetic-credentials"));
   f.files.set("/fixed-work/.claude.json", Buffer.from(JSON.stringify({ oauthAccount: { accountUuid: "synthetic-account", organizationUuid: "org" }, cachedUsage: 1 })));
   const first = await work();
@@ -61,11 +61,11 @@ test("Claude uses fixed actual profile dirs and identity only, not mutable .clau
   f.files.set("/fixed-work/.claude.json", Buffer.from(JSON.stringify({ oauthAccount: { accountUuid: "replacement-account", organizationUuid: "org" } })));
   assert.notDeepEqual(await work(), first);
   assert(!f.reads.some((file) => file.startsWith("/unrelated-current-profile")));
-  assert.notEqual((await usageScope("claude-personal", "/fixed-work", f.deps)()).key, first.key);
+  assert.notEqual((await usageScope("claude-2", "/fixed-work", f.deps)()).key, first.key);
 });
 
 test("auth override VALUES, not presence, distinguish namespaces across every provider", async () => {
-  for (const [id, variable] of [["codex", "OPENAI_API_KEY"], ["copilot", "GH_TOKEN"], ["cursor", "AGENT_CLI_CREDENTIAL_STORE"], ["antigravity", "AGY_LLM_GATEWAY_HEADERS"], ["claude-work", "CLAUDE_CODE_OAUTH_TOKEN"], ["claude-personal", "ANTHROPIC_AUTH_TOKEN"]] as const) {
+  for (const [id, variable] of [["codex", "OPENAI_API_KEY"], ["copilot", "GH_TOKEN"], ["cursor", "AGENT_CLI_CREDENTIAL_STORE"], ["antigravity", "AGY_LLM_GATEWAY_HEADERS"], ["claude-1", "CLAUDE_CODE_OAUTH_TOKEN"], ["claude-2", "ANTHROPIC_AUTH_TOKEN"]] as const) {
     const f = fixture({ [variable]: "synthetic-value-A" });
     const resolve = usageScope(id, "/fixed-profile", f.deps);
     const first = await resolve();
@@ -169,19 +169,18 @@ test("Antigravity fingerprints observed native fallback files and all selectors 
 
 test("production registry attaches all six scope resolvers with fixed Claude profiles", async () => {
   const f = fixture({ CLAUDE_CONFIG_DIR: "/active-not-used" });
-  const profiles = {
-    work: { id: "work" as const, name: "Work", shortName: "W", configDir: "/fixed/work" },
-    personal: { id: "personal" as const, name: "Personal", shortName: "P", configDir: "/fixed/personal" },
-  };
+  const profiles = [
+    { id: "claude-1" as const, index: 1, name: "Claude 1", configDir: "/fixed/work", provider: "claude-bridge", useApiKey: true },
+    { id: "claude-2" as const, index: 2, name: "Claude 2", configDir: "/fixed/personal", provider: "claude-bridge-2", useApiKey: false },
+  ];
   const noTransport = async (): Promise<never> => { throw new Error("must not invoke transports"); };
   const registry = providerReaders(noTransport, noTransport, noTransport, profiles, f.deps);
-  // Muse reads a local snapshot file and has no shared-cache scope.
   assert.equal(registry.find((entry) => entry.id === "muse")?.scope, undefined);
   const scoped = registry.filter((entry) => entry.id !== "muse");
   assert.equal(scoped.length, 6);
   for (const entry of scoped) {
     assert.equal(typeof entry.scope, "function");
-    const dir = entry.id === "claude-work" ? profiles.work.configDir : entry.id === "claude-personal" ? profiles.personal.configDir : undefined;
+    const dir = profiles.find((profile) => profile.id === entry.id)?.configDir;
     assert.deepEqual(await entry.scope!(), await usageScope(entry.id, dir, f.deps)());
   }
   assert(f.reads.includes("/fixed/work/.credentials.json"));
@@ -224,15 +223,15 @@ test("confidence requires observable credentials or an account marker, not confi
   for (const [id, file] of [
     ["codex", "/fixture-home/.codex/auth.json"], ["copilot", "/fixture-home/.config/gh/hosts.yml"],
     ["cursor", "/fixture-home/.config/cursor/auth.json"], ["antigravity", "/fixture-home/.gemini/jetski-standalone-oauth-token"],
-    ["claude-work", "/profile/.credentials.json"], ["claude-personal", "/profile/.credentials.json"],
+    ["claude-1", "/profile/.credentials.json"], ["claude-2", "/profile/.credentials.json"],
   ] as const) {
     f.files.set(file, Buffer.from("synthetic-credential-context"));
     assert.equal((await usageScope(id, "/profile", f.deps)()).identity, "known", id);
     f.files.delete(file);
   }
   f.files.set("/profile/.claude.json", Buffer.from(JSON.stringify({ oauthAccount: { accountUuid: "synthetic-account" } })));
-  assert.equal((await usageScope("claude-work", "/profile", f.deps)()).identity, "known");
-  for (const [id, variable] of [["codex", "CODEX_ACCESS_TOKEN"], ["copilot", "GH_TOKEN"], ["antigravity", "GEMINI_API_KEY"], ["claude-personal", "CLAUDE_CODE_OAUTH_TOKEN"]] as const) {
+  assert.equal((await usageScope("claude-1", "/profile", f.deps)()).identity, "known");
+  for (const [id, variable] of [["codex", "CODEX_ACCESS_TOKEN"], ["copilot", "GH_TOKEN"], ["antigravity", "GEMINI_API_KEY"], ["claude-2", "CLAUDE_CODE_OAUTH_TOKEN"]] as const) {
     f.env[variable] = "synthetic-token";
     assert.equal((await usageScope(id, "/other-profile", f.deps)()).identity, "known", id);
   }

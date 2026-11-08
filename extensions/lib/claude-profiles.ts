@@ -2,133 +2,190 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { SelectItem } from "@earendil-works/pi-tui";
 
-export const CLAUDE_PROFILE_IDS = ["work", "personal"] as const;
-export type ClaudeProfileId = (typeof CLAUDE_PROFILE_IDS)[number];
+// Claude Code accounts are numbered profiles, each its own CLAUDE_CONFIG_DIR
+// and its own provider: profile 1 is the bridge's `claude-bridge`, the rest
+// are clones `claude-bridge-N` that pin their dir for each call (see
+// claude-providers.ts). Like Codex, picking an account = picking a provider.
+
+export const CLAUDE_BRIDGE = "claude-bridge";
+
+export type ClaudeProfileId = `claude-${number}`;
 
 export interface ClaudeProfile {
   id: ClaudeProfileId;
+  index: number;
   name: string;
-  shortName: string;
   configDir: string;
+  // Stable across renumbering, so settings that name it keep working.
+  provider: string;
+  // Keeps ANTHROPIC_API_KEY when active; other profiles hide it so the key
+  // never shadows their OAuth login.
+  useApiKey: boolean;
 }
 
-export type ClaudeProfileMap = Record<ClaudeProfileId, ClaudeProfile>;
+export interface StoredClaudeProfile {
+  dir: string;
+  provider?: string;
+  apiKey?: boolean;
+}
+
+export interface StoredClaudeConfig {
+  profiles: StoredClaudeProfile[];
+  // Last Claude model, reused when a Claude account becomes main again.
+  lastModel?: string;
+}
 
 function clean(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
 }
 
-export function claudeProfiles(
-  env: NodeJS.ProcessEnv = process.env,
-  home: string = homedir(),
-  stored: StoredProfileDirs = loadStoredProfileDirs(),
-): ClaudeProfileMap {
-  return {
-    work: {
-      id: "work",
-      name: "Claude Work",
-      shortName: "Claude-W",
-      configDir: clean(env.CLAUDE_PROFILE_WORK_DIR) ?? stored.workDir ?? path.join(home, ".claude"),
-    },
-    personal: {
-      id: "personal",
-      name: "Claude Personal",
-      shortName: "Claude-P",
-      configDir: clean(env.CLAUDE_PROFILE_PERSONAL_DIR) ?? stored.personalDir ?? path.join(home, ".claude-personal"),
-    },
-  };
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function sameDir(a: string, b: string): boolean {
-  return path.normalize(a) === path.normalize(b);
-}
-
-export function currentClaudeProfileId(
-  env: NodeJS.ProcessEnv = process.env,
-  home: string = homedir(),
-  stored: StoredProfileDirs = loadStoredProfileDirs(),
-): ClaudeProfileId {
-  const profiles = claudeProfiles(env, home, stored);
-  const active = clean(env.CLAUDE_CONFIG_DIR);
-  if (active && sameDir(active, profiles.personal.configDir)) return "personal";
-  return "work";
-}
-
-const SAVED_API_KEY = "CLAUDE_PROFILE_SAVED_API_KEY";
-
-export function switchClaudeProfile(
-  id: ClaudeProfileId,
-  env: NodeJS.ProcessEnv = process.env,
-  home: string = homedir(),
-  stored: StoredProfileDirs = loadStoredProfileDirs(),
-): ClaudeProfile {
-  const profiles = claudeProfiles(env, home, stored);
-  const target = profiles[id];
-  if (clean(env.ANTHROPIC_API_KEY) && clean(env[SAVED_API_KEY]) === undefined) {
-    env[SAVED_API_KEY] = env.ANTHROPIC_API_KEY ?? "";
-  }
-  if (id === "personal") {
-    delete env.ANTHROPIC_API_KEY;
-  } else if (clean(env.ANTHROPIC_API_KEY) === undefined && clean(env[SAVED_API_KEY])) {
-    env.ANTHROPIC_API_KEY = env[SAVED_API_KEY] ?? "";
-  }
-  env.CLAUDE_CONFIG_DIR = target.configDir;
-  return target;
-}
-
-// ---- persisted setup -----------------------------------------------------
-
-export interface StoredProfileDirs {
-  workDir?: string;
-  personalDir?: string;
+export function isClaudeBridgeProvider(provider: string | undefined): boolean {
+  return provider === CLAUDE_BRIDGE || /^claude-bridge-\d+$/.test(provider ?? "");
 }
 
 export function defaultProfilesConfigFile(agentDir: string = getAgentDir()): string {
   return path.join(agentDir, "claude-profiles.json");
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+// Without a saved list, profile 1 is ~/.claude (with the API key) and
+// profile 2 is ~/.claude-personal, matching the old work/personal pair.
+// The legacy {workDir, personalDir} file migrates to the same shape.
+export function legacyClaudeConfig(home: string, workDir?: string, personalDir?: string): StoredClaudeConfig {
+  return {
+    profiles: [
+      { dir: workDir ?? path.join(home, ".claude"), provider: CLAUDE_BRIDGE, apiKey: true },
+      { dir: personalDir ?? path.join(home, ".claude-personal"), provider: `${CLAUDE_BRIDGE}-2` },
+    ],
+  };
 }
 
-export function loadStoredProfileDirs(configFile: string = defaultProfilesConfigFile()): StoredProfileDirs {
+// Next free claude-bridge-N, starting past the profile count so a new
+// account's provider id tends to match its number.
+export function nextBridgeProvider(profiles: readonly StoredClaudeProfile[], from = profiles.length + 1): string {
+  const used = new Set(profiles.map((p) => p.provider));
+  for (let n = Math.max(2, from); ; n++) if (!used.has(`${CLAUDE_BRIDGE}-${n}`)) return `${CLAUDE_BRIDGE}-${n}`;
+}
+
+export function loadClaudeConfig(configFile: string = defaultProfilesConfigFile(), home: string = homedir()): StoredClaudeConfig {
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(configFile, "utf8"));
-    if (!isRecord(parsed)) return {};
-    const pick = (key: string): string | undefined =>
-      typeof parsed[key] === "string" && (parsed[key] as string).trim() ? (parsed[key] as string).trim() : undefined;
-    const workDir = pick("workDir");
-    const personalDir = pick("personalDir");
-    return { ...(workDir ? { workDir } : {}), ...(personalDir ? { personalDir } : {}) };
+    parsed = JSON.parse(readFileSync(configFile, "utf8"));
   } catch {
-    return {};
+    return legacyClaudeConfig(home);
+  }
+  if (!isRecord(parsed)) return legacyClaudeConfig(home);
+  const str = (value: unknown) => (typeof value === "string" ? clean(value) : undefined);
+  if (!Array.isArray(parsed.profiles)) return legacyClaudeConfig(home, str(parsed.workDir), str(parsed.personalDir));
+  const profiles: StoredClaudeProfile[] = [];
+  for (const entry of parsed.profiles) {
+    if (!isRecord(entry)) continue;
+    const dir = str(entry.dir);
+    if (!dir || profiles.some((p) => sameDir(p.dir, dir))) continue;
+    const provider = str(entry.provider);
+    profiles.push({
+      dir,
+      ...(isClaudeBridgeProvider(provider) && !profiles.some((p) => p.provider === provider) ? { provider } : {}),
+      ...(entry.apiKey === true ? { apiKey: true } : {}),
+    });
+  }
+  // Older files had no provider ids: the first profile gets the bridge itself.
+  profiles.forEach((profile, i) => {
+    if (profile.provider) return;
+    profile.provider = i === 0 && !profiles.some((p) => p.provider === CLAUDE_BRIDGE) ? CLAUDE_BRIDGE : nextBridgeProvider(profiles, i + 1);
+  });
+  const lastModel = str(parsed.lastModel);
+  return { profiles, ...(lastModel ? { lastModel } : {}) };
+}
+
+export function saveClaudeConfig(config: StoredClaudeConfig, configFile: string = defaultProfilesConfigFile()): void {
+  mkdirSync(path.dirname(configFile), { recursive: true });
+  writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+}
+
+// CLAUDE_PROFILE_<N>_DIR overrides profile N; the old WORK/PERSONAL names
+// still override profiles 1 and 2.
+export function claudeProfiles(env: NodeJS.ProcessEnv = process.env, config: StoredClaudeConfig = loadClaudeConfig()): ClaudeProfile[] {
+  return config.profiles.map((stored, i) => {
+    const index = i + 1;
+    const legacy = index === 1 ? env.CLAUDE_PROFILE_WORK_DIR : index === 2 ? env.CLAUDE_PROFILE_PERSONAL_DIR : undefined;
+    return {
+      id: `claude-${index}`,
+      index,
+      name: `Claude ${index}`,
+      configDir: clean(env[`CLAUDE_PROFILE_${index}_DIR`]) ?? clean(legacy) ?? stored.dir,
+      provider: stored.provider ?? (i === 0 ? CLAUDE_BRIDGE : `${CLAUDE_BRIDGE}-${index}`),
+      useApiKey: stored.apiKey === true,
+    };
+  });
+}
+
+export function sameDir(a: string, b: string): boolean {
+  const normalize = (p: string) => path.normalize(p).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? normalize(a).toLowerCase() === normalize(b).toLowerCase() : normalize(a) === normalize(b);
+}
+
+const SAVED_API_KEY = "CLAUDE_PROFILE_SAVED_API_KEY";
+
+export function switchClaudeProfile(profile: ClaudeProfile, env: NodeJS.ProcessEnv = process.env): ClaudeProfile {
+  if (clean(env.ANTHROPIC_API_KEY) && clean(env[SAVED_API_KEY]) === undefined) {
+    env[SAVED_API_KEY] = env.ANTHROPIC_API_KEY ?? "";
+  }
+  if (!profile.useApiKey) {
+    delete env.ANTHROPIC_API_KEY;
+  } else if (clean(env.ANTHROPIC_API_KEY) === undefined && clean(env[SAVED_API_KEY])) {
+    env.ANTHROPIC_API_KEY = env[SAVED_API_KEY] ?? "";
+  }
+  env.CLAUDE_CONFIG_DIR = profile.configDir;
+  return profile;
+}
+
+// Runs fn with the profile's dir and key in env, then restores both. The
+// bridge reads env synchronously when a call starts (session lookup and the
+// Claude Code child env), so concurrent sessions on different profiles don't mix.
+export function withClaudeProfileEnv<T>(profile: ClaudeProfile, fn: () => T, env: NodeJS.ProcessEnv = process.env): T {
+  const dir = env.CLAUDE_CONFIG_DIR;
+  const key = env.ANTHROPIC_API_KEY;
+  switchClaudeProfile(profile, env);
+  try {
+    return fn();
+  } finally {
+    if (dir === undefined) delete env.CLAUDE_CONFIG_DIR;
+    else env.CLAUDE_CONFIG_DIR = dir;
+    if (key === undefined) delete env.ANTHROPIC_API_KEY;
+    else env.ANTHROPIC_API_KEY = key;
   }
 }
 
-export function saveStoredProfileDirs(dirs: StoredProfileDirs, configFile: string = defaultProfilesConfigFile()): void {
-  mkdirSync(path.dirname(configFile), { recursive: true });
-  writeFileSync(configFile, `${JSON.stringify(dirs, null, 2)}\n`, { mode: 0o600 });
-}
-
-// File-backed dirs flow into the live session env (env vars still win).
-// This is the "do the env setting for us" step: restart-safe without setx.
-export function applyStoredProfileDirs(env: NodeJS.ProcessEnv = process.env, stored: StoredProfileDirs = loadStoredProfileDirs()): void {
-  if (!clean(env.CLAUDE_PROFILE_WORK_DIR) && stored.workDir) env.CLAUDE_PROFILE_WORK_DIR = stored.workDir;
-  if (!clean(env.CLAUDE_PROFILE_PERSONAL_DIR) && stored.personalDir) env.CLAUDE_PROFILE_PERSONAL_DIR = stored.personalDir;
-}
-
-// Every session starts on Personal. Without a Personal login it stays on Work
-// instead of failing.
-export function startOnPersonal(
+// Pins the process env to the profile that owns `claude-bridge`, so the
+// bridge's own provider always means Claude 1's account.
+export function applyBridgeProfile(
   env: NodeJS.ProcessEnv = process.env,
-  home: string = homedir(),
-  stored: StoredProfileDirs = loadStoredProfileDirs(),
+  config: StoredClaudeConfig = loadClaudeConfig(),
 ): ClaudeProfile | undefined {
-  if (!isProfileReady(claudeProfiles(env, home, stored).personal.configDir)) return undefined;
-  return switchClaudeProfile("personal", env, home, stored);
+  const base = claudeProfiles(env, config).find((profile) => profile.provider === CLAUDE_BRIDGE);
+  return base ? switchClaudeProfile(base, env) : undefined;
+}
+
+export function suggestedProfileDir(config: StoredClaudeConfig, home: string = homedir()): string {
+  for (let n = config.profiles.length + 1; ; n++) {
+    const dir = path.join(home, `.claude-${n}`);
+    if (!config.profiles.some((p) => sameDir(p.dir, dir))) return dir;
+  }
+}
+
+export function addClaudeProfile(config: StoredClaudeConfig, dir: string): StoredClaudeConfig {
+  if (config.profiles.some((p) => sameDir(p.dir, dir))) throw new Error(`${dir} is already a Claude profile`);
+  return { ...config, profiles: [...config.profiles, { dir, provider: nextBridgeProvider(config.profiles) }] };
+}
+
+export function removeClaudeProfile(config: StoredClaudeConfig, dir: string): StoredClaudeConfig {
+  return { ...config, profiles: config.profiles.filter((p) => !sameDir(p.dir, dir)) };
 }
 
 export function expandHome(value: string, home: string = homedir()): string {
@@ -151,37 +208,11 @@ export function isProfileReady(configDir: string): boolean {
   }
 }
 
-export type PickerSelection = { kind: "pick"; id: ClaudeProfileId } | { kind: "setup"; id: ClaudeProfileId };
-
-export function buildPickerItems(
-  profiles: ClaudeProfileMap,
-  ready: Record<ClaudeProfileId, boolean>,
-  current: ClaudeProfileId,
-): SelectItem[] {
-  return CLAUDE_PROFILE_IDS.map((id) => {
-    const profile = profiles[id];
-    if (ready[id]) {
-      return {
-        value: profile.id,
-        label: id === current ? `${profile.name} (current)` : profile.name,
-        description: profile.configDir,
-      } satisfies SelectItem;
-    }
-    return {
-      value: `setup:${id}`,
-      label: `+ Set up ${profile.name}...`,
-      description: `Choose a folder, then run claude login once`,
-    } satisfies SelectItem;
-  });
-}
-
-export function parsePickerValue(value: string): PickerSelection | undefined {
-  if (isProfileId(value)) return { kind: "pick", id: value };
-  const match = /^setup:(work|personal)$/.exec(value);
-  if (match && isProfileId(match[1])) return { kind: "setup", id: match[1] };
-  return undefined;
-}
-
-function isProfileId(value: string): value is ClaudeProfileId {
-  return (CLAUDE_PROFILE_IDS as readonly string[]).includes(value);
+export function claudeLoginSteps(configDir: string): string {
+  return [
+    `Log in once outside Pi:`,
+    `  Git Bash: CLAUDE_CONFIG_DIR="${configDir}" claude login`,
+    `  PowerShell: $env:CLAUDE_CONFIG_DIR="${configDir}"; claude login`,
+    `Sign in with the account for this profile, then reopen /account.`,
+  ].join("\n");
 }

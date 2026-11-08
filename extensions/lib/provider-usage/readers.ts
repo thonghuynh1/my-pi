@@ -1,29 +1,47 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { usageScope, type UsageScope, type ScopeDependencies } from "./scope.ts";
 import { createCursorUsageReader } from "./cursor.ts";
 import { createCodexUsageReader } from "./codex.ts";
 import { ClaudeUsageError, readClaudeUsageAt } from "./claude.ts";
-import { claudeProfiles, type ClaudeProfileMap } from "../claude-profiles.ts";
+import { claudeProfiles, type ClaudeProfile } from "../claude-profiles.ts";
+import { BUILTIN_CODEX, defaultCodexPaths, slotIdentity, type CodexSlot } from "../codex-accounts.ts";
 import { parseAntigravity, parseClaude, parseCodex, parseCopilot, parseCursor, parseMuse, type ProviderId, type UsageMetric } from "./model.ts";
 
 export class UsageReadError extends Error {}
-export type ProcessRequest = { command: "codex" | "agy" | "gh" | "claude"; args: readonly string[]; protocol?: "codex" | "claude"; env?: Record<string, string | undefined> };
+export type ProcessRequest = { command: "codex" | "agy" | "gh" | "claude" | "muse"; args: readonly string[]; protocol?: "codex" | "claude"; env?: Record<string, string | undefined> };
 export type ProcessRunner = (request: ProcessRequest, signal: AbortSignal) => Promise<unknown>;
 export type ProviderReader = { id: ProviderId; name: string; experimental?: boolean; scope?(): Promise<UsageScope>; read(signal: AbortSignal): Promise<UsageMetric> };
 export const CODEX_INITIALIZE = { id: 1, method: "initialize", params: { clientInfo: { name: "provider_usage", title: "Provider Usage", version: "0.1.0" } } };
 export const COPILOT_FIELDS = "{quota_snapshots: {premium_interactions: {credits_used: .quota_snapshots.premium_interactions.credits_used}}, quota_reset_date_utc: .quota_reset_date_utc}";
 export type ClaudeUsageAtReader = (run: ProcessRunner, signal: AbortSignal, configDir: string) => Promise<unknown>;
-export function providerReaders(run: ProcessRunner = runProcess, cursorRead: ((signal: AbortSignal) => Promise<unknown>) | undefined = undefined, claudeReadAt: ClaudeUsageAtReader = readClaudeUsageAt, profiles: ClaudeProfileMap = claudeProfiles(), scopeDependencies: ScopeDependencies = {}): ProviderReader[] {
-  const readCodex = createCodexUsageReader({ apiKey: scopeDependencies.codexApiKey,
-    fallback: (signal) => run({ command: "codex", args: ["app-server"], protocol: "codex" }, signal) });
+export interface ProviderReaderOptions extends ScopeDependencies { codexSlots?: readonly CodexSlot[] }
+export function providerReaders(run: ProcessRunner = runProcess, cursorRead: ((signal: AbortSignal) => Promise<unknown>) | undefined = undefined, claudeReadAt: ClaudeUsageAtReader = readClaudeUsageAt, profiles: readonly ClaudeProfile[] = claudeProfiles(), scopeDependencies: ProviderReaderOptions = {}): ProviderReader[] {
+  const codexSlots = scopeDependencies.codexSlots ?? [{ provider: BUILTIN_CODEX }];
+  const codexReaders = codexSlots.map((slot, index): ProviderReader => {
+    const id = (slot.provider === BUILTIN_CODEX ? "codex" : slot.provider) as ProviderId;
+    const identity = slotIdentity(defaultCodexPaths().authFile, slot.provider);
+    const name = `Codex ${index + 1}`;
+    const readCodex = createCodexUsageReader({
+      apiKey: scopeDependencies.codexApiKey ? () => scopeDependencies.codexApiKey!(id) : undefined,
+      fallback: (signal) => {
+        if (id !== "codex") throw new UsageReadError(`${name} requires Pi Codex OAuth login`);
+        return run({ command: "codex", args: ["app-server"], protocol: "codex" }, signal);
+      },
+    });
+    return { id, scope: usageScope(id, undefined, scopeDependencies), name, read: async (signal) => {
+      try { return parseCodex(await readCodex(signal), name); }
+      catch (error) {
+        if (error instanceof UsageReadError) throw error;
+        throw new UsageReadError(`${name} usage unavailable; check Pi Codex OAuth login`);
+      }
+    } };
+  });
   const readCursor = cursorRead ?? createCursorUsageReader({ apiKey: scopeDependencies.cursorApiKey,
     env: scopeDependencies.env, home: scopeDependencies.home, platform: scopeDependencies.platform });
-  const claudeReader = (id: "claude-work" | "claude-personal", name: string, configDir: string): ProviderReader => ({
+  const claudeReader = ({ id, name, configDir }: ClaudeProfile): ProviderReader => ({
     id, name, experimental: true, scope: usageScope(id, configDir, scopeDependencies), read: async (signal) => {
       try {
         return parseClaude(await claudeReadAt(run, signal, configDir));
@@ -35,13 +53,7 @@ export function providerReaders(run: ProcessRunner = runProcess, cursorRead: ((s
     },
   });
   return [
-    { id: "codex", scope: usageScope("codex", undefined, scopeDependencies), name: "Codex", read: async (signal) => {
-      try { return parseCodex(await readCodex(signal)); }
-      catch (error) {
-        if (error instanceof UsageReadError) throw error;
-        throw new UsageReadError("Codex usage unavailable; check Pi Codex OAuth login or existing CLI login");
-      }
-    } },
+    ...codexReaders,
     { id: "antigravity", scope: usageScope("antigravity", undefined, scopeDependencies), name: "Antigravity", read: async (signal) => parseAntigravity(await run({ command: "agy", args: ["-p", "/usage", "--output-format", "json"] }, signal)) },
     { id: "copilot", scope: usageScope("copilot", undefined, scopeDependencies), name: "GitHub Copilot", experimental: true, read: async (signal) => parseCopilot(await run({ command: "gh", args: ["api", "/copilot_internal/user", "--jq", COPILOT_FIELDS] }, signal)) },
     { id: "cursor", scope: usageScope("cursor", undefined, scopeDependencies), name: "Cursor", experimental: true, read: async (signal) => {
@@ -50,20 +62,13 @@ export function providerReaders(run: ProcessRunner = runProcess, cursorRead: ((s
       catch { throw new UsageReadError("Cursor usage unavailable; check Pi Cursor API key or existing CLI login (file store required for CLI)"); }
       return parseCursor(raw);
     } },
-    claudeReader("claude-work", profiles.work.name, profiles.work.configDir),
-    claudeReader("claude-personal", profiles.personal.name, profiles.personal.configDir),
-    // Local file only: the patched pi-meta-oauth writes it on each key mint; never mint from here.
+    ...profiles.map(claudeReader),
     { id: "muse", name: "Meta Muse", experimental: true, read: async (signal) => {
-      const file = scopeDependencies.museUsageFile ?? path.join(getAgentDir(), "provider-usage", "meta-subscription-usage.json");
-      let text: string;
-      try { text = await readFile(file, { encoding: "utf8", signal }); }
+      try { return parseMuse(await run({ command: "muse", args: ["usage", "--json"] }, signal)); }
       catch (error) {
-        throw new UsageReadError((error as NodeJS.ErrnoException).code === "ENOENT"
-          ? "No Muse usage recorded yet; needs patched pi-meta-oauth and a Meta key refresh" : "Muse usage file unreadable");
+        if (error instanceof UsageReadError) throw error;
+        throw new UsageReadError("Muse usage unavailable; check Muse CLI installation and login");
       }
-      if (text.length > 65_536) throw new UsageReadError("Muse usage file exceeded safety limit");
-      try { return parseMuse(JSON.parse(text)); }
-      catch { throw new UsageReadError("Muse usage file invalid"); }
     } },
   ];
 }

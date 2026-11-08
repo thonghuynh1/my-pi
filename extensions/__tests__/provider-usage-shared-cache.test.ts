@@ -313,7 +313,7 @@ test("storage failures fail closed without invoking live reader", async (t) => {
 test("different provider/profile/auth namespaces have independent values and cooldowns", async (t) => {
   const root = directory(t);
   const cache = new SharedUsageCache({ root, now: () => 1000 });
-  const contexts = ["codex", "copilot", "claude-work", "claude-personal", "cursor-team-1", "cursor-team-2"].map((id) => ({ key: hash(id + randomUUID()), generation: hash(id), identity: "known" as const }));
+  const contexts = ["codex", "copilot", "claude-1", "claude-2", "cursor-team-1", "cursor-team-2"].map((id) => ({ key: hash(id + randomUUID()), generation: hash(id), identity: "known" as const }));
   const observations = await Promise.all(contexts.map((context, index) => cache.read(reader(context, async () => credits(index)), signal())));
   assert.deepEqual(observations.map((observation) => observation.value), contexts.map((_context, index) => credits(index)));
 });

@@ -118,7 +118,7 @@ test("profile reader uses live control usage, not yesterday's cache, and project
   assert(parsed.kind === "spend");
   assert.equal(parsed.fetchedAt, undefined);
   assert.equal(parsed.windows[0].usedPercent, 23);
-  assert(!detailText([{ id: "claude-personal", name: "Claude Personal", status: "available", value: parsed }]).includes("cache fetched"));
+  assert(!detailText([{ id: "claude-2", name: "Claude 2", status: "available", value: parsed }]).includes("cache fetched"));
 });
 
 test("personal usage enables account requests without enabling telemetry or changing the parent environment", async () => {

@@ -160,11 +160,11 @@ test("Cursor accepts real zero, explicit overage and verified ratio, never absen
 
 test("footer shows the local five-hour reset only, never the weekly reset or an invented time", () => {
   const state: ProviderState = { id: "codex", name: "Codex", status: "available", value: parseCodex(codex) };
-  assert.deepEqual(footerRows([state]), ["Codex 5h 69% · week 16% used · 5h reset 08:14"]);
+  assert.deepEqual(footerRows([state]), ["Codex 1 5h 69% · week 16% used · 5h reset 08:14"]);
   state.value = parseCodex({ rateLimits: { primary: { usedPercent: 25, windowDurationMins: 300 } } });
-  assert.deepEqual(footerRows([state]), ["Codex 5h 25% used"]);
+  assert.deepEqual(footerRows([state]), ["Codex 1 5h 25% used"]);
   state.value = parseCodex({ rateLimits: { secondary: codex.rateLimits.secondary } });
-  assert.deepEqual(footerRows([state]), ["Codex week 16% used"]);
+  assert.deepEqual(footerRows([state]), ["Codex 1 week 16% used"]);
 });
 
 test("compact footer uses two provider rows, short labels, rounded values and stale markers", () => {
@@ -175,33 +175,33 @@ test("compact footer uses two provider rows, short labels, rounded values and st
     { id: "cursor", name: "Cursor", status: "error", error: "unavailable", value: parseCursor({ planUsage: { totalPercentUsed: 46.7, autoPercentUsed: 44, apiPercentUsed: 100 } }) },
   ];
   assert.deepEqual(compactFooterRows(states), [
-    "Codex ▰▰▰▰▰▱▱ 69%/16%  AG ▱▱▱▱▱▱▱ 0%/48%",
-    "Copilot $294  Cursor Auto ▰▰▰▱▱▱▱ 44% API ▰▰▰▰▰▰▰ 100%*",
+    "Codex 1 ▰▰▰▰▰▱▱ 69%/16%  AG ▱▱▱▱▱▱▱ 0%/48%",
+    "Copilot $294  Cursor Total ▰▰▰▱▱▱▱ 47% API ▰▰▰▰▰▰▰ 100%*",
   ]);
   assert.deepEqual(compactFooterRows([]), ["", ""]);
   const tiny: ProviderState = { id: "cursor", name: "Cursor", status: "available", value: parseCursor({ planUsage: { totalPercentUsed: 0.1 } }) };
-  assert.deepEqual(compactFooterRows([tiny]), ["", "Cursor ▱▱▱▱▱▱▱ <1%"]);
+  assert.deepEqual(compactFooterRows([tiny]), ["", "Cursor Total ▱▱▱▱▱▱▱ <1%"]);
   assert.deepEqual(compactFooterRows([{ ...tiny, value: undefined }]), ["", ""]);
 });
 
 test("Claude personal footer shows RL with cached weekly usage or an unknown weekly value", () => {
   const state: ProviderState = {
-    id: "claude-personal", name: "Claude Personal", status: "error",
+    id: "claude-2", name: "Claude 2", status: "error",
     error: "Claude usage refresh rate limited",
   };
-  assert.deepEqual(compactFooterRows([state]), ["Claude-P RL", ""]);
+  assert.deepEqual(compactFooterRows([state]), ["Claude 2 RL", ""]);
   const cached: ProviderState = { ...state, value: { kind: "spend", windows: [
     { id: "5h", label: "5h", usedPercent: 84 },
     { id: "week", label: "week", usedPercent: 74 },
   ] } };
-  assert.deepEqual(compactFooterRows([cached]), ["Claude-P RL/74%*", ""]);
+  assert.deepEqual(compactFooterRows([cached]), ["Claude 2 RL/74%*", ""]);
   assert.match(detailText([cached]), /Reason: Claude usage refresh rate limited/);
   assert.match(detailText([cached]), /Five-hour window [(]5h[)]: 84% used/);
-  assert.deepEqual(compactFooterRows([{ ...cached, error: undefined, status: "available" }]), ["Claude-P ▰▰▰▰▰▰▱ 84%/74%", ""]);
-  assert.deepEqual(compactFooterRows([{ ...cached, error: "Read timed out (30 seconds)" }]), ["Claude-P ▰▰▰▰▰▰▱ 84%/74%*", ""]);
+  assert.deepEqual(compactFooterRows([{ ...cached, error: undefined, status: "available" }]), ["Claude 2 ▰▰▰▰▰▰▱ 84%/74%", ""]);
+  assert.deepEqual(compactFooterRows([{ ...cached, error: "Read timed out (30 seconds)" }]), ["Claude 2 ▰▰▰▰▰▰▱ 84%/74%*", ""]);
   assert.deepEqual(compactFooterRows([{ ...state, value: { kind: "spend", windows: [
     { id: "week", label: "week", usedPercent: 0 },
-  ] } }]), ["Claude-P RL/0%*", ""]);
+  ] } }]), ["Claude 2 RL/0%*", ""]);
 });
 
 test("Copilot footer converts actual credits to rounded dollar equivalent, preserving raw credits", () => {
@@ -218,7 +218,7 @@ test("initial errors omitted from footer; stale successes kept with safe details
     { id: "antigravity", name: "Antigravity", status: "error", error: "CLI not installed or not on PATH" },
     { id: "codex", name: "Codex", status: "error", error: "Read timed out (30 seconds)", value: parseCodex(codex), lastAttempt: 1792138480000, lastSuccess: 1792138400000 },
   ];
-  assert.deepEqual(footerRows(states), ["Codex 5h 69% · week 16% used · 5h reset 08:14 · stale"]);
+  assert.deepEqual(footerRows(states), ["Codex 1 5h 69% · week 16% used · 5h reset 08:14 · stale"]);
   const text = detailText(states);
   assert(text.includes(new Date(1792138480000).toLocaleString()));
   assert(text.includes(new Date(1792138400000).toLocaleString()));
@@ -227,10 +227,10 @@ test("initial errors omitted from footer; stale successes kept with safe details
   assert.match(text, /Read timed out/);
 });
 
-test("Muse snapshot maps the short window and weekly allowance into one quota group", () => {
-  const value = parseMuse({ version: 1, observedAt: Date.UTC(2026, 10, 5, 9), tier: "Plus",
-    window: { usedPercent: 12.4, windowMinutes: 300, resetsAt: Date.UTC(2026, 10, 5, 12) },
-    weekly: { usedPercent: 34, resetsAt: Date.UTC(2026, 10, 10) } });
+test("Muse CLI allowance maps the short window and weekly allowance into one quota group", () => {
+  const value = parseMuse({ schemaVersion: 1, allowance: { asOfMs: Date.UTC(2026, 10, 5, 9), tier: "Plus",
+    window: { usedPercent: 12.4, resetsAtMs: Date.UTC(2026, 10, 5, 12) },
+    weekly: { usedPercent: 34, resetsAtMs: Date.UTC(2026, 10, 10) } } });
   assert.equal(value.kind, "quota");
   if (value.kind !== "quota") return;
   assert.equal(value.groups[0].shortName, "Muse");
@@ -238,8 +238,8 @@ test("Muse snapshot maps the short window and weekly allowance into one quota gr
   assert.deepEqual(value.groups[0].windows.map((w) => [w.id, w.usedPercent]), [["5h", 12.4], ["week", 34]]);
   const state: ProviderState = { id: "muse", name: "Meta Muse", status: "available", value };
   assert.deepEqual(compactFooterRows([state]), ["Muse ▰▱▱▱▱▱▱ 12%/34%", ""]);
-  assert.throws(() => parseMuse({ version: 1, observedAt: 1, weekly: { usedPercent: -1 } }), /unavailable/);
-  assert.throws(() => parseMuse({ version: 2, observedAt: 1, weekly: { usedPercent: 1 } }), /unavailable/);
+  assert.throws(() => parseMuse({ schemaVersion: 1, allowance: { asOfMs: 1, weekly: { usedPercent: -1 } } }), /unavailable/);
+  assert.throws(() => parseMuse({ schemaVersion: 2, allowance: { asOfMs: 1, weekly: { usedPercent: 1 } } }), /unavailable/);
 });
 
 test("footer bars track the five-hour window, label 5h/week, and paint by the fuller window", () => {
@@ -248,12 +248,12 @@ test("footer bars track the five-hour window, label 5h/week, and paint by the fu
   assert.equal(usageBar(250), "▰▰▰▰▰▰▰");
   const codex: ProviderState = { id: "codex", name: "Codex", status: "available", value: parseCodex({ rateLimits: {
     primary: { usedPercent: 14, windowDurationMins: 300 }, secondary: { usedPercent: 92, windowDurationMins: 10080 } } }) };
-  const muse: ProviderState = { id: "muse", name: "Meta Muse", status: "available", value: parseMuse({ version: 1, observedAt: 1, weekly: { usedPercent: 71 } }) };
+  const muse: ProviderState = { id: "muse", name: "Meta Muse", status: "available", value: parseMuse({ schemaVersion: 1, allowance: { asOfMs: 1, weekly: { usedPercent: 71 } } }) };
   const cursor: ProviderState = { id: "cursor", name: "Cursor", status: "available", value: parseCursor({ planUsage: { totalPercentUsed: 120, apiPercentUsed: 5 } }) };
   assert.deepEqual(compactFooterRows([codex, muse, cursor], (level, text) => `<${level}>${text}`),
-    ["<high>Codex ▰▱▱▱▱▱▱ 14%/92%  <warn>Muse ▰▰▰▰▰▱▱ wk 71%", "Cursor <ok>API ▱▱▱▱▱▱▱ 5%"]);
+    ["<high>Codex 1 ▰▱▱▱▱▱▱ 14%/92%  <warn>Muse ▰▰▰▰▰▱▱ wk 71%", "Cursor <high>Total ▰▰▰▰▰▰▰ 120% <ok>API ▱▱▱▱▱▱▱ 5%"]);
   assert.deepEqual(compactFooterRows([{ ...cursor, value: parseCursor({ planUsage: { totalPercentUsed: 120 } }) }], (level, text) => `<${level}>${text}`),
-    ["", "Cursor <high>▰▰▰▰▰▰▰ 120%"]);
+    ["", "Cursor <high>Total ▰▰▰▰▰▰▰ 120%"]);
 });
 
 test("Codex 30-day window is labeled month, not minutes", () => {
@@ -275,9 +275,46 @@ test("modal table shows one row per group with 5h and week cells, notes and stat
   ];
   const [header, codex, gemini, thirdParty, copilot, muse] = usageTable(states, now);
   assert.match(header, /^Provider +5h +Week +Resets \/ notes$/);
-  assert.equal(codex, "Codex         ▰▱▱▱▱ 14%   ▰▰▰▰▱ 70%   ↻ 5h 13:00, wk Sun 8 Nov 12:00");
+  assert.equal(codex, "Codex 1       ▰▱▱▱▱ 14%   ▰▰▰▰▱ 70%   ↻ 5h 13:00, wk Sun 8 Nov 12:00");
   assert.match(gemini, /^AG Gemini +▱▱▱▱▱ 0% +▱▱▱▱▱ 0% .* · stale$/);
   assert.match(thirdParty, /^AG Claude\/GPT ▱▱▱▱▱ 0% +▰▰▱▱▱ 48%/);
   assert.match(copilot, /^Copilot +– +– +\$78 \(7,826 credits\)$/);
   assert.match(muse, /^Muse +– +– +No Muse usage recorded yet$/);
+});
+
+test("footer abbreviates consecutive Codex and Claude accounts without changing details", () => {
+  const codex = (id: ProviderState["id"], name: string): ProviderState => ({
+    id, name, status: "available",
+    value: parseCodex({ rateLimits: { primary: { usedPercent: 12, windowDurationMins: 300 } } }, name),
+  });
+  const claude = (id: ProviderState["id"], name: string): ProviderState => ({
+    id, name, status: "available",
+    value: { kind: "spend", windows: [{ id: "5h", label: "5h", usedPercent: 12 }],
+      spend: { used: 2, limit: 10, currency: "USD", usedPercent: 20 } },
+  });
+  const first = codex("codex", "Codex 1");
+  const second = codex("codex-2", "Codex 2");
+  const third = claude("claude-1", "Claude 1");
+  const fourth = claude("claude-2", "Claude 2");
+  const bar = "▰▱▱▱▱▱▱ 12%";
+  assert.deepEqual(compactFooterRows([first, second, third, fourth]), [
+    `Codex 1 ${bar}  2 ${bar}  Claude 1 ${bar}  2 ${bar}`,
+    "Claude 1 $2/$10 20%  2 $2/$10 20%",
+  ]);
+  assert.equal(compactFooterRows([second, fourth])[0], `Codex 2 ${bar}  Claude 2 ${bar}`);
+  assert.equal(compactFooterRows([{ ...first, value: undefined }, second])[0], `Codex 2 ${bar}`);
+  assert.equal(compactFooterRows([third, { ...fourth, error: "Claude usage refresh rate limited" }])[0],
+    `Claude 1 ${bar}  2 RL`);
+  assert.equal(compactFooterRows([first, second], (_level, text) => `<color>${text}</color>`)[0],
+    `<color>Codex 1 ${bar}</color>  <color>2 ${bar}</color>`);
+  assert.match(detailText([first, second, third, fourth]), /Codex 2/);
+  assert.match(detailText([first, second, third, fourth]), /Claude 2/);
+  assert.match(usageTable([first, second, third, fourth]).join("\n"), /Codex 2/);
+  assert.match(usageTable([first, second, third, fourth]).join("\n"), /Claude 2/);
+});
+
+test("Codex clone metrics retain their account display name", () => {
+  const value = parseCodex({ rateLimits: { primary: { usedPercent: 12, windowDurationMins: 300 } } }, "Codex 2");
+  assert.equal(compactFooterRows([{ id: "codex-2", name: "Codex 2", status: "available", value }])[0], "Codex 2 ▰▱▱▱▱▱▱ 12%");
+  assert.match(detailText([{ id: "codex-2", name: "Codex 2", status: "available", value }]), /Codex 2/);
 });

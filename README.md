@@ -27,14 +27,14 @@ Restart Pi or run `/reload`.
 
 The `postinstall` script handles Accordion build automatically.
 
-## Claude Work / Personal accounts
+## Claude accounts
 
-The `claude-profile` extension switches the account used by `claude-bridge/*` models. Work defaults to `~/.claude`; Personal defaults to `~/.claude-personal`. Keep these directories **different** so renewing Personal does not overwrite Work's login.
+Claude subscriptions are numbered accounts managed in `/account`, like Codex. Each one has its own login folder (`CLAUDE_CONFIG_DIR`) and its own provider: Claude 1 = `claude-bridge` (`~/.claude`), Claude 2 = `claude-bridge-2` (`~/.claude-personal`), Claude 3 = `claude-bridge-3`, and so on. Pick one in `/account` (`Enter`) or with `/model`. Keep every folder **different** so logging in one account never overwrites another. Details: [docs/claude-code-profiles.md](docs/claude-code-profiles.md).
 
-### Renew Personal OAuth without affecting Work
+### Log in or renew an account without affecting the others
 
-1. In Pi, run `/claude-profile status` and note the **Personal** directory. If it is not configured yet, run `/claude-profile setup personal`. Custom paths can be saved in `~/.pi/agent/claude-profiles.json`; `CLAUDE_PROFILE_WORK_DIR` / `CLAUDE_PROFILE_PERSONAL_DIR` environment overrides take precedence.
-2. Open a **separate terminal outside Pi**. Use the exact Personal directory from step 1 in place of the default below. Switching profiles inside Pi does not change another terminal's environment.
+1. In Pi, open `/account`, select the Claude row and press `l` to see its folder and login command (`a` adds a new account first). `/account status` lists every folder.
+2. Open a **separate terminal outside Pi** and log in with that exact folder.
 
    **PowerShell** (use a fresh terminal and close it afterward, so these environment changes do not persist in your working shell):
 
@@ -52,12 +52,14 @@ The `claude-profile` extension switches the account used by `claude-bridge/*` mo
    env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR="$HOME/.claude-personal" claude auth status
    ```
 
-3. In the browser, explicitly choose your **personal** Claude account, not the work account that may already be signed in. Check `claude auth status` reports the intended account before continuing.
-4. Restart Pi and select a `claude-bridge/*` model. Sessions start on Personal whenever it is logged in. Run `/provider-usage`, then press `r` to refresh usage. To use Work for the current session, run `/claude-profile use work`.
+3. In the browser, explicitly choose the account meant for that folder, not one that may already be signed in. Check `claude auth status` reports the intended account before continuing.
+4. Restart Pi. Run `/provider-usage`, then press `r` to refresh usage.
 
-**Avoid:** running login/logout without an explicit `CLAUDE_CONFIG_DIR`, pointing Personal at the Work directory, copying credentials between directories, or using `setx` to change the global config directory. No Work logout is needed. Pi's `/login` is separate from the Claude Code login used by `claude-bridge`. The profile picker checks for login files, not token validity, so a profile marked ready can still need OAuth renewal.
+**Avoid:** running login/logout without an explicit `CLAUDE_CONFIG_DIR`, pointing two accounts at one folder, copying credentials between folders, or using `setx` to change the global config directory. Pi's `/login` is separate from the Claude Code login used by `claude-bridge`. `/account` checks for login files, not token validity, so an account marked ready can still need OAuth renewal.
 
 ## Provider account usage
+
+Muse usage refreshes through `muse usage --json` on the existing five-minute schedule and when you press `r` in `/provider-usage`. Install Muse Code and sign in to the intended account with `muse login`. Usage follows the Muse CLI account, which may differ from Pi's Meta login. The command fetches subscription allowance without a model turn; Muse documents that fresh usage reads mint a key and are rate-bounded to once per host per minute. The old Pi key-mint snapshot is no longer read.
 
 The footer stays **three lines** tall: session totals on the left, model on the top right, Codex/Antigravity on the second right row, and Copilot/Cursor on the third. Connected accounts are shown independently of the selected Pi model. Summary labels: `wk` = weekly, `AG-G` = Antigravity Gemini, `AG-C/G` = Antigravity Claude/GPT, Copilot dollars = credits ÷ 100 rounded to whole dollars (user-requested equivalent, not a verified bill; raw credits remain in details), Cursor `M` = overall monthly included usage and `A` = Auto. Percentages are rounded; `*` marks stale data. Narrow terminals truncate summaries instead of adding rows. Use `/provider-usage` for reset dates, errors and manual refresh. Automatic refresh runs every five minutes while the footer is enabled. Cross-process cache refreshes use Windows named-pipe locks (avoiding reserved TCP-port failures) and loopback TCP locks on other platforms. When updating from TCP-based locks on Windows, restart all Pi sessions together so they use the same locking mechanism.
 

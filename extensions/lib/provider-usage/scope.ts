@@ -11,8 +11,7 @@ export interface ScopeDependencies {
   platform?: NodeJS.Platform;
   readFile?: (file: string) => Buffer | undefined;
   cursorApiKey?: () => Promise<string | undefined>;
-  codexApiKey?: () => Promise<string | undefined>;
-  museUsageFile?: string;
+  codexApiKey?: (provider?: string) => Promise<string | undefined>;
 }
 const digest = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 const hash = (value: unknown): string => digest(JSON.stringify(value));
@@ -89,11 +88,15 @@ export function usageScope(id: ProviderId, configDir?: string, deps: ScopeDepend
       marker = identity(read(join(root, ".claude.json")));
       accountKnown = marker !== null;
       for (const key of ["CLAUDE_CODE_OAUTH_TOKEN_FILE", "ANTHROPIC_AUTH_TOKEN_FILE"]) if (env[key]) { files.push(env[key]!); credentialFiles.push(env[key]!); }
-    } else if (id === "codex") {
-      const token = await deps.codexApiKey?.();
+    } else if (id === "codex" || id.startsWith("codex-")) {
+      const token = await deps.codexApiKey?.(id);
       if (token !== undefined) {
-        const key = hash(["provider-usage-codex-pi-oauth-v1", platform, digest(token)]);
+        const key = hash(["provider-usage-codex-pi-oauth-v1", id, platform, digest(token)]);
         return { key, generation: key, identity: "known" };
+      }
+      if (id.startsWith("codex-")) {
+        const key = hash(["provider-usage-codex-slot-v1", id, platform, env.PI_CODING_AGENT_DIR ?? ""]);
+        return { key, generation: key, identity: "opaque" };
       }
       root = env.CODEX_HOME || join(home, ".codex");
       selectors = ["CODEX_HOME", "CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_ORGANIZATION", "OPENAI_PROJECT_ID", "CODEX_AUTH_FILE", "OPENAI_API_KEY_FILE", "CODEX_IDENTITY_FILE", "CODEX_BASE_URL", "CODEX_ACCESS_TOKEN", "OPENAI_FEDERATION_RULE_ID", "OPENAI_IDENTITY_TOKEN_FILE", "OPENAI_WORKLOAD_IDENTITY_CONTEXT"];

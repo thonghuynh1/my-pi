@@ -1,4 +1,4 @@
-export type ProviderId = "codex" | "antigravity" | "copilot" | "cursor" | "claude-work" | "claude-personal" | "muse";
+export type ProviderId = "codex" | `codex-${number}` | "antigravity" | "copilot" | "cursor" | `claude-${number}` | "muse";
 export type QuotaWindow = { id: string; label: string; usedPercent: number; resetsAt?: number };
 export type QuotaGroup = { id: string; name: string; shortName: string; windows: QuotaWindow[]; asOf?: number };
 export type UsageMetric =
@@ -26,7 +26,7 @@ function reset(value: unknown, epoch = false): number | undefined {
 }
 function unavailable(): never { throw new Error("Usage fields unavailable"); }
 
-export function parseCodex(raw: unknown): UsageMetric {
+export function parseCodex(raw: unknown, displayName = "Codex"): UsageMetric {
   const data = record(raw);
   const bucket = record(record(data.rateLimitsByLimitId).codex ?? data.rateLimits);
   const windows: QuotaWindow[] = [];
@@ -39,7 +39,7 @@ export function parseCodex(raw: unknown): UsageMetric {
   }
   if (!windows.length) return unavailable();
   windows.sort((a, b) => (a.id === "5h" ? -1 : b.id === "5h" ? 1 : 0));
-  return { kind: "quota", groups: [{ id: "codex", name: "Codex", shortName: "Codex", windows }] };
+  return { kind: "quota", groups: [{ id: "codex", name: displayName, shortName: displayName, windows }] };
 }
 
 export function parseAntigravity(raw: unknown): UsageMetric {
@@ -93,25 +93,22 @@ export function parseCursor(raw: unknown): UsageMetric {
   return { kind: "quota", groups: [{ id: "cursor", name: "Cursor included plan", shortName: "Cursor", windows }] };
 }
 
-// Source: the patched pi-meta-oauth snapshot of the Muse Code key-mint `subs_usage`.
-// It only changes when Pi re-mints the Meta key, so details show its observed time.
+// Source: Muse Code's `muse usage --json` versioned allowance response.
 export function parseMuse(raw: unknown): UsageMetric {
-  const data = record(raw);
-  if (data.version !== 1 || !finite(data.observedAt) || data.observedAt <= 0) return unavailable();
+  const envelope = record(raw);
+  const data = record(envelope.allowance);
+  if (envelope.schemaVersion !== 1 || envelope.reason != null
+    || !finite(data.asOfMs) || data.asOfMs <= 0 || data.asOfMs > 8.64e15) return unavailable();
   const windows: QuotaWindow[] = [];
-  for (const key of ["window", "weekly"]) {
+  for (const [key, id] of [["window", "5h"], ["weekly", "week"]]) {
     const w = record(data[key]);
     if (!finite(w.usedPercent) || w.usedPercent < 0) continue;
-    const minutes = w.windowMinutes;
-    const id = key === "weekly" || minutes === 10080 ? "week" : minutes === 300 ? "5h"
-      : finite(minutes) && minutes > 0 ? `${Math.round(minutes)}m` : "window";
-    if (windows.some((item) => item.id === id)) continue;
-    const resetsAt = finite(w.resetsAt) && w.resetsAt > 0 && w.resetsAt <= 8.64e15 ? w.resetsAt : undefined;
+    const resetsAt = finite(w.resetsAtMs) && w.resetsAtMs > 0 && w.resetsAtMs <= 8.64e15 ? w.resetsAtMs : undefined;
     windows.push({ id, label: id, usedPercent: w.usedPercent, resetsAt });
   }
   if (!windows.length) return unavailable();
   const tier = typeof data.tier === "string" && data.tier ? ` ${data.tier}` : "";
-  return { kind: "quota", groups: [{ id: "muse", name: `Muse Code${tier} subscription · as of ${new Date(data.observedAt).toLocaleString()}`, shortName: "Muse", windows, asOf: data.observedAt }] };
+  return { kind: "quota", groups: [{ id: "muse", name: `Muse Code${tier} subscription · as of ${new Date(data.asOfMs).toLocaleString()}`, shortName: "Muse", windows, asOf: data.asOfMs }] };
 }
 
 function money(value: unknown, exponent: unknown): number | undefined {
@@ -153,8 +150,7 @@ export function parseClaude(raw: unknown): UsageMetric {
 }
 
 const claudeFull = (state: ProviderState): string => state.name || "Claude";
-const claudeShort = (state: ProviderState): string =>
-  state.id === "claude-work" ? "Claude-W" : state.id === "claude-personal" ? "Claude-P" : state.name || "Claude";
+const claudeShort = (state: ProviderState): string => state.name || "Claude";
 const percent = (n: number): string => `${Number(n.toFixed(1))}%`;
 const dollars = (n: number, currency: string, digits = 2): string =>
   `${currency === "USD" ? "$" : currency + " "}${n.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
@@ -172,7 +168,8 @@ export function footerRows(states: readonly ProviderState[]): string[] {
     return state.value.groups.map((g) => {
       const resetsAt = g.windows.find((w) => w.id === "5h")?.resetsAt;
       const resetTime = resetsAt === undefined ? "" : ` · 5h reset ${new Date(resetsAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
-      return `${g.shortName} ${g.windows.map((w) => `${w.label} ${percent(w.usedPercent)}`).join(" · ")} used${resetTime}${stale}`;
+      const displayName = state.id === "codex" ? "Codex 1" : state.id.startsWith("codex-") ? state.name : g.shortName;
+      return `${displayName} ${g.windows.map((w) => `${w.label} ${percent(w.usedPercent)}`).join(" · ")} used${resetTime}${stale}`;
     });
   });
 }
@@ -190,6 +187,16 @@ export function usageBar(usedPercent: number, cells = BAR_CELLS): string {
 export function compactFooterRows(states: readonly ProviderState[], paint: UsagePaint = (_level, text) => text): string[] {
   const quota: string[] = [];
   const accounts: string[] = [];
+  const families = new Map<string[], string | undefined>();
+  const append = (row: string[], name: string, render: (label: string) => string | undefined) => {
+    const numbered = /^(Codex|Claude) (\d+)$/.exec(name);
+    const family = numbered?.[1];
+    const label = numbered && families.get(row) === family ? numbered[2] : name;
+    const text = render(label);
+    if (text === undefined) return;
+    row.push(text);
+    families.set(row, family);
+  };
   const pct = (n: number) => n > 0 && n < 1 ? "<1%" : `${Math.round(n)}%`;
   const chip = (name: string, windows: readonly QuotaWindow[], suffix = ""): string | undefined => {
     if (!windows.length) return undefined;
@@ -208,46 +215,43 @@ export function compactFooterRows(states: readonly ProviderState[], paint: Usage
   };
   for (const state of states) {
     const stale = state.error ? "*" : "";
-    if (state.id === "claude-personal" && state.error === "Claude usage refresh rate limited") {
+    if (state.id.startsWith("claude-") && state.error === "Claude usage refresh rate limited") {
       // The five-hour read is rate limited; only a cached weekly value is meaningful.
       const weekly = state.value?.kind === "spend" ? state.value.windows.find((window) => window.id === "week") : undefined;
-      quota.push(paint(weekly && levelOf(weekly.usedPercent) === "high" ? "high" : "warn",
-        `${claudeShort(state)} RL${weekly ? `/${pct(weekly.usedPercent)}*` : ""}`));
+      append(quota, claudeShort(state), (label) => paint(weekly && levelOf(weekly.usedPercent) === "high" ? "high" : "warn",
+        `${label} RL${weekly ? `/${pct(weekly.usedPercent)}*` : ""}`));
       continue;
     }
     if (!state.value) continue;
     if (state.value.kind === "credits") {
       // User-requested credit-equivalent display, not a verified billing amount.
-      accounts.push(paint("ok", `Copilot $${Math.round(state.value.consumed / 100).toLocaleString("en-US")}${stale}`));
+      const amount = Math.round(state.value.consumed / 100).toLocaleString("en-US");
+      append(accounts, "Copilot", (label) => paint("ok", `${label} $${amount}${stale}`));
       continue;
     }
     if (state.value.kind === "spend") {
       const { spend, windows } = state.value;
-      const quotaChip = chip(claudeShort(state), windows, stale);
-      if (quotaChip) quota.push(quotaChip);
+      append(quota, claudeShort(state), (label) => chip(label, windows, stale));
       if (spend) {
         const amount = `${dollars(spend.used, spend.currency, 0)}${spend.limit !== undefined ? `/${dollars(spend.limit, spend.currency, 0)}` : ""}`;
-        accounts.push(paint(levelOf(spend.usedPercent ?? 0), `${claudeShort(state)} ${amount}${spend.usedPercent !== undefined ? ` ${pct(spend.usedPercent)}` : ""}${stale}`));
+        append(accounts, claudeShort(state), (label) => paint(levelOf(spend.usedPercent ?? 0), `${label} ${amount}${spend.usedPercent !== undefined ? ` ${pct(spend.usedPercent)}` : ""}${stale}`));
       }
       continue;
     }
     if (state.id === "cursor") {
-      // Auto and API are separate, non-additive pools: one bar each, falling back to the month total.
-      const windows = state.value.groups.flatMap((g) => g.windows);
-      const pools = windows.filter((w) => w.id === "auto" || w.id === "api");
-      const bars = (pools.length ? pools : windows.filter((w) => w.id === "month"))
-        .map((w) => paint(levelOf(w.usedPercent), `${w.id === "month" ? "" : `${w.label} `}${usageBar(w.usedPercent)} ${pct(w.usedPercent)}`));
-      if (bars.length) accounts.push(`Cursor ${bars.join(" ")}${stale}`);
+      // Total included plan plus the API pool (manual model picks bill there); Auto stays in the details.
+      const windows = state.value.groups.flatMap((g) => g.windows).filter((w) => w.id === "month" || w.id === "api");
+      const bars = windows.map((w) => paint(levelOf(w.usedPercent), `${w.id === "month" ? "Total" : w.label} ${usageBar(w.usedPercent)} ${pct(w.usedPercent)}`));
+      if (bars.length) append(accounts, "Cursor", (label) => `${label} ${bars.join(" ")}${stale}`);
       continue;
     }
     const windows = state.value.groups.flatMap((g) => g.windows);
-    const name = state.id === "antigravity" ? "AG" : state.value.groups[0]?.shortName ?? state.name;
-    const value = chip(name, windows, stale);
-    if (value) quota.push(value);
+    const name = state.id === "antigravity" ? "AG" : state.id === "codex" ? "Codex 1" : state.id.startsWith("codex-") ? state.name : state.value.groups[0]?.shortName ?? state.name;
+    append(quota, name, (label) => chip(label, windows, stale));
   }
   return [quota.join("  "), accounts.join("  ")];
 }
-const shortNames: Partial<Record<ProviderId, string>> = { codex: "Codex", antigravity: "Antigravity", copilot: "Copilot", cursor: "Cursor", muse: "Muse" };
+const shortNames: Partial<Record<ProviderId, string>> = { codex: "Codex 1", antigravity: "Antigravity", copilot: "Copilot", cursor: "Cursor", muse: "Muse" };
 const clockTime = (t: number): string => new Date(t).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 // Resets within a day show a time; later ones add the weekday and date.
 function resetTime(t: number, now: number): string {
@@ -272,7 +276,7 @@ export function usageTable(states: readonly ProviderState[], now = Date.now(), p
   };
   const lines = [`${"Provider".padEnd(NAME_WIDTH)}${"5h".padEnd(CELL_WIDTH)}${"Week".padEnd(CELL_WIDTH)}Resets / notes`];
   for (const state of states) {
-    const name = shortNames[state.id] ?? claudeShort(state);
+    const name = shortNames[state.id] ?? (state.id === "codex" || state.id.startsWith("codex-") ? state.name : claudeShort(state));
     const status = state.error === "Claude usage refresh rate limited" ? paint("warn", "rate limited")
       : state.value && state.error ? paint("warn", "stale") : "";
     if (!state.value) {

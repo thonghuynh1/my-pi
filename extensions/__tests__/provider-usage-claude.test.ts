@@ -54,13 +54,13 @@ test("reader refuses local command text and unavailable or malformed live limits
 });
 
 test("registry surfaces safe Claude reader errors", async () => {
-  const claude = providerReaders(async () => ({}), async () => ({}), async () => { throw new Error("/secret/path"); }).find((r) => r.id === "claude-work")!;
+  const claude = providerReaders(async () => ({}), async () => ({}), async () => { throw new Error("/secret/path"); }).find((r) => r.id === "claude-1")!;
   assert.equal(claude.experimental, true);
-  assert.equal(claude.name, "Claude Work");
-  await assert.rejects(claude.read(signal()), (e: Error) => e.message === "Claude Work usage unavailable");
-  const personal = providerReaders(async () => ({}), async () => ({}), async () => { throw new Error("/secret/path"); }).find((r) => r.id === "claude-personal")!;
-  assert.equal(personal.name, "Claude Personal");
-  await assert.rejects(personal.read(signal()), (e: Error) => e.message === "Claude Personal usage unavailable");
+  assert.equal(claude.name, "Claude 1");
+  await assert.rejects(claude.read(signal()), (e: Error) => e.message === "Claude 1 usage unavailable");
+  const personal = providerReaders(async () => ({}), async () => ({}), async () => { throw new Error("/secret/path"); }).find((r) => r.id === "claude-2")!;
+  assert.equal(personal.name, "Claude 2");
+  await assert.rejects(personal.read(signal()), (e: Error) => e.message === "Claude 2 usage unavailable");
 });
 
 test("enterprise usage credits parse to dollars against the seat limit", () => {
@@ -86,8 +86,8 @@ test("spend without a personal limit keeps the amount and invents no limit or pe
   const value = parseClaude({ utilization: { spend: { enabled: true, used: { amount_minor: 1234, currency: "USD", exponent: 2 }, limit: null } } });
   assert(value.kind === "spend");
   assert.deepEqual(value.spend, { used: 12.34, limit: undefined, currency: "USD", usedPercent: undefined, severity: undefined });
-  const state: ProviderState = { id: "claude-work", name: "Claude Work", status: "available", value };
-  assert.deepEqual(compactFooterRows([state]), ["", "Claude-W $12"]);
+  const state: ProviderState = { id: "claude-1", name: "Claude 1", status: "available", value };
+  assert.deepEqual(compactFooterRows([state]), ["", "Claude 1 $12"]);
   assert(detailText([state]).includes("$12.34 used (no personal limit)"));
 });
 
@@ -103,17 +103,17 @@ test("Pro/Max subscription windows map to 5h/week with resets; spend optional", 
     { id: "5h", label: "5h", usedPercent: 23.5, resetsAt: Date.parse("2026-01-01T10:00:00Z") },
     { id: "week", label: "week", usedPercent: 41.2, resetsAt: Date.parse("2026-01-05T10:00:00Z") },
   ]);
-  const state: ProviderState = { id: "claude-work", name: "Claude Work", status: "available", value };
-  assert.deepEqual(compactFooterRows([state]), ["Claude-W ▰▰▱▱▱▱▱ 24%/41%", ""]);
+  const state: ProviderState = { id: "claude-1", name: "Claude 1", status: "available", value };
+  assert.deepEqual(compactFooterRows([state]), ["Claude 1 ▰▰▱▱▱▱▱ 24%/41%", ""]);
 });
 
 test("footer, stale marker and details for enterprise spend", () => {
-  const state: ProviderState = { id: "claude-work", name: "Claude Work", experimental: true, status: "available", value: parseClaude(enterprise) };
-  assert.deepEqual(compactFooterRows([state]), ["", "Claude-W $407/$500 81%"]);
-  assert.deepEqual(compactFooterRows([{ ...state, error: "Read timed out (30 seconds)" }]), ["", "Claude-W $407/$500 81%*"]);
-  assert.deepEqual(footerRows([state]), ["Claude Work $406.90 / $500.00 (81.4%) used"]);
+  const state: ProviderState = { id: "claude-1", name: "Claude 1", experimental: true, status: "available", value: parseClaude(enterprise) };
+  assert.deepEqual(compactFooterRows([state]), ["", "Claude 1 $407/$500 81%"]);
+  assert.deepEqual(compactFooterRows([{ ...state, error: "Read timed out (30 seconds)" }]), ["", "Claude 1 $407/$500 81%*"]);
+  assert.deepEqual(footerRows([state]), ["Claude 1 $406.90 / $500.00 (81.4%) used"]);
   const details = detailText([state]);
-  assert(details.includes("Claude Work (experimental internal API)"));
+  assert(details.includes("Claude 1 (experimental internal API)"));
   assert(details.includes("Usage credits: $406.90 used of $500.00 limit · 81.4% · warning"));
   assert(details.includes("Spend period/reset not reported"));
   assert(details.includes("Claude Code cache fetched:"));
@@ -132,6 +132,6 @@ test("per-profile read pins CLAUDE_CONFIG_DIR, strips the API key and keeps only
 
 test("unparseable profile usage surfaces a per-profile safe error", async () => {
   const readers = providerReaders(async () => ({ rate_limits_available: true, rate_limits: {} }), async () => ({}));
-  const work = readers.find((r) => r.id === "claude-work")!;
-  await assert.rejects(work.read(signal()), (e: Error) => e.message === "Claude Work usage unavailable");
+  const work = readers.find((r) => r.id === "claude-1")!;
+  await assert.rejects(work.read(signal()), (e: Error) => e.message === "Claude 1 usage unavailable");
 });

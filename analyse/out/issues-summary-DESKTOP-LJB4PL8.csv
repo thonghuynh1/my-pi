@@ -1,0 +1,7 @@
+repo,era,opened,closed_of_opened,close_rate_pct,closed_in_era,median_lead_h
+aiNho,before,42,38,90,38,0.0
+aiNho,after,61,36,59,36,13.7
+my-pi,before,101,84,83,84,0.0
+my-pi,after,1,1,100,1,0.0
+tstack,before,29,26,90,23,0.0
+tstack,after,435,316,73,319,0.0

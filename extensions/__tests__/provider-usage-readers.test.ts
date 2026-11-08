@@ -5,7 +5,7 @@ import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
 import { CLAUDE_USAGE_REQUEST, readClaudeUsageAt } from "../lib/provider-usage/claude.ts";
-import { CODEX_INITIALIZE, COPILOT_FIELDS, createProcessRunner, createTreeTerminator, providerReaders, resolveLaunch, type ProcessRequest } from "../lib/provider-usage/readers.ts";
+import { CODEX_INITIALIZE, COPILOT_FIELDS, createProcessRunner, createTreeTerminator, providerReaders, resolveLaunch, UsageReadError, type ProcessRequest } from "../lib/provider-usage/readers.ts";
 
 function processFixture(options: { timeoutMs?: number; maxOutputBytes?: number } = {}) {
   const events = new EventEmitter();
@@ -34,17 +34,18 @@ test("registry uses verified CLI commands plus the isolated experimental Cursor 
     requests.push(request);
     if (request.command === "codex") return { rateLimits: { primary: { usedPercent: 69, windowDurationMins: 300 } } };
     if (request.command === "agy") return { status: "SUCCESS", command: { name: "usage", data: { groups: [{ name: "Gemini Models", buckets: [{ window: "5h", remaining_fraction: 1 }] }] } } };
+    if (request.command === "muse") return { schemaVersion: 1, allowance: { asOfMs: 1794129773742, weekly: { usedPercent: 20 } } };
     if (request.command === "claude") return { rate_limits_available: true, rate_limits: { spend: { enabled: true, used: { amount_minor: 1, exponent: 2 } } } };
     return { quota_snapshots: { premium_interactions: { credits_used: 54386 } } };
-  }, async () => ({ planUsage: { totalPercentUsed: 42 } }), readClaudeUsageAt, {
-    work: { id: "work", name: "Claude Work", shortName: "Claude-W", configDir: "/cfg-work" },
-    personal: { id: "personal", name: "Claude Personal", shortName: "Claude-P", configDir: "/cfg-personal" },
-  });
-  await Promise.all(readers.filter((reader) => reader.id !== "muse").map((reader) => reader.read(signal())));
+  }, async () => ({ planUsage: { totalPercentUsed: 42 } }), readClaudeUsageAt, [
+    { id: "claude-1", index: 1, name: "Claude 1", configDir: "/cfg-work", provider: "claude-bridge", useApiKey: true },
+    { id: "claude-2", index: 2, name: "Claude 2", configDir: "/cfg-personal", provider: "claude-bridge-2", useApiKey: false },
+  ]);
+  await Promise.all(readers.map((reader) => reader.read(signal())));
   assert.deepEqual(requests, [codexRequest, jsonRequest, { command: "gh", args: ["api", "/copilot_internal/user", "--jq", COPILOT_FIELDS] },
     { ...CLAUDE_USAGE_REQUEST, env: { CLAUDE_CONFIG_DIR: "/cfg-work", ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: undefined, DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", DISABLE_AUTOUPDATER: "1" } },
-    { ...CLAUDE_USAGE_REQUEST, env: { CLAUDE_CONFIG_DIR: "/cfg-personal", ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: undefined, DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", DISABLE_AUTOUPDATER: "1" } }]);
-  assert.deepEqual(readers.map((r) => r.id), ["codex", "antigravity", "copilot", "cursor", "claude-work", "claude-personal", "muse"]);
+    { ...CLAUDE_USAGE_REQUEST, env: { CLAUDE_CONFIG_DIR: "/cfg-personal", ANTHROPIC_API_KEY: undefined, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: undefined, DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", DISABLE_AUTOUPDATER: "1" } }, { command: "muse", args: ["usage", "--json"] }]);
+  assert.deepEqual(readers.map((r) => r.id), ["codex", "antigravity", "copilot", "cursor", "claude-1", "claude-2", "muse"]);
   assert.equal(readers[2].experimental, true);
 });
 
@@ -168,20 +169,57 @@ test("tree cleanup targets only owned POSIX group and Windows PID tree with boun
   }
 });
 
-test("Muse reads only the local subscription snapshot and explains a missing one", async () => {
-  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
-  const dir = mkdtempSync(path.join(tmpdir(), "muse-usage-"));
-  try {
-    const file = path.join(dir, "meta-subscription-usage.json");
-    const muse = () => providerReaders(async () => { throw new Error("no process"); }, async () => ({}), readClaudeUsageAt, undefined, { museUsageFile: file })
-      .find((reader) => reader.id === "muse")!;
-    await assert.rejects(muse().read(signal()), /No Muse usage recorded yet/);
-    writeFileSync(file, JSON.stringify({ version: 1, observedAt: 1_800_000_000_000, weekly: { usedPercent: 34 } }));
-    const value = await muse().read(signal());
-    assert.equal(value.kind, "quota");
-    assert.deepEqual(value.kind === "quota" && value.groups[0].windows, [{ id: "week", label: "week", usedPercent: 34, resetsAt: undefined }]);
-    writeFileSync(file, "{not json");
-    await assert.rejects(muse().read(signal()), /Muse usage file invalid/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+test("Muse refresh fetches the CLI allowance instead of reusing the key-mint file", async () => {
+  const requests: ProcessRequest[] = [];
+  const abortSignal = signal();
+  const reader = providerReaders(async (request, receivedSignal) => {
+    requests.push(request);
+    assert.equal(receivedSignal, abortSignal);
+    return { schemaVersion: 1, allowance: {
+      tier: "Muse Code Everyday Usage",
+      window: { usedPercent: requests.length === 1 ? 40 : 41, resetsAtMs: 1794144531000 },
+      weekly: { usedPercent: 20, resetsAtMs: 1794182400000 },
+      asOfMs: 1794129773742, source: "mint",
+    }, reason: null, hint: null };
+  }).find((entry) => entry.id === "muse")!;
+  const value = await reader.read(abortSignal);
+  assert.equal(value.kind, "quota");
+  if (value.kind !== "quota") return;
+  assert.deepEqual(value.groups[0].windows, [
+    { id: "5h", label: "5h", usedPercent: 40, resetsAt: 1794144531000 },
+    { id: "week", label: "week", usedPercent: 20, resetsAt: 1794182400000 },
+  ]);
+  assert.equal(value.groups[0].asOf, 1794129773742);
+  const next = await reader.read(abortSignal);
+  assert.equal(next.kind === "quota" && next.groups[0].windows[0].usedPercent, 41);
+  assert.deepEqual(requests, [
+    { command: "muse", args: ["usage", "--json"] },
+    { command: "muse", args: ["usage", "--json"] },
+  ]);
+});
+
+test("Muse refresh rejects unavailable allowance and preserves runner cancellation errors", async () => {
+  for (const payload of [
+    { schemaVersion: 1, allowance: null, reason: "not_signed_in", hint: "private diagnostic" },
+    { schemaVersion: 1, allowance: { asOfMs: 1, weekly: { usedPercent: 20 } }, reason: "refresh_failed" },
+    { schemaVersion: 2, allowance: { asOfMs: 1, weekly: { usedPercent: 20 } } },
+  ]) {
+    const reader = providerReaders(async () => payload).find((entry) => entry.id === "muse")!;
+    await assert.rejects(reader.read(signal()), (error: unknown) =>
+      error instanceof UsageReadError && error.message === "Muse usage unavailable; check Muse CLI installation and login");
+  }
+  for (const message of ["Read canceled", "Read timed out (30 seconds)", "CLI not installed or not on PATH"]) {
+    const error = new UsageReadError(message);
+    const reader = providerReaders(async () => { throw error; }).find((entry) => entry.id === "muse")!;
+    await assert.rejects(reader.read(signal()), (received: unknown) => received === error);
+  }
+});
+
+test("Muse Windows shim uses the same JSON command without launching a model turn", () => {
+  assert.deepEqual(resolveLaunch({ command: "muse", args: ["usage", "--json"] }, "win32",
+    { PATH: "C:\\Muse", ComSpec: "C:\\Windows\\System32\\cmd.exe" }, (file) => file === "C:\\Muse\\muse.cmd"), {
+    file: "C:\\Windows\\System32\\cmd.exe",
+    args: ["/d", "/s", "/c", '""C:\\Muse\\muse.cmd" "usage" "--json""'],
+    windowsVerbatimArguments: true,
+  });
 });

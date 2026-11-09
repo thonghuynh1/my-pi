@@ -344,7 +344,7 @@ export function detailText(states: readonly ProviderState[]): string {
     if (state.id === "codex" || state.id.startsWith("codex-")) {
       const counts = state.value?.kind === "quota" ? state.value.resetCredits : undefined;
       const display = (count: ResetCount | undefined) => count?.kind === "known" ? String(count.value) : "unknown";
-      lines.push(`  Reset credits: ${display(counts?.available)} available · ${display(counts?.applicable)} applicable`);
+      lines.push(`  Reset credits: ${display(counts?.available)} available \u00b7 ${display(counts?.applicable)} applicable`);
     }
     return [...lines, ""];
   })].join("\n");

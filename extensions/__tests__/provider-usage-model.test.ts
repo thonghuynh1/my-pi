@@ -333,7 +333,7 @@ test("Codex reset counts remain independent, display only in details and table",
     const state: ProviderState = { id: "codex-2", name: "Codex 2", status: "available", value };
     const available = expected[0].kind === "known" ? String(expected[0].value) : "unknown";
     const applicable = expected[1].kind === "known" ? String(expected[1].value) : "unknown";
-    assert(detailText([state]).includes(`Reset credits: ${available} available · ${applicable} applicable`));
+    assert.equal(detailText([state]).split("\n").find((line) => line.startsWith("  Reset credits:")), `  Reset credits: ${available} available \u00b7 ${applicable} applicable`);
     assert.equal(usageTable([state])[1].includes(`resets ${available}`), available !== "unknown");
     const prior = parseCodex(base);
     assert.deepEqual(compactFooterRows([state]), compactFooterRows([{ ...state, value: prior }]));

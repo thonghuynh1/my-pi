@@ -173,3 +173,25 @@ test("manual refresh while stopped never enables periodic polling", async () => 
   clock.advance(600_000); await flush();
   assert.equal(calls, 1);
 });
+
+
+test("invalidateAndRefresh clears only the acting scope and surfaces invalidation failure", async () => {
+  const clock = new Clock();
+  const scope = { key: "a".repeat(64), generation: "b".repeat(64), identity: "known" as const };
+  const order: string[] = [];
+  let fail = false;
+  const monitor = new ProviderUsageMonitor([
+    { id: "codex", name: "Codex", scope: async () => { order.push("scope"); return scope; }, read: async () => credits() },
+    { id: "copilot", name: "Copilot", read: async () => { order.push("other"); return credits(); } },
+  ], clock, {
+    invalidate: async value => { order.push("invalidate"); assert.deepEqual(value, scope); if (fail) throw new Error("private"); },
+    read: async () => { order.push("read"); return { status: "available", value: credits(), lastAttempt: 1000, lastSuccess: 1000 }; },
+  });
+  await monitor.invalidateAndRefresh("codex");
+  assert.deepEqual(order, ["scope", "invalidate", "read"]);
+  order.length = 0; fail = true;
+  await assert.rejects(monitor.invalidateAndRefresh("codex"), /Usage refresh failed after reset/);
+  assert.deepEqual(order, ["scope", "invalidate"]);
+  assert.equal(monitor.snapshot()[0].status, "error");
+  assert(!JSON.stringify(monitor.snapshot()).includes("private"));
+});

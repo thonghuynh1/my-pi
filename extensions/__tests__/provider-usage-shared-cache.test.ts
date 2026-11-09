@@ -525,3 +525,39 @@ test("Codex reset counts survive cache round trips and malformed counts force a 
   assert.deepEqual((await cache.read(source, signal())).value, value);
   assert.equal(calls, 2);
 });
+
+
+test("invalidation removes cache records, clears failure cooldown, and tolerates missing", async (t) => {
+  const root = directory(t), context = scope();
+  let calls = 0, fail = false;
+  const cache = new SharedUsageCache({ root, now: () => 1000 });
+  const source = reader(context, async () => { calls++; if (fail) throw new Error("offline"); return credits(calls); });
+  await cache.invalidate(context);
+  assert.equal((await cache.read(source, signal())).status, "available");
+  assert.equal(calls, 1);
+  await cache.invalidate(context);
+  assert.equal((await cache.read(source, signal())).status, "available");
+  assert.equal(calls, 2);
+  await cache.invalidate(context); fail = true;
+  assert.equal((await cache.read(source, signal())).status, "error");
+  assert.equal((await cache.read(source, signal())).status, "error"); assert.equal(calls, 3);
+  await cache.invalidate(context); fail = false;
+  assert.equal((await cache.read(source, signal())).status, "available"); assert.equal(calls, 4);
+  await cache.invalidate(context); await cache.invalidate(context);
+});
+
+test("invalidation waits for per-scope lock before removing the record", async (t) => {
+  const root = directory(t), context = scope(), entered = deferred<void>(), release = deferred<void>();
+  const cache = new SharedUsageCache({ root, now: () => 1000 });
+  const source = reader(context, async () => { entered.resolve(); await release.promise; return credits(); });
+  const read = cache.read(source, signal()); await entered.promise;
+  let invalidated = false;
+  const invalidation = cache.invalidate(context).then(() => { invalidated = true; });
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(invalidated, false);
+  release.resolve(); await read; await invalidation;
+  assert.equal(invalidated, true);
+  let calls = 0;
+  await cache.read(reader(context, async () => { calls++; return credits(2); }), signal());
+  assert.equal(calls, 1);
+});

@@ -25,9 +25,9 @@ export class ProviderUsageMonitor {
   private generation = 0;
   private readers: ProviderReader[];
   private clock: MonitorClock;
-  private sharedCache: Pick<SharedUsageCache, "read">;
+  private sharedCache: Pick<SharedUsageCache, "read"> & Partial<Pick<SharedUsageCache, "invalidate">>;
 
-  constructor(readers = providerReaders(), timerClock = clock, sharedCache: Pick<SharedUsageCache, "read"> = new SharedUsageCache()) {
+  constructor(readers = providerReaders(), timerClock = clock, sharedCache: Pick<SharedUsageCache, "read"> & Partial<Pick<SharedUsageCache, "invalidate">> = new SharedUsageCache()) {
     this.readers = readers;
     this.clock = timerClock;
     this.sharedCache = sharedCache;
@@ -62,6 +62,17 @@ export class ProviderUsageMonitor {
   }
   refresh(): Promise<void> {
     return Promise.all(this.readers.map((reader) => this.refreshOne(reader))).then(() => {});
+  }
+  async invalidateAndRefresh(id: ProviderId): Promise<void> {
+    const reader = this.readers.find((item) => item.id === id);
+    try {
+      if (!reader?.scope || !this.sharedCache.invalidate) throw new Error("Usage cache invalidation unavailable");
+      await this.sharedCache.invalidate(await reader.scope());
+      await this.refreshOne(reader);
+    } catch {
+      if (reader) this.update(id, { status: "error", error: "Usage refresh failed after reset" });
+      throw new Error("Usage refresh failed after reset");
+    }
   }
   private refreshOne(reader: ProviderReader): Promise<void> {
     const existing = this.pending.get(reader.id);

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync } from "node:fs";
+import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, unlinkSync } from "node:fs";
 import { createServer, type ListenOptions, type Server } from "node:net";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -174,6 +174,22 @@ export class SharedUsageCache {
   private root: string | undefined;
   private now: () => number;
   constructor(deps: SharedCacheDependencies = {}) { this.root = deps.root; this.now = deps.now ?? Date.now; }
+  async invalidate(scope: UsageScope): Promise<void> {
+    if (!scopeValid(scope)) throw new Error("Usage cache invalidation unavailable");
+    let root = path.resolve(this.root ?? path.join(getAgentDir(), "provider-usage", "v1"));
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    const directory = lstatSync(root);
+    if (!directory.isDirectory() || (process.platform !== "win32" && (directory.mode & 0o077) !== 0)) throw new Error("Usage cache invalidation unavailable");
+    root = realpathSync(root);
+    const signal = new AbortController().signal;
+    const address = usageLockAddress(root, scope.key);
+    let lock: Server | undefined;
+    try {
+      while (!(lock = await bind(address, signal))) await delay(100);
+      try { unlinkSync(path.join(root, `${scope.key}.json`)); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    } finally { if (lock) await close(lock); }
+  }
   async read(reader: ProviderReader, signal: AbortSignal): Promise<SharedObservation> {
     let lock: Server | undefined;
     try {

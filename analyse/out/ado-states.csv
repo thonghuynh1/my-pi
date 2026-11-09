@@ -1,0 +1,52 @@
+id|type|state|changed|area|title
+60904|Product Backlog Item|Done|2026-04-08|Communication|Documents, MyAccount: Make it possible for external users to
+61662|Product Backlog Item|Approved|2026-10-19|Communication|Documents: MyOffice Documents Configuration Upload form
+62275|Test Suite|In Progress|2026-02-12|Communication|62076 : Tickets, UserManagment: Snackbar error when navigati
+62530|Quality issue|Done|2026-02-27|Communication|Send as: Duplicate choice in dropdown
+62587|Product Backlog Item|Done|2026-10-29|Communication|MyBusiness, Locailzations, Documents, Messages: Implement ne
+62606|Product Backlog Item|New|2026-02-26|Testforvaltning|Implememt new MyB Bas Norway
+63011|Test Case|Design|2026-03-16|Platform|Test in ACC
+63837|Test Case|Design|2026-04-17|Core|Test in ACC
+64347|Product Backlog Item|Removed|2026-07-14|Platform|Medius: Upgrade react application to new component library a
+64566|Test Case|Design|2026-06-16|Platform|Test in ACC
+64964|Task|Done|2026-05-21|MyBusiness|Step 7 Remove webpack-client migration code and dead contr
+65139|Product Backlog Item|Done|2026-08-19|Communication|Tickets, Messages, Activities: Index ticket data on ticket c
+66077|Feature|In Progress|2026-09-04|Communication|Move ticket message threads from Messages to Tickets
+66173|Product Backlog Item|Done|2026-08-31|Communication|Tickets: Email tickets - Sticky Outbound Email Address per T
+66240|Product Backlog Item|Test in TST|2026-11-06|Communication|Documents: Create new frotnend structure
+66353|Feature|In Progress|2026-09-04|Communication|Move ticket activity from Activities to Tickets
+66551|Product Backlog Item|Approved|2026-11-04|Communication|Tickets, Activities, Localizations, MyOffice : Replace the A
+66552|Product Backlog Item|Approved|2026-11-04|Communication|Tickets, Activities: Migrate existing ticket activities from
+66887|Quality issue|Done|2026-08-17|Communication|Message card showing and disappearing when navigating to com
+66897|Quality issue|Done|2026-10-02|Communication|Activity creating modal closed after adding Document from Do
+67791|Bug|Ready for test|2026-11-05|Communication|Activities: Investigate reminders job failling
+67832|Product Backlog Item|Test in ACC|2026-11-05|Communication|Tickets, MailRouter: Display for the user when outgoing mail
+67916|Product Backlog Item|Ready for test|2026-11-05|Communication|Tickets: Add SignalR for real time updates
+68126|Product Backlog Item|Done|2026-10-15|Communication|Tickets: Sort Email tickets, Country filter in Tickets
+68728|Bug|Done|2026-10-15|Communication|Tickets, MailRouter: Set default subject when subject is mis
+68981|Feature|Refinement|2026-10-20|Platform|Decomission Oxceed Advanced Reports
+69274|Quality issue|Done|2026-10-09|Communication|No permissions for external users set
+69278|Quality issue|Done|2026-10-09|Communication|Documents section missing in Overview (aggregated view)
+69362|Quality issue|Done|2026-10-06|Communication|Missing warning message in bulk Change category and permiss
+69364|Quality issue|Done|2026-10-06|Communication|Change category and permissions option in context menu doe
+69526|Quality issue|Done|2026-10-09|Communication|Save button remains disabled after changing internal permi
+69611|Task|Done|2026-10-08|Communication|Add UTC after default subject date
+69666|Quality issue|Done|2026-10-09|Communication|Not possible to send another reply after removing the only e
+70024|Quality issue|Done|2026-10-19|Communication|Uploading documents from tickets to one SDT makes the docume
+70044|Quality issue|To Do|2026-11-06|Communication|External users Can upload to permissions in Documents are
+70050|Quality issue|Done|2026-10-19|Communication|Bulk assigning tags when several selected documents already
+70095|Product Backlog Item|Test in TST|2026-11-05|Communication|Update status when customer replies
+70113|Feature|New|2026-10-15|Communication|Email Contact List Improvements
+70173|Product Backlog Item|Ready for test|2026-11-04|Communication|Filter out images from Signatures from uncategorized files
+70323|Product Backlog Item|Ready for test|2026-11-04|Communication|Tickets, Messages, Documents :Uncategorized files inherit ti
+70324|Product Backlog Item|Approved|2026-11-04|Communication|Tickets: Make sure update status when customer replies work
+70325|Quality issue|Done|2026-10-21|Communication|Expand icon is not changing when expand/collapse in all moda
+70396|Product Backlog Item|Removed|2026-10-20|Communication|Default Outbound Email Address Based on Inbound Mailbox
+70450|Product Backlog Item|Review|2026-11-04|Communication|Tickets, Documents: Uncategorized files inherit ticket permi
+70679|Test Case|Design|2026-11-05|Communication|Test in TST
+70964|Test Suite|In Progress|2026-10-28|Platform|70114 : Messages: MyPublisher Message not showing bold style
+71272|Product Backlog Item|In Progress|2026-11-05|Communication|Tickets: Improve pdf download for mail threads
+71410|Quality issue|Done|2026-11-06|Communication|Not possible to add file from local disc in activity.
+71420|Quality issue|Done|2026-11-08|Platform|Update time format
+71432|Bug|Test in TST|2026-11-06|Communication|Not Possible to upload documents
+71566|Quality issue|To Do|2026-11-06|Communication|External user should not have the option to not categorise t

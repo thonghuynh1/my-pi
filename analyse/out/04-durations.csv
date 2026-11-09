@@ -1,5 +1,5 @@
 era,kind,sessions,median_min,p90_min
 1_before,main,2594,4.7,137.0
-2_after,main,1155,11.4,271.0
-2_after,side,121,75.0,952.0
-2_after,worker,704,6.6,60.0
+2_after,main,1170,11.4,270.0
+2_after,side,124,74.7,936.0
+2_after,worker,714,6.5,60.0

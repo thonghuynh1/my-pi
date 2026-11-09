@@ -48,10 +48,17 @@ def main():
     for path in sorted(glob.glob(os.path.join(OUT, 'issues-summary-*.csv'))):
         host = os.path.basename(path)[len('issues-summary-'):-4]
         parts += [f'## Issue throughput ({host})', '', '_`.scratch` issues: opened and closed per era._', '', table(path), '']
+    for path in sorted(glob.glob(os.path.join(OUT, 'delivery-*.md'))):
+        with open(path, encoding='utf-8') as fh:
+            parts += [f'## Work repo delivery ({os.path.basename(path)[9:-3]})', '', fh.read()]
+
     for path in sorted(glob.glob(os.path.join(OUT, 'work-repos-*.md'))):
         with open(path, encoding='utf-8') as fh:
             body = fh.read().split('\n', 1)[1]  # drop its own H1
-        parts += [f'## Work repos ({os.path.basename(path)[11:-3]})', body.replace('\n## ', '\n### ')]
+        parts += [f'## Superseded: merges to master ({os.path.basename(path)[11:-3]})', '',
+                  '_Kept for the record only. Master is not the delivery gate in these repos, and '
+                  'the author filter misses agent commits. Do not quote these numbers; see the '
+                  'delivery section above._', body.replace('\n## ', '\n### ')]
 
     text = '\n'.join(parts)
     with open(a.out, 'w', encoding='utf-8') as fh:

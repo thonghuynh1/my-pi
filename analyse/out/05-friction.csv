@@ -1,5 +1,5 @@
 era,kind,calls,errors,error_pct
 1_before,main,115593,5482,4.7
-2_after,main,54834,2654,4.8
-2_after,side,8106,363,4.5
-2_after,worker,30974,1479,4.8
+2_after,main,55228,2678,4.8
+2_after,side,8258,365,4.4
+2_after,worker,31294,1495,4.8

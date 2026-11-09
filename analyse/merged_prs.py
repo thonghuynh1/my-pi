@@ -5,9 +5,11 @@ Run on the machine that has the repos (the Tickets/Documents work machine):
     python -I analyse/merged_prs.py --cutoff 2026-08-27 --since 2026-06-01 \
         --out analyse/out/work-repos.md C:/GitRepos/Tickets C:/GitRepos/Documents
 
-A merged ticket = a first-parent commit on the main branch that is a merge or an Azure
-DevOps "Merged PR" squash, authored by you (git config user.email; --all-authors to skip),
-whose subject carries a 5-digit ticket number. Tokens come from `aiNho sql` for sessions
+A merged ticket = a first-parent commit on the main branch that landed a pull request,
+authored by you (git config user.email; --all-authors to skip), whose subject carries a
+5-digit ticket number. Three landing shapes count: a real merge commit, an Azure DevOps
+"Merged PR NNNN:" squash, and a GitHub "... (#NNN)" squash. Tickets and Documents moved
+from Azure DevOps to GitHub during 2025, so the analysis window is entirely GitHub-shaped. Tokens come from `aiNho sql` for sessions
 whose source_path is the repo or one of its worktrees (any path segment equal to the repo name).
 """
 import argparse
@@ -23,6 +25,7 @@ from collections import defaultdict
 from datetime import date, datetime
 
 TICKET = re.compile(r'(?<!\d)([67]\d{4})(?!\d)')
+GITHUB_SQUASH = re.compile(r'\(#\d+\)\s*$')
 
 SESSIONS_SQL = r"""
 WITH f AS (SELECT session_id, arg_min(content, turn) fm FROM messages WHERE role = 'user' GROUP BY 1),
@@ -64,7 +67,9 @@ def merged_tickets(repo, branch, since, author):
     merged = {}
     for line in out.splitlines():
         parents, day, email, subject = line.split('\x1f', 3)
-        if len(parents.split()) < 2 and not subject.startswith('Merged PR'):
+        landed = (len(parents.split()) >= 2 or subject.startswith('Merged PR')
+                  or GITHUB_SQUASH.search(subject))
+        if not landed:
             continue
         if author and email.lower() != author:
             continue
@@ -74,15 +79,23 @@ def merged_tickets(repo, branch, since, author):
     return merged
 
 
-def sessions(name, since):
-    # The Windows aiNho shim is a .CMD file: cmd.exe expands %...% and stops at newlines,
-    # so the query has no % and is sent as one line.
-    q = ' '.join(SESSIONS_SQL.replace('@NAME@', re.escape(name)).replace('@SINCE@', str(since)).split())
+def query(sql, label='query'):
+    """Run one statement through the aiNho CLI and return CSV rows as dicts.
+
+    The Windows aiNho shim is a .CMD file: cmd.exe expands %...% and stops at newlines, so the
+    statement must be a single line and must contain no % at all. Use regexp_matches rather than
+    LIKE patterns.
+    """
     exe = shutil.which('aiNho') or sys.exit('aiNho CLI not found on PATH')
-    res = subprocess.run([exe, 'sql', q], capture_output=True, text=True, encoding='utf-8', errors='replace')
+    res = subprocess.run([exe, 'sql', ' '.join(sql.split())], capture_output=True, text=True,
+                         encoding='utf-8', errors='replace')
     if res.returncode != 0 or res.stdout.startswith('SQL error'):
-        sys.exit(f'aiNho sql failed for {name}:\n{res.stdout}{res.stderr}')
-    rows = list(csv.DictReader(io.StringIO(res.stdout)))
+        sys.exit(f'aiNho sql failed for {label}:\n{res.stdout}{res.stderr}')
+    return list(csv.DictReader(io.StringIO(res.stdout)))
+
+
+def sessions(name, since):
+    rows = query(SESSIONS_SQL.replace('@NAME@', re.escape(name)).replace('@SINCE@', str(since)), name)
     for r in rows:
         r['day'] = date.fromisoformat(r['day'][:10])
         r['via_tstack'] = r['via_tstack'].lower() == 'true'
@@ -147,13 +160,16 @@ def main():
     ap.add_argument('--cutoff', default='2026-08-27')
     ap.add_argument('--since', default='2026-06-01')
     ap.add_argument('--all-authors', action='store_true')
+    ap.add_argument('--author', help='Email to attribute merges to. Defaults to each repo\'s '
+                                     'git config user.email, which a repo may have overridden '
+                                     'to something unrelated.')
     ap.add_argument('--out')
     ap.add_argument('repos', nargs='+')
     a = ap.parse_args()
     cutoff, since = date.fromisoformat(a.cutoff), date.fromisoformat(a.since)
     parts = [f'# Work repos: merged tickets vs token cost ({datetime.now():%Y-%m-%d %H:%M})', '']
     for repo in a.repos:
-        author = None if a.all_authors else git(repo, 'config', 'user.email').lower() or None
+        author = None if a.all_authors else (a.author or git(repo, 'config', 'user.email')).lower() or None
         parts.append(report(repo, cutoff, since, author))
     text = '\n'.join(parts)
     print(text)

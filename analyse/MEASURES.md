@@ -7,6 +7,10 @@ re-run: `out/report-<host>.md`.
 Eras: **before** 2026-07-01 → 2026-09-24, **after** 2026-09-25 → 2026-11-08 (work repos: cutoff 2026-08-27).
 Tokens = input + cacheRead + cacheWrite.
 
+Work-repo delivery is gated on Azure DevOps work item state, not on merge to master. Pushing
+`feature/<id>-*` deploys to TST, so an item is delivered to test long before master. See the
+README section 5 note before reading any `merged_prs.py` number.
+
 **Confidence**: ✅ measured directly · 🟡 measured with a proxy or heuristic · ❌ not measurable yet
 
 ## Cost
@@ -38,7 +42,7 @@ Tokens = input + cacheRead + cacheWrite.
 | Commits per day | `git log`, aiNho + tstack + my-pi | git | 5.9 → 25.3 | ✅ (commit size may differ) |
 | Closed issues per day | `.scratch` issue files reaching closed/resolved/done | `issues.py` | 1.7 → 7.9 (tstack 0.27 → 7.1) | ✅ |
 | Issue lead time | Opened → closed | `issues.py` | median 0 h (opened and closed in the same commit) | ❌ |
-| Ticket lead time (work repos) | First session → merge on main | `merged_prs.py` | pending run on work machine | ❌ for now |
+| Ticket lead time (work repos) | First session → merge on main | `merged_prs.py` | not meaningful; master is not the delivery gate here | ❌ superseded by ADO state |
 
 ## Shipping and value
 
@@ -46,8 +50,13 @@ Tokens = input + cacheRead + cacheWrite.
 |---|---|---|---|---|
 | Tokens per closed issue | Repo tokens ÷ issues closed in era | `sql/07` + `issues.py` | all 12.8M → 8.0M; tstack 50M → 6.4M; aiNho 3.4M → 17.5M | ✅ (issues may be smaller after) |
 | Close rate | Opened issues that got closed | `issues.py` | tstack 90% → 73%; aiNho 90% → 59% | ✅ |
-| Merged tickets per week (work repos) | Merges on main with ticket number | `merged_prs.py` | pending run on work machine | ❌ for now |
-| Tokens per merged ticket (work repos) | Repo tokens ÷ merged tickets | `merged_prs.py` | pending run on work machine | ❌ for now |
+| Items delivered or in test (work repos) | Work items with agent sessions reaching `Done`, `Test in TST/ACC`, `Ready for test` or `Review` | `delivery.py` | 31 items, 1,379M tokens, 56% of ticket-tagged spend | ✅ gated on ADO state |
+| Tokens per delivered item (work repos) | Tokens ÷ items in that ADO bucket | `delivery.py` | `Done` 14.9M/item; in test 116.8M/item | ✅ |
+| Cost parity on like work | Median tokens per `Done` quality issue, tstack vs main chat | `delivery.py` | **4.0M vs 3.9M** (7 items each); means 25.8M vs 14.6M | 🟡 n=7 per side; tstack tail is fatter |
+| Tokens per merged ticket (work repos) | Repo tokens ÷ merges on master under your git email | `merged_prs.py` | 917M for Tickets, do not use | ❌ wrong gate and wrong author; see README |
+| Spend on undelivered items (work repos) | Tokens on items still `In Progress`, `Approved`, `New` or `Refinement` | `delivery.py` | 888M over 14 items, 36% of ticket-tagged spend | 🟡 board state may lag real progress |
+| Unattributable spend (work repos) | Tokens in sessions with no ticket number | `delivery.py` | Tickets 2,103M (52% of repo); Documents 834M (62%); 55% combined | ✅ share computed, not quoted |
+| Ticket id validity | Regex-derived ids that are real ADO work items | `delivery.py` | 51 of 84; 33 false positives carrying 132M | ✅ every id checked against ADO |
 | Tokens per ticket touched (work repos) | Session tokens grouped by ticket number | aiNho | Tickets: tstack 7.4M vs main 0.8M median; Documents: 3.6M vs 9.0M | 🟡 regex ticket numbers |
 
 ## Reliability
@@ -61,7 +70,10 @@ Tokens = input + cacheRead + cacheWrite.
 
 ## Not measured yet
 
-- **Work-repo shipping**: needs `merged_prs.py` on the work machine.
+- **PBI cost effectiveness**: all seven PBIs in test ran through tstack, so there is no main-chat PBI in test to compare against. Needs either a main-chat PBI or a longer window.
+- **Whether in-test work reaches Done**: 1,051M sits in test states right now. A rerun once those close converts the largest bucket into a delivered-cost number.
+- **What the untagged 55% was doing**: no ticket number, so no outcome. Needs `external_id` on Work Sessions.
+- **Board lag**: 585M sits on items still in `Approved` / `New`, which may be real progress with a stale state rather than unstarted work. Needs state-change history per item.
 - **Plan quality**: whether side-conversation plans cause fewer redos. No signal links a plan to later rework.
 - **Issue size**: lines changed per closed issue, to correct "per issue" numbers for smaller slicing.
 - **Dollar cost**: needs a model price table.

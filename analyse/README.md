@@ -4,8 +4,8 @@ Scorecard of every metric: [MEASURES.md](MEASURES.md). Latest generated numbers:
 
 Does moving to tstack workers + side conversations help ship, and is the token cost per
 task worth it? Data: aiNho Memory Store (Pi sessions, all machines) + git history.
-Generated 2026-11-09 on DESKTOP-LJB4PL8. Work repos (Tickets, Documents) still need a run on
-the work machine — see [Re-run](#re-run).
+Personal repos generated 2026-11-09 on DESKTOP-LJB4PL8. Work repos (Tickets, Documents)
+generated 2026-11-09 on PRDPF5DFZH6, which is the machine that has them.
 
 ## Method
 
@@ -70,7 +70,9 @@ issue files are created and closed in the same commit.
 - Team runs (23 traceable features): 9 eventually completed after **5.4 runs each**;
   10 were stopped and never completed (30 runs). About half of stopped runs are pure waste.
 
-### 5. Work repos (Tickets, Documents) — from aiNho only
+### 5. Work repos (Tickets, Documents)
+
+Effort, from aiNho:
 
 | | Tickets before → after | Documents before → after |
 |---|---|---|
@@ -80,17 +82,72 @@ issue files are created and closed in the same commit.
 | Median tokens per ticket, with tstack vs main only | 7.4M vs 0.8M | 3.6M vs 9.0M |
 
 Before tstack, agents did almost no git work here (3 commits, 0 pushes); after, they commit,
-push, merge and call Azure DevOps. Your own effort roughly doubled. Shipping (merged PRs) is
-not in aiNho — run `merged_prs.py` on the work machine to get tokens per merged ticket.
+push, merge and call Azure DevOps. Your own effort roughly doubled.
+
+Delivery, from `delivery.py` on PRDPF5DFZH6, measured against Azure DevOps work item state.
+
+**Do not use merge-to-master as the shipping gate on this platform.** `merged_prs.py` answers
+"what reached `origin/master` under your git email", and that gate is wrong twice over here.
+Per `/feature-workflow`, pushing `feature/<id>-*` deploys to TST, and an item then sits in
+`Ready for test`, `Test in TST`, `Test in ACC` or `Review` for weeks before master. Separately,
+the agent commits under whatever `user.email` the worktree carries, which in `Documents` is
+`fixture@test.local` (160 commits since 2026-06-01, against 10 under the human email), so a
+human-email filter discards nearly all agent work. Its 917M-per-merged-ticket figure is an
+artifact of both mistakes and must not be quoted.
+
+Where the ticket-tagged spend actually sits, 2,448M tokens over 84 candidate ids:
+
+| How far the item got in ADO | Items | Tokens | Share | Per item |
+|---|---|---|---|---|
+| delivered (`Done`) | 22 | 328M | 13% | 14.9M |
+| in test (`Ready for test` / `Test in TST` / `Test in ACC` / `Review`) | 9 | 1,051M | 43% | 116.8M |
+| in progress | 7 | 303M | 12% | 43.4M |
+| not started (`Approved` / `New` / `Refinement`) | 7 | 585M | 24% | 83.6M |
+| removed | 2 | 16M | 1% | 8.0M |
+| test artifact, not work | 4 | 32M | 1% | 8.0M |
+| not a real work item | 33 | 132M | 5% | 4.0M |
+
+**56% of ticket-tagged spend is on work that reached test or Done.** 31 items got that far, and
+tstack was involved in 17 of them carrying 1,258M of the 1,379M. Both repos deliver. Documents
+has 10 `Done` quality issues plus 66240 in `Test in TST` and 70450 in `Review`.
+
+Holding work item type and end state fixed, so tstack and main chat are compared on like work:
+
+| Type and state | Via | Items | Median | Mean |
+|---|---|---|---|---|
+| Quality issue, `Done` | tstack | 7 | **4.0M** | 25.8M |
+| Quality issue, `Done` | main chat | 7 | **3.9M** | 14.6M |
+| Product Backlog Item, in test | tstack | 7 | 124.6M | 149.3M |
+| Product Backlog Item, `Done` | main chat | 5 | 2.4M | 3.6M |
+
+Quality issues are the only population large enough to compare, and there the median cost per
+delivered item is a wash, 4.0M against 3.9M. The tstack mean is 1.8× higher, so the tail is
+fatter, not the typical item. The two PBI rows are not comparable; they differ in both state and
+almost certainly size, and the five main-chat `Done` PBIs are small older items. What the PBI
+rows do show is that every one of the seven PBIs now in test runs through tstack.
+
+Two cost sinks worth attention. 585M sits on seven items still in `Approved` / `New` /
+`Refinement`, which is either board hygiene lagging real work or work started ahead of the
+backlog. And 132M went to 33 ids that are not work items at all, because the `[67]\d{4}` regex
+matches any five-digit number; every id above 71566 in the candidate list is nonexistent.
+
+Separately, sessions carrying no ticket number account for 2,103M tokens in Tickets (452
+sessions, 52% of that repo) and 834M in Documents (204 sessions, 62%). Combined that is 2,937M
+with no outcome attachable to it, 55% of all work-repo spend, and it is the single largest
+measurement hole in this analysis.
 
 ### Verdict
 
 | Repo | Verdict |
 |---|---|
 | tstack | ✅ Clearly pays: 26× closed issues/day, 7.7× cheaper per issue |
-| Documents | 🟡 Promising: tstack tickets cheaper, zero human msgs; shipping unconfirmed |
-| Tickets | 🟠 Unproven: 7× tokens, 2× human effort, ~46M avg per tstack ticket |
+| Tickets | 🟡 Delivers at parity cost: same median per delivered quality issue as main chat, and it carries every PBI now in test |
+| Documents | 🟡 Delivers: 10 quality issues `Done`, 66240 in `Test in TST`, 70450 in `Review` |
 | aiNho | ❌ Not paying: 5× tokens per closed issue, heavy side-conversation planning |
+
+Both work repos deliver, and neither shows a cost penalty on comparable work. The honest summary
+is parity on quality issues and unmeasured on PBIs, because no main-chat PBI reached test in this
+window to compare against.
 
 Recommendations: keep workers for well-sliced issue work; use side conversations only for large
 features (not aiNho-sized ones); stop a feature after ~2 failed runs and re-plan instead of 5.
@@ -99,7 +156,10 @@ features (not aiNho-sized ones); stop a feature after ~2 failed runs and re-plan
 
 | Gap | Workaround used | What would close it |
 |---|---|---|
-| **No outcome data**: commits, merges and PRs are not linked to sessions | Separate `git log` per repo; work repos impossible from this machine | Import commit SHAs/PR ids produced by a session (from `git commit`/`az repos pr` tool results), or a commits table keyed by repo |
+| **No outcome data**: commits, merges and PRs are not linked to sessions | ADO work item state per ticket via the Azure DevOps MCP, snapshot in `out/ado-states.csv` | Import commit SHAs/PR ids produced by a session, or a commits table keyed by repo |
+| **Most work-repo spend is unattributable**: 55% of work-repo tokens are in sessions with no ticket number | Reported as its own bucket rather than spread over tickets | Work Session `external_id` from the worktree branch, so every session carries its ticket |
+| **Git author is not the worker**: agent commits land under the worktree's `user.email`, `fixture@test.local` in Documents | Dropped the author filter and gated on ADO state instead | A stable agent identity, or session-to-commit links at import |
+| **Ticket regex has a 39% false positive rate**: 33 of 84 ids are not work items | Validated every id against ADO before counting | `external_id` on Work Sessions removes the need to regex at all |
 | **No task identity** | Regex 5-digit ticket numbers from paths and messages (noisy) | Auto-fill Work Session `external_id` from worktree branch / tstack `featureTag` |
 | **No tstack lineage** | Substring match of child ids in parent transcripts + time window (48 workers unlinked) | Store `parent_session_id`, `team_run_id`, `side_conversation_id` at import |
 | **No team-run ledger** | Parse CSV text out of `tstack_run_status` results; 89 runs have no final status | Import tstack run records (status, verdict, repair rounds, merged) |
@@ -119,15 +179,27 @@ analyse/run.sh --import          # aiNho import, then everything below
 - `issues.py` → `out/issues-summary-<host>.csv` for `ISSUE_REPOS` that exist on this machine.
 - `merged_prs.py` → `out/work-repos-<host>.md` for `WORK_REPOS` that exist (Tickets, Documents).
 
-**On the work machine** (has `C:/GitRepos/Tickets` and `C:/GitRepos/Documents`): pull this
-repo, then `analyse/run.sh --import`, or only the work-repo part:
+**On the work machine** (has `C:/GitRepos/Tickets` and `C:/GitRepos/Documents`):
 
 ```bash
-python -I analyse/merged_prs.py --cutoff 2026-08-27 --out analyse/out/work-repos.md \
-  C:/GitRepos/Tickets C:/GitRepos/Documents
+analyse/run-work-repos.sh      # waits out the Memory Store lock, then imports and renders
 ```
 
-It counts merges / Azure DevOps "Merged PR" squashes on the main branch authored by your
-`git config user.email` (`--all-authors` to drop that filter) and joins them to aiNho tokens per
-ticket: merged tickets/week, tokens per merged ticket, and median lead (first session → merge).
-Commit the `out/work-repos-*.md` result back to fill section 5.
+The Memory Store is a single-writer DuckDB file, so a running `aiNho sync` or `aiNho import`
+blocks every read with `IO Error: Cannot open file`. The wrapper polls until it clears. Launching
+it from a background runner needs the full path to Git Bash, because `bash` under cmd.exe
+resolves to the WSL launcher, which group policy blocks on this machine.
+
+`delivery.py` is the one to trust for work repos. It joins token spend per work item to that
+item's Azure DevOps state from `out/ado-states.csv`. That snapshot is taken through the Azure
+DevOps MCP, since no CLI here reaches ADO, so refresh it by re-running `wit_work_item action=get`
+for the candidate ids and rewriting the file. Without a refresh the states go stale while the
+token numbers stay current.
+
+`merged_prs.py` is kept only for repos where master really is the delivery gate. It now counts
+three PR landing shapes (a real merge commit, an Azure DevOps `Merged PR NNNN:` squash, and a
+GitHub `... (#NNN)` squash, both work repos having moved to GitHub during 2025) and takes an
+explicit `--author`. Neither fix makes it the right tool for Tickets or Documents. See the gate
+warning in section 5.
+
+Commit the `out/work-repos-*.md`, `out/ado-states.csv` and `out/report-*.md` results back.

@@ -128,7 +128,7 @@ export function slotIdentity(authFile: string, provider: string): CodexIdentity 
 
 // Two slots holding the same ChatGPT login would each refresh it, and OpenAI
 // rejects reused refresh tokens, logging both out.
-export function duplicateSlots(identities: Map<string, CodexIdentity | undefined>): string[][] {
+export function duplicateSlots(identities: Map<string, { key: string } | undefined>): string[][] {
   const byKey = new Map<string, string[]>();
   for (const [provider, identity] of identities) {
     if (!identity) continue;

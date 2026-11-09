@@ -208,11 +208,33 @@ export function isProfileReady(configDir: string): boolean {
   }
 }
 
+export interface ClaudeIdentity {
+  key: string;
+  email?: string;
+}
+
+// The account a profile is signed in to, from the oauthAccount Claude Code
+// writes to .claude.json. Usage limits follow account + organization.
+export function claudeIdentity(configDir: string): ClaudeIdentity | undefined {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path.join(configDir, ".claude.json"), "utf8"));
+    if (!isRecord(parsed)) return undefined;
+    const account = isRecord(parsed.oauthAccount) ? parsed.oauthAccount : {};
+    const str = (value: unknown) => (typeof value === "string" ? clean(value) : undefined);
+    const email = str(account.emailAddress) ?? str(parsed.emailAddress);
+    const uuid = str(account.accountUuid);
+    const key = uuid ? `${uuid}:${str(account.organizationUuid) ?? ""}` : email?.toLowerCase();
+    return key ? { key, ...(email ? { email } : {}) } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function claudeLoginSteps(configDir: string): string {
   return [
     `Log in once outside Pi:`,
-    `  Git Bash: CLAUDE_CONFIG_DIR="${configDir}" claude login`,
-    `  PowerShell: $env:CLAUDE_CONFIG_DIR="${configDir}"; claude login`,
-    `Sign in with the account for this profile, then reopen /account.`,
+    `  Git Bash: CLAUDE_CONFIG_DIR="${configDir}" claude auth login`,
+    `  PowerShell: $env:CLAUDE_CONFIG_DIR="${configDir}"; claude auth login`,
+    `Sign in with the account for this profile (use a private browser window if it auto-picks another account), then reopen /account.`,
   ].join("\n");
 }

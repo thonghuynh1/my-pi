@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import {
@@ -9,6 +10,7 @@ import {
   addClaudeProfile,
   applyBridgeProfile,
   CLAUDE_BRIDGE,
+  claudeIdentity,
   claudeLoginSteps,
   claudeProfiles,
   expandHome,
@@ -18,6 +20,7 @@ import {
   removeClaudeProfile,
   saveClaudeConfig,
   suggestedProfileDir,
+  type ClaudeIdentity,
   type ClaudeProfile,
   type ClaudeProfileId,
 } from "./lib/claude-profiles.ts";
@@ -46,6 +49,7 @@ import { createCodexCloneProvider } from "./lib/codex-providers.ts";
 import { TextPrompt, centerText, wrapInBox } from "./lib/picker-ui.ts";
 import { createCodexUsageReader } from "./lib/provider-usage/codex.ts";
 import { parseCodex } from "./lib/provider-usage/model.ts";
+import { resolveLaunch } from "./lib/provider-usage/readers.ts";
 
 export const piExtension = { id: "account" };
 
@@ -60,7 +64,7 @@ export interface CodexRow {
 export type AccountRow =
   | CodexRow
   | { kind: "codex-add" }
-  | { kind: "claude"; profile: ClaudeProfile; ready: boolean; main: boolean }
+  | { kind: "claude"; profile: ClaudeProfile; ready: boolean; main: boolean; identity?: ClaudeIdentity }
   | { kind: "claude-add" };
 
 export type AccountAction =
@@ -75,6 +79,7 @@ export interface AccountView {
   mainDefault?: ModelRef;
   sub?: ModelRef;
   duplicates: string[][];
+  claudeDuplicates: string[][];
 }
 
 export function slotName(slot: CodexSlot, identity: CodexIdentity | undefined): string {
@@ -87,7 +92,7 @@ export function buildAccountView(input: {
   main?: ModelRef;
   mainDefault?: ModelRef;
   sub?: ModelRef;
-  claude: { profile: ClaudeProfile; ready: boolean }[];
+  claude: { profile: ClaudeProfile; ready: boolean; identity?: ClaudeIdentity }[];
 }): AccountView {
   const rows: AccountRow[] = input.slots.map((slot) => ({
     kind: "codex",
@@ -99,11 +104,15 @@ export function buildAccountView(input: {
     ],
   }));
   rows.push({ kind: "codex-add" });
-  for (const { profile, ready } of input.claude) {
-    rows.push({ kind: "claude", profile, ready, main: input.main?.provider === profile.provider });
+  for (const { profile, ready, identity } of input.claude) {
+    rows.push({ kind: "claude", profile, ready, main: input.main?.provider === profile.provider, ...(identity ? { identity } : {}) });
   }
   rows.push({ kind: "claude-add" });
-  return { rows, main: input.main, mainDefault: input.mainDefault, sub: input.sub, duplicates: duplicateSlots(input.identities) };
+  return {
+    rows, main: input.main, mainDefault: input.mainDefault, sub: input.sub,
+    duplicates: duplicateSlots(input.identities),
+    claudeDuplicates: duplicateSlots(new Map(input.claude.map(({ profile, identity }) => [profile.name, identity]))),
+  };
 }
 
 // Maps a key on the selected row to an action; undefined = not applicable.
@@ -239,6 +248,9 @@ export class AccountsModal implements Component {
     for (const group of this.view.duplicates) {
       lines.push("", t.fg("error", ` ⚠ ${group.join(" and ")} hold the same ChatGPT login; their token refreshes will log each other out. Remove one (x).`));
     }
+    for (const group of this.view.claudeDuplicates) {
+      lines.push("", t.fg("error", ` ⚠ ${group.join(" and ")} share one Claude account and its usage. Press l on one to sign in again.`));
+    }
     lines.push("", centerText(t.fg("dim", this.hint()), inner));
     return wrapInBox(lines, t, width);
   }
@@ -248,9 +260,9 @@ export class AccountsModal implements Component {
     if (row.kind === "codex-add") return t.fg("accent", "+ Add Codex account");
     if (row.kind === "claude-add") return t.fg("accent", "+ Add Claude account");
     if (row.kind === "claude") {
-      const state = !row.ready ? t.fg("dim", "not logged in · press l") : row.main ? t.fg("success", "[main]") : "";
+      const detail = !row.ready ? "not logged in · press l" : row.identity?.email ?? "";
       const pad = (s: string, n: number) => s + " ".repeat(Math.max(1, n - visibleWidth(s)));
-      return `${pad(row.profile.name, 24)}${pad(t.fg("dim", row.profile.provider), 18)}${pad(t.fg("dim", row.profile.configDir), 32)}${state}`;
+      return `${pad(row.profile.name, 24)}${pad(t.fg("dim", row.profile.provider), 18)}${pad(t.fg("dim", detail), 30)}${pad(row.main ? t.fg("success", "[main]") : "", 8)}${t.fg("dim", row.profile.configDir)}`;
     }
     const name = slotName(row.slot, row.identity);
     const detail = row.identity
@@ -265,7 +277,7 @@ export class AccountsModal implements Component {
 
   private hint(): string {
     const row = this.view.rows[this.selected];
-    if (row?.kind === "claude") return "Enter/m main · a add · l login · x remove · ↑/↓ move · Esc close";
+    if (row?.kind === "claude") return `Enter/m main · a add · l ${row.ready ? "sign in again" : "login"} · x remove · ↑/↓ move · Esc close`;
     if (row?.kind === "codex-add" || row?.kind === "claude-add") return "Enter add account · ↑/↓ move · Esc close";
     return "Enter/m main · s subagents · a add · l login · r rename · x remove · u usage · Esc close";
   }
@@ -304,7 +316,7 @@ function buildView(ctx: ExtensionContext): AccountView {
     main: ctx.model ? { provider: ctx.model.provider, model: ctx.model.id } : undefined,
     mainDefault: readMainDefault(paths.settingsFile),
     sub: readSubagentDefault(paths.subagentModelsFile),
-    claude: profiles.map((profile) => ({ profile, ready: isProfileReady(profile.configDir) })),
+    claude: profiles.map((profile) => ({ profile, ready: isProfileReady(profile.configDir), identity: claudeIdentity(profile.configDir) })),
   });
 }
 
@@ -462,6 +474,39 @@ async function addClaude(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promis
   ctx.ui.notify(`Added Claude ${next.profiles.length} (${next.profiles.at(-1)?.provider}). ${claudeLoginSteps(resolved)}`, "info");
 }
 
+function signOutClaude(configDir: string): Promise<void> {
+  const launch = resolveLaunch({ command: "claude", args: ["auth", "logout"] });
+  const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CONFIG_DIR: configDir };
+  delete env.ANTHROPIC_API_KEY;
+  return new Promise((resolve, reject) => {
+    execFile(launch.file, launch.args, { env, windowsHide: true, windowsVerbatimArguments: launch.windowsVerbatimArguments, timeout: 30_000 },
+      (error, _stdout, stderr) => (error ? reject(new Error(String(stderr).trim() || error.message)) : resolve()));
+  });
+}
+
+// A logged-in profile is signed out first, so the next `claude login` in
+// that folder can pick a different account.
+async function loginClaude(ctx: ExtensionCommandContext, id: ClaudeProfileId): Promise<void> {
+  const profile = claudeProfiles().find((p) => p.id === id);
+  if (!profile) return;
+  if (isProfileReady(profile.configDir)) {
+    const account = claudeIdentity(profile.configDir)?.email ?? "the current account";
+    const keyNote = profile.useApiKey && process.env.ANTHROPIC_API_KEY?.trim() ? " ANTHROPIC_API_KEY stays active for this profile and takes precedence over the login." : "";
+    if (!(await ctx.ui.confirm(`Sign ${profile.name} in again?`, `Signs ${account} out of ${profile.configDir}, then shows how to log in with another account.${keyNote}`))) return;
+    try {
+      await signOutClaude(profile.configDir);
+    } catch (error) {
+      ctx.ui.notify(`Could not sign ${profile.name} out: ${(error as Error).message}`, "error");
+      return;
+    }
+    if (isProfileReady(profile.configDir)) {
+      ctx.ui.notify(`${profile.name} still has a login in ${profile.configDir} after claude auth logout.`, "error");
+      return;
+    }
+  }
+  ctx.ui.notify(`${profile.name}: ${claudeLoginSteps(profile.configDir)}`, "info");
+}
+
 async function removeClaude(pi: ExtensionAPI, ctx: ExtensionCommandContext, id: ClaudeProfileId): Promise<void> {
   const profile = claudeProfiles().find((p) => p.id === id);
   if (!profile) return;
@@ -509,11 +554,8 @@ async function openModal(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promis
       case "claude-main":
         await assignClaudeMain(pi, ctx, action.id);
         continue;
-      case "claude-login": {
-        const profile = claudeProfiles().find((p) => p.id === action.id);
-        if (profile) ctx.ui.notify(`${profile.name}: ${claudeLoginSteps(profile.configDir)}`, "info");
-        return;
-      }
+      case "claude-login":
+        return loginClaude(ctx, action.id);
       case "claude-remove":
         await removeClaude(pi, ctx, action.id);
         selection = 0;

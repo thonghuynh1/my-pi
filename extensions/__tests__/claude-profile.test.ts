@@ -6,6 +6,7 @@ import { test } from "node:test";
 import {
   addClaudeProfile,
   applyBridgeProfile,
+  claudeIdentity,
   claudeProfiles,
   expandHome,
   isClaudeBridgeProvider,
@@ -136,4 +137,23 @@ test("readiness reflects a login, never secret contents", () => {
   mkdirSync(garbage, { recursive: true });
   writeFileSync(path.join(garbage, ".claude.json"), "{oops", "utf8");
   assert.equal(isProfileReady(garbage), false);
+});
+
+test("claudeIdentity keys on account and organization and exposes the email", () => {
+  const base = tmp();
+  const write = (name: string, body: string) => {
+    const dir = path.join(base, name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, ".claude.json"), body, "utf8");
+    return dir;
+  };
+  const account = { accountUuid: "acct-1", organizationUuid: "org-1", emailAddress: "me@example.com" };
+  assert.deepEqual(claudeIdentity(write("a", JSON.stringify({ oauthAccount: account }))), { key: "acct-1:org-1", email: "me@example.com" });
+  assert.equal(claudeIdentity(write("b", JSON.stringify({ oauthAccount: account }))).key, claudeIdentity(path.join(base, "a"))!.key);
+  assert.notEqual(claudeIdentity(write("c", JSON.stringify({ oauthAccount: { ...account, organizationUuid: "org-2" } })))!.key, "acct-1:org-1");
+  assert.deepEqual(claudeIdentity(write("d", JSON.stringify({ oauthAccount: { emailAddress: "Me@Example.com" } }))), { key: "me@example.com", email: "Me@Example.com" });
+  assert.deepEqual(claudeIdentity(write("e", JSON.stringify({ emailAddress: "top@example.com" }))), { key: "top@example.com", email: "top@example.com" });
+  assert.equal(claudeIdentity(write("g", "{}")), undefined);
+  assert.equal(claudeIdentity(write("f", "{oops")), undefined);
+  assert.equal(claudeIdentity(path.join(base, "missing")), undefined);
 });

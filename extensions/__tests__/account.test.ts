@@ -103,3 +103,24 @@ test("modal renders roles, rows, duplicate warning, and returns actions", () => 
   modal.handleInput("s");
   assert.deepEqual(action, { kind: "sub", provider: "codex-2" });
 });
+
+test("Claude rows show the signed-in email and warn when two profiles share an account", () => {
+  const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s } as never;
+  const same = { key: "acct:org", email: "me@example.com" };
+  const view = buildAccountView({
+    slots: [{ provider: "openai-codex" }],
+    identities: new Map(),
+    claude: [
+      { profile: profile(1, "/c1"), ready: true, identity: { key: "work:org", email: "work@example.com" } },
+      { profile: profile(2, "/c2"), ready: true, identity: same },
+      { profile: profile(3, "/c3"), ready: true, identity: same },
+    ],
+  });
+  assert.deepEqual(view.claudeDuplicates, [["Claude 2", "Claude 3"]]);
+  const modal = new AccountsModal(theme, view, () => {}, () => {}, () => {}, 3);
+  const text = modal.render(160).join("\n");
+  for (const needle of ["work@example.com", "me@example.com", "Claude 2 and Claude 3 share one Claude account", "l sign in again"]) {
+    assert.ok(text.includes(needle), `missing ${needle}`);
+  }
+  assert.ok(!text.includes("same ChatGPT login"));
+});

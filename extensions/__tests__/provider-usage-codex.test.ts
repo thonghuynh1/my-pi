@@ -196,3 +196,31 @@ test("Codex clone usage uses its own provider token and gets a distinct footer r
   assert.equal(value.kind, "quota");
   assert.equal(compactFooterRows([{ id: "codex-2", name: "Codex 2", status: "available", value }])[0], "Codex 2 ▰▰▰▱▱▱▱ 44%/9%");
 });
+
+
+test("Codex HTTP usage projects reset counts without an inventory request", async (t) => {
+  let body: unknown = usage, calls = 0;
+  t.mock.method(globalThis, "fetch", async (url: string) => {
+    calls++; assert.equal(url, "https://chatgpt.com/backend-api/wham/usage"); return Response.json(body);
+  });
+  const reader = providerReaders(undefined, undefined, undefined, undefined, { codexApiKey: async () => token("account", "plus") })[0];
+  for (const [counts, available, applicable] of [
+    [{ available_count: 0, applicable_available_count: 0 }, { kind: "known", value: 0 }, { kind: "known", value: 0 }],
+    [{ available_count: 3 }, { kind: "known", value: 3 }, { kind: "unknown" }],
+    [null, { kind: "unknown" }, { kind: "unknown" }],
+    [undefined, { kind: "unknown" }, { kind: "unknown" }],
+    [{ available_count: "1", applicable_available_count: -1 }, { kind: "unknown" }, { kind: "unknown" }],
+  ] as const) {
+    body = { ...usage, rate_limit_reset_credits: counts };
+    const value = await reader.read(new AbortController().signal);
+    assert(value.kind === "quota");
+    assert.deepEqual(value.resetCredits, { available, applicable });
+  }
+  assert.equal(calls, 5);
+  const fallback = providerReaders(async () => ({ rateLimits: { primary: { usedPercent: 2, windowDurationMins: 300 } },
+    rateLimitResetCredits: { availableCount: 2, credits: [{ id: "private" }] } }))[0];
+  const value = await fallback.read(new AbortController().signal);
+  assert(value.kind === "quota");
+  assert.deepEqual(value.resetCredits, { available: { kind: "known", value: 2 }, applicable: { kind: "unknown" } });
+  assert(!JSON.stringify(value).includes("private"));
+});

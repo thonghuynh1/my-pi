@@ -28,7 +28,7 @@ test("Codex literal fixture preserves window identity and epoch seconds, not acc
   assert.deepEqual(parseCodex(codex), { kind: "quota", groups: [{ id: "codex", name: "Codex", shortName: "Codex", windows: [
     { id: "5h", label: "5h", usedPercent: 69, resetsAt: 1792138480000 },
     { id: "week", label: "week", usedPercent: 16, resetsAt: 1792676195000 },
-  ] }] });
+  ] }], resetCredits: { available: { kind: "unknown" }, applicable: { kind: "unknown" } } });
   assert(!JSON.stringify(parseCodex(codex)).includes("private"));
   assert.deepEqual(parseCodex({ rateLimits: { primary: codex.rateLimits.secondary, secondary: codex.rateLimits.primary } }), parseCodex(codex));
   assert.deepEqual(parseCodex({ ...codex, rateLimitsByLimitId: { codex: codex.rateLimits, unrelated: { primary: { usedPercent: 99, windowDurationMins: 300 } } } }), parseCodex(codex));
@@ -317,4 +317,33 @@ test("Codex clone metrics retain their account display name", () => {
   const value = parseCodex({ rateLimits: { primary: { usedPercent: 12, windowDurationMins: 300 } } }, "Codex 2");
   assert.equal(compactFooterRows([{ id: "codex-2", name: "Codex 2", status: "available", value }])[0], "Codex 2 ▰▱▱▱▱▱▱ 12%");
   assert.match(detailText([{ id: "codex-2", name: "Codex 2", status: "available", value }]), /Codex 2/);
+});
+
+
+test("Codex reset counts remain independent, display only in details and table", () => {
+  const base = { rateLimits: { primary: { usedPercent: 12, windowDurationMins: 300 } } };
+  for (const [availableCount, applicableAvailableCount, expected] of [
+    [0, 0, [{ kind: "known", value: 0 }, { kind: "known", value: 0 }]],
+    [2, undefined, [{ kind: "known", value: 2 }, { kind: "unknown" }]],
+    [null, 1, [{ kind: "unknown" }, { kind: "known", value: 1 }]],
+  ] as const) {
+    const value = parseCodex({ ...base, rateLimitResetCredits: { availableCount, applicableAvailableCount } });
+    assert(value.kind === "quota");
+    assert.deepEqual([value.resetCredits?.available, value.resetCredits?.applicable], expected);
+    const state: ProviderState = { id: "codex-2", name: "Codex 2", status: "available", value };
+    const available = expected[0].kind === "known" ? String(expected[0].value) : "unknown";
+    const applicable = expected[1].kind === "known" ? String(expected[1].value) : "unknown";
+    assert(detailText([state]).includes(`Reset credits: ${available} available � ${applicable} applicable`));
+    assert.equal(usageTable([state])[1].includes(`resets ${available}`), available !== "unknown");
+    const prior = parseCodex(base);
+    assert.deepEqual(compactFooterRows([state]), compactFooterRows([{ ...state, value: prior }]));
+    assert.deepEqual(footerRows([state]), footerRows([{ ...state, value: prior }]));
+    assert(!usageTable([{ ...state, id: "cursor" }])[1].includes("resets "));
+  }
+  for (const invalid of [undefined, null, "0", -1, 0.1, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    const value = parseCodex({ ...base, rateLimitResetCredits: { availableCount: invalid, applicableAvailableCount: invalid } });
+    assert(value.kind === "quota");
+    assert.deepEqual(value.resetCredits, { available: { kind: "unknown" }, applicable: { kind: "unknown" } });
+  }
+  assert.throws(() => parseCodex({ rateLimitResetCredits: { availableCount: 1 } }));
 });

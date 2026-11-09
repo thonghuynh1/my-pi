@@ -5,7 +5,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { writeAtomicJson } from "../durable-file.mjs";
-import type { UsageMetric, QuotaWindow } from "./model.ts";
+import type { UsageMetric, QuotaWindow, ResetCount } from "./model.ts";
 import type { ProviderReader } from "./readers.ts";
 import type { UsageScope } from "./scope.ts";
 
@@ -62,7 +62,15 @@ function normalizeMetric(input: unknown, now: number): UsageMetric {
   if (input.kind === "quota") {
     if (!Array.isArray(input.groups) || !input.groups.length || input.groups.length > 8) throw new Error("Invalid groups");
     const names: Record<string, [string, string]> = { codex: ["Codex", "Codex"], gemini: ["Gemini Models", "AG Gemini"], "third-party": ["Claude and GPT models", "AG Claude/GPT"], cursor: ["Cursor included plan", "Cursor"] };
-    return { kind: "quota", groups: input.groups.map((g: unknown) => {
+    const count = (v: unknown): ResetCount => {
+      if (!object(v)) throw new Error("Invalid reset count");
+      if (v.kind === "unknown" && v.value === undefined) return { kind: "unknown" };
+      if (v.kind === "known" && typeof v.value === "number" && Number.isSafeInteger(v.value) && v.value >= 0) return { kind: "known", value: v.value };
+      throw new Error("Invalid reset count");
+    };
+    const resetCredits = input.resetCredits;
+    if (resetCredits !== undefined && !object(resetCredits)) throw new Error("Invalid reset credits");
+    return { kind: "quota", ...(object(resetCredits) ? { resetCredits: { available: count(resetCredits.available), applicable: count(resetCredits.applicable) } } : {}), groups: input.groups.map((g: unknown) => {
       if (!object(g) || typeof g.id !== "string" || !Object.hasOwn(names, g.id)) throw new Error("Invalid group");
       const [name, shortName] = names[g.id];
       const normalized = windows(g.windows);

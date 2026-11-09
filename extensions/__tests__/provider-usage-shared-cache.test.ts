@@ -502,3 +502,26 @@ test("mid-fetch confidence changes discard prior values even when the owner is c
   assert.equal(result.value, undefined);
   assert.equal(result.lastSuccess, undefined);
 });
+
+
+test("Codex reset counts survive cache round trips and malformed counts force a reread", async (t) => {
+  const root = directory(t), context = scope(), file = path.join(root, `${context.key}.json`);
+  let calls = 0;
+  const value: UsageMetric = { kind: "quota", groups: [{ id: "codex", name: "Codex", shortName: "Codex", windows: [{ id: "5h", label: "5h", usedPercent: 10 }] }],
+    resetCredits: { available: { kind: "known", value: 2 }, applicable: { kind: "unknown" } } };
+  const source = reader(context, async () => { calls++; return value; });
+  const cache = new SharedUsageCache({ root, now: () => 1000 });
+  assert.deepEqual((await cache.read(source, signal())).value, value);
+  assert.deepEqual((await new SharedUsageCache({ root, now: () => 1000 }).read(source, signal())).value, value);
+  const disk = JSON.parse(readFileSync(file, "utf8"));
+  delete disk.observation.value.resetCredits;
+  writeFileSync(file, JSON.stringify(disk), { mode: 0o600 });
+  const old = await cache.read(source, signal());
+  assert(old.value?.kind === "quota");
+  assert.equal(old.value.resetCredits, undefined);
+  assert.equal(calls, 1);
+  disk.observation.value.resetCredits = { available: { kind: "known", value: -1 }, applicable: { kind: "unknown" } };
+  writeFileSync(file, JSON.stringify(disk), { mode: 0o600 });
+  assert.deepEqual((await cache.read(source, signal())).value, value);
+  assert.equal(calls, 2);
+});

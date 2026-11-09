@@ -26,7 +26,9 @@ export function createCodexUsageReader(deps: CodexUsageDependencies): (signal: A
     const selectedAccount = accountId(token);
     const request = codexRequest(token, selectedAccount, signal);
     const response = await (deps.fetch ?? globalThis.fetch)(ENDPOINT, request);
-    const limits = record(record(await responseJson(response, request.signal!)).rate_limit);
-    return { rateLimits: { primary: window(limits.primary_window), secondary: window(limits.secondary_window) } };
+    const body = record(await responseJson(response, request.signal!));
+    const limits = record(body.rate_limit), counts = record(body.rate_limit_reset_credits);
+    return { rateLimits: { primary: window(limits.primary_window), secondary: window(limits.secondary_window) },
+      rateLimitResetCredits: { availableCount: counts.available_count, applicableAvailableCount: counts.applicable_available_count } };
   };
 }

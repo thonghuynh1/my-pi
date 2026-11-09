@@ -1,8 +1,10 @@
 export type ProviderId = "codex" | `codex-${number}` | "antigravity" | "copilot" | "cursor" | `claude-${number}` | "muse";
 export type QuotaWindow = { id: string; label: string; usedPercent: number; resetsAt?: number };
 export type QuotaGroup = { id: string; name: string; shortName: string; windows: QuotaWindow[]; asOf?: number };
+export type ResetCount = { kind: "known"; value: number } | { kind: "unknown" };
+export type ResetCredits = { available: ResetCount; applicable: ResetCount };
 export type UsageMetric =
-  | { kind: "quota"; groups: QuotaGroup[] }
+  | { kind: "quota"; groups: QuotaGroup[]; resetCredits?: ResetCredits }
   | { kind: "credits"; consumed: number; resetsAt?: number }
   // Claude usage-credit spend (money) plus any subscription quota windows; fetchedAt is Claude Code's own cache time.
   | { kind: "spend"; spend?: { used: number; limit?: number; currency: string; usedPercent?: number; severity?: string }; windows: QuotaWindow[]; fetchedAt?: number };
@@ -26,6 +28,10 @@ function reset(value: unknown, epoch = false): number | undefined {
 }
 function unavailable(): never { throw new Error("Usage fields unavailable"); }
 
+export function parseResetCount(value: unknown): ResetCount {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? { kind: "known", value } : { kind: "unknown" };
+}
+
 export function parseCodex(raw: unknown, displayName = "Codex"): UsageMetric {
   const data = record(raw);
   const bucket = record(record(data.rateLimitsByLimitId).codex ?? data.rateLimits);
@@ -39,7 +45,9 @@ export function parseCodex(raw: unknown, displayName = "Codex"): UsageMetric {
   }
   if (!windows.length) return unavailable();
   windows.sort((a, b) => (a.id === "5h" ? -1 : b.id === "5h" ? 1 : 0));
-  return { kind: "quota", groups: [{ id: "codex", name: displayName, shortName: displayName, windows }] };
+  const counts = record(data.rateLimitResetCredits);
+  return { kind: "quota", groups: [{ id: "codex", name: displayName, shortName: displayName, windows }],
+    resetCredits: { available: parseResetCount(counts.availableCount), applicable: parseResetCount(counts.applicableAvailableCount) } };
 }
 
 export function parseAntigravity(raw: unknown): UsageMetric {
@@ -299,7 +307,8 @@ export function usageTable(states: readonly ProviderState[], now = Date.now(), p
     for (const g of state.value.groups) {
       const others = g.windows.filter((w) => w.id !== "5h" && w.id !== "week").map((w) => w.id === "auto" || w.id === "api"
         ? paint(levelOf(w.usedPercent), `${w.label} ${usageBar(w.usedPercent, 5)} ${pct(w.usedPercent)}`) : `${w.label} ${pct(w.usedPercent)}`).join("  ");
-      lines.push(row(multiple ? g.shortName : name, g.windows, [others, resets(g.windows), g.asOf === undefined ? "" : `as of ${clockTime(g.asOf)}`, status]));
+      const count = state.id === "codex" || state.id.startsWith("codex-") ? state.value.resetCredits?.available : undefined;
+      lines.push(row(multiple ? g.shortName : name, g.windows, [others, resets(g.windows), count?.kind === "known" ? `resets ${count.value}` : "", g.asOf === undefined ? "" : `as of ${clockTime(g.asOf)}`, status]));
     }
   }
   return lines;
@@ -331,6 +340,11 @@ export function detailText(states: readonly ProviderState[]): string {
       }
       for (const id of ["5h", "week"]) if (!g.windows.some((w) => w.id === id)) lines.push(`    ${id === "5h" ? "Five-hour window (5h)" : "Weekly window (week)"}: unavailable / not applicable`);
       for (const w of g.windows) lines.push(`    ${w.id === "5h" ? "Five-hour window (5h)" : w.id === "week" ? "Weekly window (week)" : w.id === "month" ? "30-day window (month)" : w.label}: ${percent(w.usedPercent)} used Â· resets: ${localized(w.resetsAt)}`);
+    }
+    if (state.id === "codex" || state.id.startsWith("codex-")) {
+      const counts = state.value?.kind === "quota" ? state.value.resetCredits : undefined;
+      const display = (count: ResetCount | undefined) => count?.kind === "known" ? String(count.value) : "unknown";
+      lines.push(`  Reset credits: ${display(counts?.available)} available · ${display(counts?.applicable)} applicable`);
     }
     return [...lines, ""];
   })].join("\n");

@@ -6,8 +6,8 @@ import { accountId, codexRequest, responseJson } from "./codex-http.ts";
 export type CodexProviderId = "codex" | `codex-${number}`;
 export type CodexResetTarget = { readonly id: CodexProviderId; readonly name: string };
 export type ResetCredit = { id: string; title: string; resetType: string; status: string; grantedAt?: string; expiresAt?: string; description?: string };
-type AccountBinding = { target: CodexResetTarget; accountId: string };
-type ResetAttempt = { account: AccountBinding; credit: ResetCredit; requestId: string };
+export type AccountBinding = { target: CodexResetTarget; accountId: string };
+export type ResetAttempt = { account: AccountBinding; credit: ResetCredit; requestId: string };
 export type ResetOutcome = { kind: "accepted"; outcome?: string } | { kind: "uncertain"; message: string } | { kind: "not-sent"; message: string };
 export type ResetFlowState =
   | { kind: "hidden" }

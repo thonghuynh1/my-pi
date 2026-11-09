@@ -5,6 +5,7 @@ import { StringDecoder } from "node:string_decoder";
 import { usageScope, type UsageScope, type ScopeDependencies } from "./scope.ts";
 import { createCursorUsageReader } from "./cursor.ts";
 import { createCodexUsageReader } from "./codex.ts";
+import { createCodexResetAccess, type CodexProviderId, type CodexResetTarget, type AccountBinding, type ResetAttempt, type ResetCredit, type ResetOutcome } from "./codex-reset.ts";
 import { ClaudeUsageError, readClaudeUsageAt } from "./claude.ts";
 import { claudeProfiles, type ClaudeProfile } from "../claude-profiles.ts";
 import { BUILTIN_CODEX, defaultCodexPaths, slotIdentity, type CodexSlot } from "../codex-accounts.ts";
@@ -17,15 +18,40 @@ export type ProviderReader = { id: ProviderId; name: string; experimental?: bool
 export const CODEX_INITIALIZE = { id: 1, method: "initialize", params: { clientInfo: { name: "provider_usage", title: "Provider Usage", version: "0.1.0" } } };
 export const COPILOT_FIELDS = "{quota_snapshots: {premium_interactions: {credits_used: .quota_snapshots.premium_interactions.credits_used}}, quota_reset_date_utc: .quota_reset_date_utc}";
 export type ClaudeUsageAtReader = (run: ProcessRunner, signal: AbortSignal, configDir: string) => Promise<unknown>;
-export interface ProviderReaderOptions extends ScopeDependencies { codexSlots?: readonly CodexSlot[] }
+export interface ProviderReaderOptions extends ScopeDependencies { codexSlots?: readonly CodexSlot[]; codexFetch?: typeof globalThis.fetch }
+export type ProviderReaderBundle = {
+  readers: ProviderReader[];
+  codexResetTargets: readonly CodexResetTarget[];
+  inventory(target: CodexResetTarget, signal: AbortSignal): Promise<{ account: AccountBinding; credits: readonly ResetCredit[] }>;
+  consume(attempt: ResetAttempt, signal: AbortSignal): Promise<ResetOutcome>;
+};
 export function providerReaders(run: ProcessRunner = runProcess, cursorRead: ((signal: AbortSignal) => Promise<unknown>) | undefined = undefined, claudeReadAt: ClaudeUsageAtReader = readClaudeUsageAt, profiles: readonly ClaudeProfile[] = claudeProfiles(), scopeDependencies: ProviderReaderOptions = {}): ProviderReader[] {
+  return providerReaderBundle(run, cursorRead, claudeReadAt, profiles, scopeDependencies).readers;
+}
+export function providerReaderBundle(run: ProcessRunner = runProcess, cursorRead: ((signal: AbortSignal) => Promise<unknown>) | undefined = undefined, claudeReadAt: ClaudeUsageAtReader = readClaudeUsageAt, profiles: readonly ClaudeProfile[] = claudeProfiles(), scopeDependencies: ProviderReaderOptions = {}): ProviderReaderBundle {
   const codexSlots = scopeDependencies.codexSlots ?? [{ provider: BUILTIN_CODEX }];
+  type BoundTarget = CodexResetTarget & {
+    inventory(signal: AbortSignal): Promise<{ account: AccountBinding; credits: readonly ResetCredit[] }>;
+    consume(attempt: ResetAttempt, signal: AbortSignal): Promise<ResetOutcome>;
+  };
+  const targets: BoundTarget[] = [];
   const codexReaders = codexSlots.map((slot, index): ProviderReader => {
     const id = (slot.provider === BUILTIN_CODEX ? "codex" : slot.provider) as ProviderId;
     const identity = slotIdentity(defaultCodexPaths().authFile, slot.provider);
     const name = `Codex ${index + 1}`;
+    const apiKey = () => scopeDependencies.codexApiKey?.(id) ?? Promise.resolve(undefined);
+    const access = createCodexResetAccess(apiKey, scopeDependencies.codexFetch);
+    const target: BoundTarget = {
+      id: id as CodexProviderId, name,
+      async inventory(signal) {
+        const result = await access.inventory(signal);
+        return { account: { target, accountId: result.accountId }, credits: result.credits };
+      },
+      consume: (attempt, signal) => access.consume(attempt, signal),
+    };
+    targets.push(target);
     const readCodex = createCodexUsageReader({
-      apiKey: scopeDependencies.codexApiKey ? () => scopeDependencies.codexApiKey!(id) : undefined,
+      apiKey: scopeDependencies.codexApiKey ? apiKey : undefined,
       fallback: (signal) => {
         if (id !== "codex") throw new UsageReadError(`${name} requires Pi Codex OAuth login`);
         return run({ command: "codex", args: ["app-server"], protocol: "codex" }, signal);
@@ -52,7 +78,7 @@ export function providerReaders(run: ProcessRunner = runProcess, cursorRead: ((s
       }
     },
   });
-  return [
+  const readers: ProviderReader[] = [
     ...codexReaders,
     { id: "antigravity", scope: usageScope("antigravity", undefined, scopeDependencies), name: "Antigravity", read: async (signal) => parseAntigravity(await run({ command: "agy", args: ["-p", "/usage", "--output-format", "json"] }, signal)) },
     { id: "copilot", scope: usageScope("copilot", undefined, scopeDependencies), name: "GitHub Copilot", experimental: true, read: async (signal) => parseCopilot(await run({ command: "gh", args: ["api", "/copilot_internal/user", "--jq", COPILOT_FIELDS] }, signal)) },
@@ -71,6 +97,12 @@ export function providerReaders(run: ProcessRunner = runProcess, cursorRead: ((s
       }
     } },
   ];
+  return {
+    readers,
+    codexResetTargets: targets,
+    inventory: (target, signal) => (target as BoundTarget).inventory(signal),
+    consume: (attempt, signal) => (attempt.account.target as BoundTarget).consume(attempt, signal),
+  };
 }
 
 export type Launch = { file: string; args: string[]; windowsVerbatimArguments?: boolean };

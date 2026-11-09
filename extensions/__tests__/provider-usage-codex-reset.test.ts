@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { providerReaderBundle } from "../lib/provider-usage/readers.ts";
 import { createCodexResetAccess, createCodexResetFlow, type CodexResetTarget, type ResetCredit, type ResetOutcome } from "../lib/provider-usage/codex-reset.ts";
 
 const token = (account: string) => `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: account } })).toString("base64url")}.signature`;
@@ -143,4 +144,38 @@ test("abort after fetch starts is uncertain", async () => {
     assert(init?.signal); throw new DOMException("timeout", "TimeoutError");
   });
   assert.equal((await access.consume(attempt, signal())).kind, "uncertain");
+});
+
+
+test("reader bundle binds each inventory and consume to its selected slot", async () => {
+  const resolved: string[] = [], requests: { init: RequestInit }[] = [];
+  let current = token("second-account");
+  const bundle = providerReaderBundle(undefined, undefined, undefined, [], {
+    codexSlots: [{ provider: "openai-codex" }, { provider: "codex-2" }],
+    codexApiKey: async id => { resolved.push(id!); return id === "codex-2" ? current : token("first-account"); },
+    codexFetch: async (_url, init) => { requests.push({ init: init! }); return Response.json({ credits: [rawCredit], outcome: "reset" }); },
+  });
+  assert.deepEqual(bundle.codexResetTargets.map(t => t.id), ["codex", "codex-2"]);
+  const target2 = bundle.codexResetTargets[1];
+  const inventory = await bundle.inventory(target2, signal());
+  assert.equal(inventory.account.target, target2);
+  assert.equal(inventory.account.accountId, "second-account");
+  const selected = { account: inventory.account, credit: inventory.credits[0], requestId: "same-id" };
+  current = token("other-account");
+  assert.equal((await bundle.consume(selected, signal())).kind, "not-sent");
+  assert.equal(requests.length, 1);
+  current = token("second-account");
+  assert.equal((await bundle.consume(selected, signal())).kind, "accepted");
+  assert.deepEqual(resolved, ["codex-2", "codex-2", "codex-2"]);
+  for (const request of requests) assert.equal(new Headers(request.init.headers).get("chatgpt-account-id"), "second-account");
+});
+
+test("missing OAuth still presents target but never falls back to CLI", async () => {
+  let cli = 0, fetched = 0;
+  const bundle = providerReaderBundle(async () => { cli++; throw new Error("must not invoke CLI"); }, undefined, undefined, [], {
+    codexApiKey: async () => undefined, codexFetch: async () => { fetched++; throw new Error("must not fetch"); },
+  });
+  assert.equal(bundle.codexResetTargets.length, 1);
+  await assert.rejects(bundle.inventory(bundle.codexResetTargets[0], signal()));
+  assert.equal(cli, 0); assert.equal(fetched, 0);
 });

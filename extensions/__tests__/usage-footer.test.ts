@@ -599,3 +599,66 @@ test("picker tracks selection in short viewport and does not change ordinary scr
   panel.dispose(); const before = renders; flow.handleInput!("\x1b"); assert.equal(renders, before);
   f.emit("session_shutdown");
 });
+
+
+test("q closes every reset view without canceling its state or submitting again", async () => {
+  const target = { id: "codex" as const, name: "Codex 1" };
+  const account = { target, accountId: "synthetic-account" };
+  const credits = [{ id: "synthetic-credit", title: "Weekly", resetType: "weekly", status: "available" }];
+  let finishInventory!: (value: { account: typeof account; credits: typeof credits }) => void;
+  const inventory = new Promise<{ account: typeof account; credits: typeof credits }>(resolve => { finishInventory = resolve; });
+  let finishSubmit!: (value: ResetOutcome) => void;
+  const pending = new Promise<ResetOutcome>(resolve => { finishSubmit = resolve; });
+  let posts = 0, refreshes = 0;
+  const flow = createCodexResetFlow([target], {
+    inventory: async () => inventory,
+    consume: async () => { posts++; return pending; },
+    afterReset: async () => { refreshes++; }, uuid: () => "uuid",
+  });
+  const f = fixture("tui", { flow });
+  const enter = String.fromCharCode(13);
+  let interaction = f.command("provider-usage"); await flush();
+  const closeAndReopen = async (kind: string) => {
+    assert.equal(flow.state().kind, kind);
+    assert.match(f.panel()!.render(100).join(" "), /q close panel/);
+    f.panel()!.handleInput!("q"); await interaction;
+    assert.equal(f.panel(), undefined); assert.equal(flow.state().kind, kind);
+    interaction = f.command("provider-usage"); await flush();
+    assert.equal(flow.state().kind, kind);
+  };
+  f.panel()!.handleInput!("x"); await closeAndReopen("accounts");
+  f.panel()!.handleInput!(enter); await closeAndReopen("loading");
+  f.panel()!.handleInput!("q"); await interaction;
+  const beforeInventory = f.renders();
+  finishInventory({ account, credits }); await flush();
+  assert.equal(f.renders(), beforeInventory); assert.equal(flow.state().kind, "credits");
+  interaction = f.command("provider-usage"); await flush(); await closeAndReopen("credits");
+  f.panel()!.handleInput!(enter); await closeAndReopen("confirm");
+  assert.equal(posts, 0);
+  f.panel()!.handleInput!("y"); assert.equal(posts, 1);
+  await closeAndReopen("submitting");
+  assert.match(f.panel()!.render(100).join(" "), /Submitting reset/);
+  f.panel()!.handleInput!("q"); await interaction;
+  const beforeSubmit = f.renders();
+  finishSubmit({ kind: "accepted", outcome: "reset" }); await flush();
+  assert.equal(refreshes, 1); assert.equal(f.renders(), beforeSubmit);
+  interaction = f.command("provider-usage"); await flush();
+  assert.match(f.panel()!.render(100).join(" "), /Reset accepted: reset/);
+  await closeAndReopen("done");
+  f.panel()!.handleInput!("q"); await interaction;
+  assert.equal(posts, 1);
+});
+
+test("q closes a reset message and preserves it on reopen", async () => {
+  const flow = createCodexResetFlow([], {
+    inventory: async () => { throw new Error("must not fetch"); },
+    consume: async () => { throw new Error("must not post"); }, afterReset: async () => {},
+  });
+  const f = fixture("tui", { flow });
+  const interaction = f.command("provider-usage"); await flush();
+  f.panel()!.handleInput!("x"); assert.equal(flow.state().kind, "message");
+  f.panel()!.handleInput!("q"); await interaction; assert.equal(flow.state().kind, "message");
+  const reopened = f.command("provider-usage"); await flush();
+  assert.match(f.panel()!.render(100).join(" "), /No Codex OAuth slots available/);
+  f.panel()!.handleInput!("q"); await reopened;
+});

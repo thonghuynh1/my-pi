@@ -281,9 +281,10 @@ export function usageDetailPanel(monitor: ProviderUsageMonitor, requestRender: (
     dispose() { disposed = true; unsubscribe(); unsubscribeFlow?.(); },
     invalidate() { text.invalidate(); },
     handleInput(data: string) {
+      if (matchesKey(data, "q")) { close(); return; }
       if (flow?.handleInput(data) === "handled") { requestRender(); return; }
       if (matchesKey(data, "x") && flow) { offset = 0; flow.open(); requestRender(); return; }
-      if (matchesKey(data, "escape") || matchesKey(data, "q")) { close(); return; }
+      if (matchesKey(data, "escape")) { close(); return; }
       if (matchesKey(data, "r")) { void monitor.refresh(); return; }
       if (matchesKey(data, "d")) { detailed = !detailed; offset = 0; }
       else if (matchesKey(data, "up")) offset = Math.max(0, offset - 1);
@@ -304,7 +305,7 @@ export function usageDetailPanel(monitor: ProviderUsageMonitor, requestRender: (
         body = text.render(inner);
       } else body = usageTable(states, Date.now(), paint);
       const updated = Math.max(0, ...states.map((state) => state.lastAttempt ?? 0));
-      const hint = flow?.visible() ? flow.hint() : `r refresh · d ${detailed ? "summary" : "details"} · x reset · ↑/↓ scroll · Esc close${updated ? ` · updated ${new Date(updated).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : ""}`;
+      const hint = flow?.visible() ? `${flow.hint()} · q close panel` : `r refresh · d ${detailed ? "summary" : "details"} · x reset · ↑/↓ scroll · Esc/q close${updated ? ` · updated ${new Date(updated).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : ""}`;
       const size = Math.max(1, height() - 4);
       offset = Math.max(0, Math.min(offset, body.length - size));
       const resetState = flow?.state();

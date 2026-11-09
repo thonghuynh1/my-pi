@@ -178,7 +178,7 @@ export function createCodexResetFlow(targets: readonly CodexResetTarget[], deps:
     },
     hint() {
       return current.kind === "accounts" || current.kind === "credits" ? "↑/↓ select · Enter choose · Esc cancel"
-        : current.kind === "confirm" ? "y confirm · any other key cancel"
+        : current.kind === "confirm" ? "y confirm · Esc/other keys cancel"
         : current.kind === "done" ? `${current.result.kind === "uncertain" ? "t retry same request id · " : ""}Enter/Esc close` : "Esc close";
     },
   };

@@ -341,8 +341,8 @@ export function detailText(states: readonly ProviderState[]): string {
       for (const id of ["5h", "week"]) if (!g.windows.some((w) => w.id === id)) lines.push(`    ${id === "5h" ? "Five-hour window (5h)" : "Weekly window (week)"}: unavailable / not applicable`);
       for (const w of g.windows) lines.push(`    ${w.id === "5h" ? "Five-hour window (5h)" : w.id === "week" ? "Weekly window (week)" : w.id === "month" ? "30-day window (month)" : w.label}: ${percent(w.usedPercent)} used · resets: ${localized(w.resetsAt)}`);
     }
-    if (state.id === "codex" || state.id.startsWith("codex-")) {
-      const counts = state.value?.kind === "quota" ? state.value.resetCredits : undefined;
+    if ((state.id === "codex" || state.id.startsWith("codex-")) && state.value?.kind === "quota") {
+      const counts = state.value.resetCredits;
       const display = (count: ResetCount | undefined) => count?.kind === "known" ? String(count.value) : "unknown";
       lines.push(`  Reset credits: ${display(counts?.available)} available \u00b7 ${display(counts?.applicable)} applicable`);
     }

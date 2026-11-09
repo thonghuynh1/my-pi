@@ -347,3 +347,21 @@ test("Codex reset counts remain independent, display only in details and table",
   }
   assert.throws(() => parseCodex({ rateLimitResetCredits: { availableCount: 1 } }));
 });
+
+
+test("Codex reset details require a quota metric", () => {
+  const quota = parseCodex(codex);
+  for (const id of ["codex", "codex-2"] as const) {
+    const state: ProviderState = { id, name: "Codex", status: "available", value: quota };
+    assert(detailText([state]).includes("  Reset credits: unknown available · unknown applicable"));
+    for (const missing of [{ ...state, status: "loading" as const, value: undefined }, { ...state, status: "error" as const, value: undefined }]) {
+      const text = detailText([missing]);
+      assert(text.includes("  Usage unavailable (no successful read)"));
+      assert(!text.includes("  Reset credits:"));
+    }
+    for (const value of [{ kind: "credits" as const, consumed: 0 }, { kind: "spend" as const, windows: [] }]) {
+      assert(!detailText([{ ...state, value }]).includes("  Reset credits:"));
+    }
+    assert(!detailText([{ ...state, id: "cursor" }]).includes("  Reset credits:"));
+  }
+});

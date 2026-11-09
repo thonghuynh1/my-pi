@@ -88,6 +88,10 @@ Provider-reported account consumption or quota data, distinct from Pi-session to
 
 A provider-defined allowance period with its own usage measurement and optional reset timestamp, such as a five-hour or weekly window.
 
+## Codex Reset Credits
+
+Provider-issued credits that a user may explicitly spend to reset a current Codex quota window. Their available and applicable counts are distinct from quota usage, and an unknown count is not zero.
+
 ## Copilot Credits Consumed
 
 GitHub-reported AI credits used by the signed-in Copilot account, not an inferred remaining balance or monetary cost.
@@ -95,6 +99,7 @@ GitHub-reported AI credits used by the signed-in Copilot account, not an inferre
 ## Relationships
 
 - **Provider Account Usage** may contain multiple independent **Provider Quota Windows**, including separate Antigravity model groups.
+- **Codex Reset Credits** may be reported alongside **Provider Account Usage**; their consumption requires an explicit user confirmation.
 - **Copilot Credits Consumed** is one kind of **Provider Account Usage**, independent of Pi-session totals.
 
 - An indexed discovery tool such as aiKnow may supply findings that the parent converts into a **Subagent Evidence Packet**.

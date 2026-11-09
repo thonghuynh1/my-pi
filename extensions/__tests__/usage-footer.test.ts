@@ -3,12 +3,13 @@ import { test } from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type Component } from "@earendil-works/pi-tui";
 import usageFooter, { estimateCursorPlanCost, layoutUsageLines } from "../usage-footer.ts";
+import { createCodexResetFlow, type CodexResetFlow, type ResetOutcome } from "../lib/provider-usage/codex-reset.ts";
 import { ProviderUsageMonitor, type MonitorClock } from "../lib/provider-usage/monitor.ts";
 import { UsageReadError, type ProviderReader } from "../lib/provider-usage/readers.ts";
 import { parseClaude } from "../lib/provider-usage/model.ts";
 
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
-function fixture(mode = "tui", options: { readers?: ProviderReader[]; now?: () => number } = {}) {
+function fixture(mode = "tui", options: { readers?: ProviderReader[]; now?: () => number; flow?: CodexResetFlow } = {}) {
   const callbacks = new Map<string, ((event: unknown, ctx: ExtensionCommandContext) => void)[]>();
   const commands = new Map<string, { handler(args: string, ctx: ExtensionCommandContext): Promise<void> }>();
   const intervals = new Set<() => void>();
@@ -66,7 +67,7 @@ function fixture(mode = "tui", options: { readers?: ProviderReader[]; now?: () =
     registerTool() { assert.fail("must not register model-callable tools"); },
     getThinkingLevel: () => "medium", getActiveTools: () => [], setActiveTools() {},
   } as unknown as ExtensionAPI;
-  usageFooter(pi, monitor);
+  usageFooter(pi, monitor, options.flow);
   return {
     ctx, monitor, intervals, timeouts, installed,
     reads: () => reads, renders: () => renders, footer: () => component, panel: () => panel,
@@ -536,4 +537,65 @@ test("shutdown closes details; RPC/print/json never install TUI or read provider
     assert.equal(other.reads(), 0); assert.equal(other.intervals.size, 0);
     other.emit("session_shutdown");
   }
+});
+
+
+test("reset subview gates POST and survives panel disposal without rendering disposed panel", async () => {
+  const target = { id: "codex" as const, name: "Codex 1" };
+  let posts = 0, refreshes = 0, inventories = 0;
+  let resolve!: (outcome: ResetOutcome) => void;
+  const pending = new Promise<ResetOutcome>(yes => { resolve = yes; });
+  const flow = createCodexResetFlow([target], {
+    inventory: async chosen => { inventories++; return { account: { target: chosen, accountId: "synthetic-account" }, credits: [
+      { id: "synthetic-credit", title: "Weekly", resetType: "weekly", status: "available" },
+    ] }; },
+    consume: async () => { posts++; return pending; },
+    afterReset: async () => { refreshes++; }, uuid: () => "uuid",
+  });
+  const f = fixture("tui", { flow });
+  f.emit("session_start"); await flush();
+  const interaction = f.command("provider-usage"); await flush();
+  assert.match(f.panel()!.render(80).join(" "), /x reset/);
+  f.panel()!.handleInput!("r"); await flush();
+  for (const tick of f.intervals) tick(); await flush();
+  for (const width of [1, 8, 20, 60, 80]) for (const line of f.panel()!.render(width)) assert(visibleWidth(line) <= width);
+  assert.equal(posts, 0); assert.equal(inventories, 0);
+  f.panel()!.handleInput!("x"); f.panel()!.render(60); assert.equal(posts, 0);
+  f.panel()!.handleInput!("\r"); await flush(); assert.equal(inventories, 1);
+  f.panel()!.handleInput!("\r");
+  const confirmation = f.panel()!.render(80).join(" ");
+  assert.match(confirmation, /irreversibly spends exactly one credit/);
+  assert(!confirmation.includes("synthetic-account")); assert(!confirmation.includes("synthetic-credit"));
+  f.panel()!.handleInput!("n"); assert.equal(posts, 0);
+  f.panel()!.handleInput!("\r"); f.panel()!.handleInput!("y"); f.panel()!.handleInput!("y");
+  assert.equal(posts, 1); assert.equal(flow.state().kind, "submitting");
+  f.emit("session_shutdown"); await interaction; assert.equal(f.panel(), undefined);
+  const renders = f.renders();
+  resolve({ kind: "accepted", outcome: "reset" }); await flush();
+  assert.equal(refreshes, 1); assert.equal(f.renders(), renders);
+  const reopened = f.command("provider-usage"); await flush();
+  assert.match(f.panel()!.render(80).join(" "), /Reset accepted: reset/);
+  f.panel()!.handleInput!("\r"); f.panel()!.handleInput!("q"); await reopened;
+  assert.equal(posts, 1);
+});
+
+
+test("picker tracks selection in short viewport and does not change ordinary scrolling", async () => {
+  const targets = Array.from({ length: 10 }, (_, i) => ({ id: (i ? `codex-${i + 1}` : "codex") as "codex" | `codex-${number}`, name: `Codex ${i + 1}` }));
+  const flow = createCodexResetFlow(targets, {
+    inventory: async () => { throw new Error("must not fetch"); },
+    consume: async () => { throw new Error("must not post"); }, afterReset: async () => {},
+  });
+  const f = fixture("tui", { flow });
+  f.emit("session_start"); await flush();
+  const interaction = f.command("provider-usage"); await flush();
+  f.panel()!.handleInput!("q"); await interaction;
+  let renders = 0;
+  const { usageDetailPanel } = await import("../usage-footer.ts");
+  const panel = usageDetailPanel(f.monitor, () => { renders++; }, () => {}, () => 8, undefined, undefined, flow);
+  panel.handleInput!("x");
+  for (let i = 0; i < 9; i++) panel.handleInput!("\x1b[B");
+  assert.match(panel.render(60).join(" "), /> Codex 10/);
+  panel.dispose(); const before = renders; flow.handleInput!("\x1b"); assert.equal(renders, before);
+  f.emit("session_shutdown");
 });

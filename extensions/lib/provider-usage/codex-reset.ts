@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
-import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { Text, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import { accountId, codexRequest, responseJson } from "./codex-http.ts";
 
 export type CodexProviderId = "codex" | `codex-${number}`;
@@ -164,16 +164,19 @@ export function createCodexResetFlow(targets: readonly CodexResetTarget[], deps:
       else if (state.kind === "message") lines = [state.text];
       else if (state.kind === "credits") lines = [`Choose a reset for ${state.account.target.name}`, ...state.credits.map((credit, i) => `${i === state.index ? ">" : " "} ${credit.title} · ${credit.status}`)];
       else if (state.kind === "confirm") lines = [`${state.account.target.name} · account ****${clean(state.account.accountId).slice(-4)}`,
-        `${state.credit.title} · ${state.credit.resetType}`, "This irreversibly spends exactly one reset credit. Confirm with y."];
+        `Credit: ${state.credit.title}`, `Type: ${state.credit.resetType}`, "This irreversibly spends exactly one credit."];
       else if (state.kind === "submitting") lines = ["Submitting reset…"];
-      else if (state.kind === "done") lines = [state.result.kind === "accepted" ? `Reset accepted${state.result.outcome ? `: ${state.result.outcome}` : ""}` : state.result.message,
+      else if (state.kind === "done") lines = [...(state.result.kind === "uncertain"
+        ? ["The credit may or may not have been spent.", "Check codex /usage.", "Press t to retry with the same request id."]
+        : [state.result.kind === "accepted" ? `Reset accepted${state.result.outcome ? `: ${state.result.outcome}` : ""}` : state.result.message]),
         ...(refreshError ? ["Usage refresh failed; refresh manually."] : [])];
-      return lines.map((line) => truncateToWidth(line, width));
+      return state.kind === "accounts" || state.kind === "credits" ? lines.map((line) => truncateToWidth(line, width))
+        : new Text(lines.join("\n"), 0, 0).render(Math.max(1, width));
     },
     hint() {
       return current.kind === "accounts" || current.kind === "credits" ? "↑/↓ select · Enter choose · Esc cancel"
         : current.kind === "confirm" ? "y confirm · any other key cancel"
-        : current.kind === "done" ? `${current.result.kind === "uncertain" ? "t retry · " : ""}Enter/Esc close` : "Esc close";
+        : current.kind === "done" ? `${current.result.kind === "uncertain" ? "t retry same request id · " : ""}Enter/Esc close` : "Esc close";
     },
   };
 }

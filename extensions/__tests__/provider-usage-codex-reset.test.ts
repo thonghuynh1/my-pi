@@ -179,3 +179,44 @@ test("missing OAuth still presents target but never falls back to CLI", async ()
   await assert.rejects(bundle.inventory(bundle.codexResetTargets[0], signal()));
   assert.equal(cli, 0); assert.equal(fetched, 0);
 });
+
+
+test("uncertain retry sends byte-identical body and a refreshed same-account token", async () => {
+  const bodies: string[] = [], authorizations: string[] = [];
+  let credentials = token("second-account");
+  let first = true;
+  const bundle = providerReaderBundle(undefined, undefined, undefined, [], {
+    codexSlots: [{ provider: "codex-2" }], codexApiKey: async () => credentials,
+    codexFetch: async (url, init) => {
+      if (String(url).endsWith("/consume")) {
+        bodies.push(String(init!.body)); authorizations.push(new Headers(init!.headers).get("authorization")!);
+        if (first) { first = false; throw new Error("lost response"); }
+        return Response.json({ outcome: "alreadyRedeemed" });
+      }
+      return Response.json({ credits: [rawCredit] });
+    },
+  });
+  let refreshed = 0;
+  const flow = createCodexResetFlow(bundle.codexResetTargets, { inventory: bundle.inventory, consume: bundle.consume,
+    afterReset: async () => { refreshed++; }, uuid: () => "fixed-request-id" });
+  flow.open(); flow.handleInput("\r"); await flush(); flow.handleInput("\r");
+  flow.handleInput("y"); await flush();
+  assert.equal(flow.state().kind, "done");
+  credentials = token("second-account") + "rotated";
+  flow.handleInput("t"); await flush();
+  assert.equal(bodies.length, 2); assert.equal(bodies[0], bodies[1]);
+  assert.deepEqual(JSON.parse(bodies[0]), { credit_id: "secret-credit", redeem_request_id: "fixed-request-id" });
+  assert.notEqual(authorizations[0], authorizations[1]); assert.equal(refreshed, 2);
+});
+
+test("a refresh failure is displayed without retrying an accepted reset", async () => {
+  let posts = 0;
+  const flow = createCodexResetFlow([target], {
+    inventory: async chosen => ({ account: { target: chosen, accountId: "secret-account" }, credits: [credit] }),
+    consume: async () => { posts++; return { kind: "accepted" }; }, afterReset: async () => { throw new Error("private"); },
+  });
+  flow.open(); flow.handleInput("\r"); await flush(); flow.handleInput("\r"); flow.handleInput("y"); await flush();
+  assert.match(flow.renderLines(80).join(" "), /Usage refresh failed/);
+  assert(!flow.renderLines(80).join(" ").includes("private"));
+  flow.handleInput("t"); assert.equal(posts, 1);
+});

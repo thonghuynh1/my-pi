@@ -3,7 +3,8 @@ import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { ProviderUsageMonitor } from "./lib/provider-usage/monitor.ts";
-import { providerReaders, UsageReadError } from "./lib/provider-usage/readers.ts";
+import { providerReaderBundle, UsageReadError } from "./lib/provider-usage/readers.ts";
+import { createCodexResetFlow, type CodexResetFlow } from "./lib/provider-usage/codex-reset.ts";
 import { defaultCodexPaths, loadCodexSlots } from "./lib/codex-accounts.ts";
 import { isClaudeBridgeProvider } from "./lib/claude-profiles.ts";
 import { detailText, compactFooterRows, usageTable, type UsagePaint } from "./lib/provider-usage/model.ts";
@@ -268,16 +269,20 @@ function isTui(ctx: ExtensionContext): boolean { return ctx.mode === "tui" && ct
 
 // Bordered modal: compact table by default, `d` toggles the full detail text.
 export function usageDetailPanel(monitor: ProviderUsageMonitor, requestRender: () => void, close: () => void, height: () => number,
-  paint: UsagePaint = (_level, text) => text, frame: (text: string) => string = (text) => text): Component & { dispose(): void } {
+  paint: UsagePaint = (_level, text) => text, frame: (text: string) => string = (text) => text,
+  flow?: CodexResetFlow): Component & { dispose(): void } {
   const text = new Text("", 0, 0);
   let offset = 0;
   let detailed = false;
   let disposed = false;
   const unsubscribe = monitor.subscribe(() => { if (!disposed) requestRender(); });
+  const unsubscribeFlow = flow?.subscribe(() => { if (!disposed) requestRender(); });
   return {
-    dispose() { disposed = true; unsubscribe(); },
+    dispose() { disposed = true; unsubscribe(); unsubscribeFlow?.(); },
     invalidate() { text.invalidate(); },
     handleInput(data: string) {
+      if (flow?.handleInput(data) === "handled") { requestRender(); return; }
+      if (matchesKey(data, "x") && flow) { offset = 0; flow.open(); requestRender(); return; }
       if (matchesKey(data, "escape") || matchesKey(data, "q")) { close(); return; }
       if (matchesKey(data, "r")) { void monitor.refresh(); return; }
       if (matchesKey(data, "d")) { detailed = !detailed; offset = 0; }
@@ -292,15 +297,22 @@ export function usageDetailPanel(monitor: ProviderUsageMonitor, requestRender: (
       const inner = Math.max(1, boxed ? width - 4 : width);
       const states = monitor.snapshot();
       let body: string[];
-      if (detailed) {
+      if (flow?.visible()) body = flow.renderLines(inner);
+      else if (detailed) {
         // detailText starts with its own title and key hints; the frame supplies both.
         text.setText(detailText(states).split("\n").slice(3).join("\n"));
         body = text.render(inner);
       } else body = usageTable(states, Date.now(), paint);
       const updated = Math.max(0, ...states.map((state) => state.lastAttempt ?? 0));
-      const hint = `r refresh · d ${detailed ? "summary" : "details"} · ↑/↓ scroll · Esc close${updated ? ` · updated ${new Date(updated).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : ""}`;
+      const hint = flow?.visible() ? flow.hint() : `r refresh · d ${detailed ? "summary" : "details"} · x reset · ↑/↓ scroll · Esc close${updated ? ` · updated ${new Date(updated).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : ""}`;
       const size = Math.max(1, height() - 4);
       offset = Math.max(0, Math.min(offset, body.length - size));
+      const resetState = flow?.state();
+      if (resetState?.kind === "accounts" || resetState?.kind === "credits") {
+        const selected = resetState.index + 1;
+        if (selected < offset) offset = selected;
+        if (selected >= offset + size) offset = selected - size + 1;
+      } else if (resetState && resetState.kind !== "hidden") offset = 0;
       const visible = body.slice(offset, offset + size);
       const title = " Provider account usage ";
       if (!boxed) return [title.trim(), ...visible, hint].map((line) => truncateToWidth(line, width));
@@ -322,9 +334,9 @@ export function usageDetailPanel(monitor: ProviderUsageMonitor, requestRender: (
 
 export const piExtension = { id: "usage-footer" };
 
-export default function usageFooter(pi: ExtensionAPI, suppliedMonitor?: ProviderUsageMonitor) {
+export default function usageFooter(pi: ExtensionAPI, suppliedMonitor?: ProviderUsageMonitor, suppliedFlow?: CodexResetFlow) {
   let latestCtx: ExtensionContext | undefined;
-  const monitor = suppliedMonitor ?? new ProviderUsageMonitor(providerReaders(undefined, undefined, undefined, undefined, {
+  const bundle = suppliedMonitor ? undefined : providerReaderBundle(undefined, undefined, undefined, undefined, {
     codexSlots: loadCodexSlots(defaultCodexPaths().configFile),
     cursorApiKey: async () => latestCtx?.modelRegistry.getApiKeyForProvider("cursor"),
     codexApiKey: async (provider = "openai-codex") => {
@@ -333,7 +345,13 @@ export default function usageFooter(pi: ExtensionAPI, suppliedMonitor?: Provider
       if (auth.source !== "OAuth" || !auth.auth.apiKey) throw new UsageReadError("Codex account usage requires Pi OAuth login");
       return auth.auth.apiKey;
     },
-  }));
+  });
+  const monitor = suppliedMonitor ?? new ProviderUsageMonitor(bundle!.readers);
+  const flow = suppliedFlow ?? createCodexResetFlow(bundle?.codexResetTargets ?? [], {
+    inventory: (target, signal) => bundle!.inventory(target, signal),
+    consume: (attempt, signal) => bundle!.consume(attempt, signal),
+    afterReset: (target) => monitor.invalidateAndRefresh(target.id),
+  });
   let enabled = true;
   let closeDetails: (() => void) | undefined;
   const install = (ctx: ExtensionContext) => {
@@ -380,14 +398,14 @@ export default function usageFooter(pi: ExtensionAPI, suppliedMonitor?: Provider
     },
   });
   managed.registerCommand("provider-usage", {
-    description: "Provider account usage details (r refresh, Esc/q close)",
+    description: "Provider account usage details (r refresh, x reset, Esc/q close)",
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
       if (!isTui(ctx)) return;
       await ctx.ui.custom<void>((tui, theme, _keys, done) => {
         const close = () => { panel.dispose(); if (closeDetails === close) closeDetails = undefined; done(); };
         const panel = usageDetailPanel(monitor, () => tui.requestRender(), close, () => Math.floor(tui.terminal.rows * 0.8),
           (level, text) => theme.fg(level === "high" ? "error" : level === "warn" ? "warning" : "accent", text),
-          (text) => theme.fg("dim", text));
+          (text) => theme.fg("dim", text), flow);
         closeDetails = close;
         void monitor.refresh();
         return panel;

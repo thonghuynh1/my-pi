@@ -1,6 +1,11 @@
 # Provider usage — proposed implementation walkthrough
 
-Planning artifact. User decisions D1–D13 accepted; operational defaults and implementation shape D14–D15 awaiting final walkthrough confirmation in ledger.md. No implementation authorization in this planning session.
+Historical planning artifact. The user subsequently authorized Codex reset-credit counts and explicit, confirmed consumption in `/provider-usage`, superseding the earlier prohibition on consumption by this integration. The current behavior is described below; other historical proposals remain for context.
+
+## Codex reset credits (current decision)
+The normal usage read includes available and applicable reset-credit counts. Unknown counts are not zero. The user may open the reset subview with `x`, select a Codex OAuth slot and a server-returned credit, and explicitly confirm with `y`. A reset is never automatic, timer-driven, triggered by refresh, or triggered by opening/rendering the panel. Inventory remains in memory only and is never persisted. The reset uses the selected slot's Pi OAuth credentials, rechecks the account immediately before POST, and retries an uncertain response only on explicit request with the same request id.
+
+After an accepted or uncertain request the acting slot's shared usage cache is invalidated and refreshed. Another running Pi process retains its in-memory snapshot until its own next refresh. Two slots signed in to the same ChatGPT account use different scope keys, so only the acting slot is invalidated. The consume schema and server-side idempotency are recovered/assumed rather than verified by a live consume.
 
 ## Goal and scope
 Account usage for existing Codex, Antigravity and GitHub CLI logins; persistent right-column footer under model plus on-demand details. Direct Claude.ai and Muse excluded. Account usage is separate from local-session estimated cost/tokens; no combined provider balance.
@@ -19,7 +24,7 @@ session_shutdown/reload/footer off -> cancel timer, abort readers, close/kill ow
 - Footer and details consume the same cached snapshot shape, not separate API calls/parsers. Internal helpers and file splitting are implementer choices.
 
 ## Readers
-- Codex: start installed `codex app-server`, initialize with truthful extension clientInfo, send initialized, request account/rateLimits/read; use Codex-owned login. Default Codex quota bucket, windowDurationMins 300 -> 5h, 10080 -> week; optional map by limit id if available. Other/unavailable windows must not be mislabeled. resetsAt Unix seconds. Select only quota fields needed; ignore account identifiers, credit inventory and reset actions. Terminate owned server on completion/abort/timeout. No threads, turns, login, purchases or reset-credit consumption. Actual local probe and result: codex-account-check.md.
+- Codex: start installed `codex app-server`, initialize with truthful extension clientInfo, send initialized, request account/rateLimits/read; use Codex-owned login. Default Codex quota bucket, windowDurationMins 300 -> 5h, 10080 -> week; optional map by limit id if available. Other/unavailable windows must not be mislabeled. resetsAt Unix seconds. The ordinary read retains quota fields and reset-credit counts, not inventory or account identifiers. The separate explicit reset flow uses Pi OAuth HTTP and does not mutate through app-server. Terminate owned server on completion/abort/timeout. No threads, turns, login or purchases. Actual local probe and result: codex-account-check.md.
 - Antigravity: installed `agy -p "/usage" --output-format json`; structured command.data.groups[].buckets[], map window and remaining_fraction to used percent (1-fraction)*100; reset_time ISO timestamp. Preserve separate model groups, use short footer labels. Never use top-level token usage as account quota. Actual result: antigravity-account-check.md.
 - Copilot: existing `gh api /copilot_internal/user`; select premium_interactions credits_used and provider reset metadata, experimental label in details. Current regular-member account access proven. No remaining/cost inference. No admin PAT or direct token extraction. Actual result: copilot-account-check.md.
 

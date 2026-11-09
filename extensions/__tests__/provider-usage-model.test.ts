@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { parseCodex, parseAntigravity, parseCopilot, parseCursor, parseMuse, usageBar, usageTable, footerRows, compactFooterRows, detailText, type ProviderState } from "../lib/provider-usage/model.ts";
 
 process.env.TZ = "UTC";
@@ -319,6 +320,22 @@ test("Codex clone metrics retain their account display name", () => {
   assert.match(detailText([{ id: "codex-2", name: "Codex 2", status: "available", value }]), /Codex 2/);
 });
 
+
+test("Codex reset count survives summary truncation with a distant weekly reset", () => {
+  const now = Date.UTC(2026, 10, 5, 9, 29);
+  const value = parseCodex({ rateLimits: {
+    primary: { usedPercent: 0, windowDurationMins: 300, resetsAt: Date.UTC(2026, 10, 5, 10, 29) / 1000 },
+    secondary: { usedPercent: 100, windowDurationMins: 10080, resetsAt: Date.UTC(2026, 10, 10, 9, 29) / 1000 },
+  }, rateLimitResetCredits: { availableCount: 2 } });
+  for (const id of ["codex", "codex-2"] as const) {
+    const state: ProviderState = { id, name: id === "codex" ? "Codex" : "Codex 2", status: "available", value };
+    const row = usageTable([state], now)[1];
+    assert(row.includes("wk Tue 10 Nov 09:29"));
+    for (const width of [60, 76]) {
+      assert(truncateToWidth(row, width).includes("resets 2"), `reset count missing at width ${width}: ${truncateToWidth(row, width)}`);
+    }
+  }
+});
 
 test("Codex reset counts remain independent, display only in details and table", () => {
   const base = { rateLimits: { primary: { usedPercent: 12, windowDurationMins: 300 } } };

@@ -308,7 +308,7 @@ export function usageTable(states: readonly ProviderState[], now = Date.now(), p
       const others = g.windows.filter((w) => w.id !== "5h" && w.id !== "week").map((w) => w.id === "auto" || w.id === "api"
         ? paint(levelOf(w.usedPercent), `${w.label} ${usageBar(w.usedPercent, 5)} ${pct(w.usedPercent)}`) : `${w.label} ${pct(w.usedPercent)}`).join("  ");
       const count = state.id === "codex" || state.id.startsWith("codex-") ? state.value.resetCredits?.available : undefined;
-      lines.push(row(multiple ? g.shortName : name, g.windows, [others, resets(g.windows), count?.kind === "known" ? `resets ${count.value}` : "", g.asOf === undefined ? "" : `as of ${clockTime(g.asOf)}`, status]));
+      lines.push(row(multiple ? g.shortName : name, g.windows, [others, count?.kind === "known" ? `resets ${count.value}` : "", resets(g.windows), g.asOf === undefined ? "" : `as of ${clockTime(g.asOf)}`, status]));
     }
   }
   return lines;

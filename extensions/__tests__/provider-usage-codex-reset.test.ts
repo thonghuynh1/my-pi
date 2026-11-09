@@ -220,3 +220,29 @@ test("a refresh failure is displayed without retrying an accepted reset", async 
   assert(!flow.renderLines(80).join(" ").includes("private"));
   flow.handleInput("t"); assert.equal(posts, 1);
 });
+
+
+test("uncertain retry preflight failure keeps the original attempt uncertain and retryable", async () => {
+  let credentials: string | undefined = token("secret-account"), posts = 0, refreshes = 0;
+  const access = createCodexResetAccess(async () => credentials, async () => { posts++; throw new Error("lost response"); });
+  const flow = createCodexResetFlow([target], {
+    inventory: async chosen => ({ account: { target: chosen, accountId: "secret-account" }, credits: [credit] }),
+    consume: access.consume, afterReset: async () => { refreshes++; }, uuid: () => "same-request",
+  });
+  flow.open(); flow.handleInput("\r"); await flush(); flow.handleInput("\r"); flow.handleInput("y"); await flush();
+  assert.equal(flow.state().kind, "done"); assert.equal(posts, 1); assert.equal(refreshes, 1);
+  credentials = undefined;
+  flow.handleInput("t"); await flush();
+  const state = flow.state();
+  assert(state.kind === "done" && state.result.kind === "uncertain");
+  assert.equal(state.result.retryFailure, "Reset not sent: Pi OAuth account unavailable or changed.");
+  const text = flow.renderLines(100).join(" ");
+  assert.match(text, /credit may or may not have been spent/);
+  assert.match(text, /Retry: Reset not sent: Pi OAuth account unavailable or changed/);
+  assert.match(text, /Press t to retry with the same request id/);
+  assert.match(flow.hint(), /t retry/);
+  assert.equal(posts, 1); assert.equal(refreshes, 1);
+  credentials = token("secret-account");
+  flow.handleInput("t"); await flush();
+  assert.equal(posts, 2); assert.equal(refreshes, 2);
+});

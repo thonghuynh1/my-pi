@@ -8,7 +8,7 @@ export type CodexResetTarget = { readonly id: CodexProviderId; readonly name: st
 export type ResetCredit = { id: string; title: string; resetType: string; status: string; grantedAt?: string; expiresAt?: string; description?: string };
 export type AccountBinding = { target: CodexResetTarget; accountId: string };
 export type ResetAttempt = { account: AccountBinding; credit: ResetCredit; requestId: string };
-export type ResetOutcome = { kind: "accepted"; outcome?: string } | { kind: "uncertain"; message: string } | { kind: "not-sent"; message: string };
+export type ResetOutcome = { kind: "accepted"; outcome?: string } | { kind: "uncertain"; message: string; retryFailure?: string } | { kind: "not-sent"; message: string };
 export type ResetFlowState =
   | { kind: "hidden" }
   | { kind: "accounts"; targets: readonly [CodexResetTarget, ...CodexResetTarget[]]; index: number }
@@ -16,7 +16,7 @@ export type ResetFlowState =
   | { kind: "message"; text: string }
   | { kind: "credits"; account: AccountBinding; credits: readonly [ResetCredit, ...ResetCredit[]]; index: number }
   | { kind: "confirm"; account: AccountBinding; credit: ResetCredit }
-  | { kind: "submitting"; attempt: ResetAttempt }
+  | { kind: "submitting"; attempt: ResetAttempt; phase: { kind: "initial" } | { kind: "retry"; prior: Extract<ResetOutcome, { kind: "uncertain" }> } }
   | { kind: "done"; attempt: ResetAttempt; result: ResetOutcome };
 export interface CodexResetFlow {
   state(): ResetFlowState;
@@ -95,14 +95,16 @@ export function createCodexResetFlow(targets: readonly CodexResetTarget[], deps:
   const listeners = new Set<() => void>();
   const set = (next: ResetFlowState) => { current = next; for (const listener of listeners) listener(); };
   const hide = () => { loading?.abort(); loading = undefined; set({ kind: "hidden" }); };
-  const submit = (attempt: ResetAttempt) => {
+  const submit = (submission: Extract<ResetFlowState, { kind: "submitting" }>) => {
+    const { attempt, phase } = submission;
     refreshError = false;
-    set({ kind: "submitting", attempt });
+    set(submission);
     void (async () => {
       let result: ResetOutcome;
       try { result = await deps.consume(attempt, new AbortController().signal); }
       catch { result = { kind: "uncertain", message: "The credit may or may not have been spent. Check codex /usage; press t to retry with the same request id." }; }
       if (result.kind !== "not-sent") try { await deps.afterReset(attempt.account.target); } catch { refreshError = true; }
+      if (phase.kind === "retry" && result.kind === "not-sent") result = { ...phase.prior, retryFailure: result.message };
       set({ kind: "done", attempt, result });
     })();
   };
@@ -120,13 +122,13 @@ export function createCodexResetFlow(targets: readonly CodexResetTarget[], deps:
       if (state.kind === "hidden") return "pass";
       if (state.kind === "submitting") return "handled";
       if (state.kind === "confirm") {
-        if (matchesKey(data, "y")) submit({ account: state.account, credit: state.credit, requestId: (deps.uuid ?? randomUUID)() });
+        if (matchesKey(data, "y")) submit({ kind: "submitting", attempt: { account: state.account, credit: state.credit, requestId: (deps.uuid ?? randomUUID)() }, phase: { kind: "initial" } });
         else if (previousCredits) set(previousCredits);
         else hide();
         return "handled";
       }
       if (state.kind === "done") {
-        if (matchesKey(data, "t") && state.result.kind === "uncertain") submit(state.attempt);
+        if (matchesKey(data, "t") && state.result.kind === "uncertain") submit({ kind: "submitting", attempt: state.attempt, phase: { kind: "retry", prior: state.result } });
         else if (matchesKey(data, "return") || matchesKey(data, "escape")) hide();
         return "handled";
       }
@@ -167,7 +169,8 @@ export function createCodexResetFlow(targets: readonly CodexResetTarget[], deps:
         `Credit: ${state.credit.title}`, `Type: ${state.credit.resetType}`, "This irreversibly spends exactly one credit."];
       else if (state.kind === "submitting") lines = ["Submitting reset…"];
       else if (state.kind === "done") lines = [...(state.result.kind === "uncertain"
-        ? ["The credit may or may not have been spent.", "Check codex /usage.", "Press t to retry with the same request id."]
+        ? ["The credit may or may not have been spent.", "Check codex /usage.", "Press t to retry with the same request id.",
+          ...(state.result.retryFailure ? [`Retry: ${state.result.retryFailure}`] : [])]
         : [state.result.kind === "accepted" ? `Reset accepted${state.result.outcome ? `: ${state.result.outcome}` : ""}` : state.result.message]),
         ...(refreshError ? ["Usage refresh failed; refresh manually."] : [])];
       return state.kind === "accounts" || state.kind === "credits" ? lines.map((line) => truncateToWidth(line, width))

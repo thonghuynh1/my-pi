@@ -149,6 +149,15 @@ export function estimateCursorPlanCost(usage: AssistantUsage, model: unknown): n
   return estimateClaudePlanCost(usage, model);
 }
 
+// pi-meta-oauth records $0 for Muse Code subscription-only Wonder models because Meta publishes no rate.
+// Price them at muse-wonder-1.0's list rate (dev.meta.ai pricing, 2026-10-23); other unpriced IDs stay $0.
+const MUSE_SUBSCRIPTION_WONDER_MODELS = new Set(["muse-wonder-full-1.0", "muse-wonder-full-1.0-contributor", "muse-wonder-1.0-contributor"]);
+
+function museSubscriptionCost(usage: AssistantUsage, model: unknown): number | undefined {
+  if (typeof model !== "string" || !MUSE_SUBSCRIPTION_WONDER_MODELS.has(model)) return undefined;
+  return ((usage.input ?? 0) * 4 + (usage.output ?? 0) * 20 + (usage.cacheRead ?? 0) * 0.2) / 1_000_000;
+}
+
 function getTokenTotals(ctx: ExtensionContext): {
   input: number;
   output: number;
@@ -195,6 +204,8 @@ function getTokenTotals(ctx: ExtensionContext): {
     } else if (typeof provider === "string" && isSubscriptionProvider(provider) && reported <= 0) {
       const model = (entry.message as { model?: unknown }).model;
       parentCost += estimateClaudePlanCost(usage, model) ?? 0;
+    } else if (provider === "meta" && reported <= 0) {
+      parentCost += museSubscriptionCost(usage, (entry.message as { model?: unknown }).model) ?? 0;
     } else parentCost += reported;
   }
 

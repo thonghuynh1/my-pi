@@ -27,21 +27,40 @@ let terminationError;
 let timer;
 let controlTimer;
 let heartbeatTimer;
+let drainTimer;
+// Descendants that outlive the command (build servers, detached apps) inherit its stdio and can
+// hold the pipes open indefinitely; the command's exit, not their lifetime, ends the job.
+const DRAIN_GRACE_MS = 2000;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function killTree() {
   if (!child?.pid || childExited) return;
   if (process.platform === "win32") {
-    await new Promise((resolve, reject) => {
-      const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-      killer.once("error", reject);
-      killer.once("close", (code) => code === 0 ? resolve() : reject(new Error(`taskkill exited ${code}; process-tree termination could not be confirmed`)));
-    });
+    // taskkill fails whenever any short-lived descendant vanishes mid-walk, even though the rest of
+    // the tree dies, so the shell's exit is the proof of termination, not taskkill's exit code.
+    let lastCode;
+    for (let attempt = 0; attempt < 3 && !childExited; attempt++) {
+      lastCode = await new Promise((resolve, reject) => {
+        const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+        killer.once("error", reject);
+        killer.once("close", resolve);
+      });
+      for (let waited = 0; waited < 5000 && !childExited; waited += 100) await sleep(100);
+    }
+    if (!childExited) throw new Error(`taskkill exited ${lastCode}; process-tree termination could not be confirmed`);
   } else {
     try { process.kill(-child.pid, "SIGKILL"); }
     catch { if (!child.kill("SIGKILL")) throw new Error("Process-tree termination could not be confirmed"); }
   }
 }
+function releaseOutput() {
+  if (terminal || !child) return;
+  console.error("[supervisor] output still held by a descendant after the command exited; closing pipes");
+  child.stdout.destroy();
+  child.stderr.destroy();
+}
 function requestTermination(status) {
-  if (terminal || childExited || requestedStatus) return;
+  if (childExited) { releaseOutput(); return; }
+  if (terminal || requestedStatus) return;
   requestedStatus = status;
   console.error(`[supervisor] termination requested: ${status}, pid=${child?.pid}`);
   terminationPromise = killTree().catch((error) => {
@@ -54,6 +73,7 @@ async function finish(code, error) {
   if (terminal) return;
   terminal = true;
   clearTimeout(timer);
+  clearTimeout(drainTimer);
   clearInterval(controlTimer);
   clearInterval(heartbeatTimer);
   // On Windows the shell closing is not proof that taskkill finished the tree.
@@ -83,6 +103,7 @@ try {
     state.commandExited = true;
     clearTimeout(timer);
     commit(state);
+    drainTimer = setTimeout(releaseOutput, DRAIN_GRACE_MS);
   });
   // close, not exit: drain stdout/stderr before committing the terminal outcome.
   child.on("close", (code) => { void finish(code); });

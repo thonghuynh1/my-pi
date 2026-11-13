@@ -388,6 +388,30 @@ test("Cursor positive reported dollars win; Auto remains unpriced instead of bor
   }
 });
 
+test("Muse subscription-only Wonder models are priced at the Wonder 1.0 rate without an est label", async () => {
+  for (const [model, usage, reported, expected] of [
+    ["muse-wonder-full-1.0-contributor", { input: 295, output: 39, cacheRead: 13556 }, 0, "total 13.9k · $0.0047"],
+    ["muse-wonder-full-1.0", { input: 100000, output: 0, cacheRead: 0 }, 0, "total 100.0k · $0.4000"],
+    ["muse-wonder-1.0-contributor", { input: 0, output: 100000, cacheRead: 0 }, 0, "total 100.0k · $2.000"],
+    ["muse-spark-1.3", { input: 100000, output: 0, cacheRead: 0 }, 0.125, "total 100.0k · $0.1250"],
+    ["muse-ember-1.0", { input: 100000, output: 0, cacheRead: 0 }, 0, "total 100.0k · $0.0000"],
+  ] as const) {
+    const f = fixture();
+    const totalTokens = usage.input + usage.output + usage.cacheRead;
+    (f.ctx.sessionManager as unknown as { getBranch: () => unknown[] }).getBranch = () => [
+      { type: "message", message: { role: "assistant", provider: "meta", model, usage: {
+        ...usage, cacheWrite: 0, totalTokens, cost: { total: reported },
+      } } },
+    ];
+    try {
+      f.emit("session_start"); await flush();
+      const output = f.footer()!.render(240).join("\n");
+      assert(output.includes(expected), output);
+      assert(!output.includes(" est"), output);
+    } finally { f.emit("session_shutdown"); }
+  }
+});
+
 test("layout stays three rows with ANSI, CJK and narrow truncation", () => {
   const left = ["\x1b[33mctx 1/100 1%\x1b[0m", "in 1 · out 2", "total 3 · $1"];
   const model = "\x1b[32mmodel 模型/🦀 (high)\x1b[0m";

@@ -1955,7 +1955,24 @@ export function isSubagentModeDefaultEnabled(envValue: string | undefined = proc
 	return !/^(0|false|no|off)$/i.test(envValue ?? "");
 }
 
+const META_WIRE_ALIASES = {
+	subagent_wait: "await_child_job",
+	subagent_status: "child_job_snapshot",
+	subagent_cancel: "cancel_child_job",
+} as const;
+const META_WIRE_ALIAS_PREFIX = Object.entries(META_WIRE_ALIASES)
+	.map(([name, alias]) => `${name}=${alias}`)
+	.join(",");
+
+export function withMetaToolAliases(existing: string | undefined): string {
+	const user = existing?.trim() ?? "";
+	if (user.startsWith(META_WIRE_ALIAS_PREFIX)) return user;
+	return user ? `${META_WIRE_ALIAS_PREFIX},${user}` : META_WIRE_ALIAS_PREFIX;
+}
+
 export default function (pi: ExtensionAPI, sdk: SubagentSdk = defaultSdk) {
+	// Meta's subscription attestation rejects these tool names; pi-meta-oauth reads this env var per request.
+	process.env.META_TOOL_ALIASES = withMetaToolAliases(process.env.META_TOOL_ALIASES);
 	// Subagent workflow mode is ON by default so the model is steered to use the
 	// `subagent` tool without anyone typing `/subagent on`.
 	//

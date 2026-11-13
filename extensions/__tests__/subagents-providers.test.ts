@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { inheritExtensionProviders, recordBridgePromptCapture } from "../subagents.ts";
+import { inheritExtensionProviders, recordBridgePromptCapture, withMetaToolAliases } from "../subagents.ts";
 
 test("subagent runtimes inherit the parent's extension providers", () => {
   const native = { id: "codex-2" };
@@ -52,4 +52,14 @@ test("child prompts are recorded in claude-bridge's shared capture registry", ()
   } finally {
     g[key] = previous;
   }
+});
+
+test("Meta wire aliases prepend subagent tool renames without overriding user entries", () => {
+  const ours = "subagent_wait=await_child_job,subagent_status=child_job_snapshot,subagent_cancel=cancel_child_job";
+  assert.equal(withMetaToolAliases(undefined), ours);
+  assert.equal(withMetaToolAliases(""), ours);
+  assert.equal(withMetaToolAliases("  "), ours);
+  assert.equal(withMetaToolAliases("subagent_wait=foo"), `${ours},subagent_wait=foo`);
+  const once = withMetaToolAliases("subagent_wait=foo");
+  assert.equal(withMetaToolAliases(once), once);
 });

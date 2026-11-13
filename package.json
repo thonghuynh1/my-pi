@@ -24,6 +24,7 @@
     "@narumitw/pi-file-context": "^0.54.2",
     "@ogulcancelik/pi-herdr": "^0.2.5",
     "pi-claude-bridge": "^0.9.3",
+    "pi-meta-oauth": "^0.7.7",
     "playwright-core": "^1.61.0",
     "ws": "^8.21.0",
     "zod": "^4.4.3"
@@ -44,6 +45,7 @@
       "./node_modules/@ogulcancelik/pi-herdr/index.ts",
       "./node_modules/@narumitw/pi-file-context/dist/index.ts",
       "./node_modules/pi-claude-bridge/src/index.ts",
+      "./node_modules/pi-meta-oauth/extensions/meta.ts",
       "./extensions"
     ],
     "prompts": [

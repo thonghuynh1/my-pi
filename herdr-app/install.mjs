@@ -45,7 +45,7 @@ export async function restore(changed, originals, target, backup, operations = {
  * with their helper mod. Never copies other personal state or credentials. */
 export async function install({ target = join(homedir(), '.config', 'herdr-app'), source = here, activate = false, withKeys = false, run = runHerdr } = {}) {
   const selectedMods = withKeys ? [...mods, ...keyMods] : mods;
-  const entries = [...selectedMods.map(name => `mods/${name}`), 'layouts/github-workspace.json', ...(withKeys ? ['keys.json'] : [])];
+  const entries = [...selectedMods.map(name => `mods/${name}`), 'layouts/github-workspace.json', 'session-bridge', ...(withKeys ? ['keys.json'] : [])];
   target = resolve(target); source = resolve(source);
   const inside = (parent, child) => { const path = relative(parent, child); return path === '' || (!path.startsWith(`..${sep}`) && path !== '..' && !isAbsolute(path)); };
   const realSource = await canonical(source), realTarget = await canonical(target);

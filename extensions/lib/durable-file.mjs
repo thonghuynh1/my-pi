@@ -23,7 +23,7 @@ export function replaceFileWithRetry(source, destination, options = {}) {
   }
 }
 
-export function writeAtomicJson(file, value) {
+export function writeAtomicJson(file, value, options = {}) {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${randomUUID()}.tmp`;
   let fd;
@@ -33,7 +33,7 @@ export function writeAtomicJson(file, value) {
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
-    replaceFileWithRetry(temporary, file);
+    replaceFileWithRetry(temporary, file, options);
   } finally {
     if (fd !== undefined) closeSync(fd);
     if (existsSync(temporary)) unlinkSync(temporary);

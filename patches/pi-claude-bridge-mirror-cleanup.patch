@@ -1,0 +1,59 @@
+--- package/src/index.ts	1985-10-26 15:15:00.000000000 +0700
++++ /f/MyWork/my-pi/node_modules/pi-claude-bridge/src/index.ts	2026-11-14 15:38:20.967518200 +0700
+@@ -243,6 +243,33 @@
+  *  session's reads, writes and teardown marks touch only its own mirror. */
+ const sharedSessions = new Map<string, SessionState>();
+ 
++/** Mirrors retired by a post-abort rotation (see forceRotate on SessionState).
++ *  The rotated file cannot be deleted at rotation time: the killed CC
++ *  subprocess may still flush a late record into it. It is deleted at the
++ *  next session teardown (clearSession), when no CC writer can be alive.
++ *  Keyed by CC session id. */
++const orphanedMirrors = new Map<string, { sessionId: string; cwd: string }>();
++
++/** Delete one mirror file, best-effort: a failed delete must never break a
++ *  turn or a teardown, and the file is a rebuildable cache of pi history. */
++function deleteMirrorFile(sessionId: string, cwd: string): void {
++	try {
++		deleteSession(sessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
++	} catch (error) {
++		debug(`WARNING: could not delete mirror ${sessionId.slice(0, 8)}:`, error);
++	}
++}
++
++/** Delete every mirror this process created: live mirrors from
++ *  sharedSessions plus rotated orphans. Called at session teardown, where
++ *  pi's own session file remains the source of truth and any mirror still
++ *  needed is rebuilt from pi history on the next sync. */
++function deleteAllMirrorFiles(): void {
++	for (const mirror of orphanedMirrors.values()) deleteMirrorFile(mirror.sessionId, mirror.cwd);
++	orphanedMirrors.clear();
++	for (const state of sharedSessions.values()) deleteMirrorFile(state.sessionId, state.cwd);
++}
++
+ /** The mirror for `piSessionId`, or null when this session has none yet. */
+ function sessionStateFor(piSessionId: string | null | undefined): SessionState | null {
+ 	return sharedSessions.get(sessionKey(piSessionId)) ?? null;
+@@ -838,6 +865,9 @@
+ 	// records, not messages: `messages` filters out the attachment records that
+ 	// carrying an `@file` expansion across a rebuild writes into the same file.
+ 	verifyWrittenSession(session.jsonlPath, session.sessionId, session.records.length, cwd);
++	if (previousSessionId !== undefined && !preserveId && previousSessionId !== session.sessionId) {
++		orphanedMirrors.set(previousSessionId, { sessionId: previousSessionId, cwd });
++	}
+ 	setSessionStateFor(piSessionId, { sessionId: session.sessionId, cursor: priorMessages.length, cwd, piSessionId: piSessionId ?? undefined });
+ 	if (previousSessionId === undefined) {
+ 		debug(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.records.length} records`);
+@@ -2444,6 +2474,12 @@
+ 	// Reset shared session on pi session lifecycle events
+ 	const clearSession = (event: string) => {
+ 		debug(`${event}: clearing ${sharedSessions.size} shared session${sharedSessions.size === 1 ? "" : "s"}`);
++		// Delete the on-disk mirrors too, not just the in-memory map: pi's
++		// session file is the source of truth and a needed mirror is rebuilt
++		// from pi history, so leaving the files behind only accumulates a
++		// full-history copy per session (and per post-abort rotation) under
++		// ~/.claude/projects forever.
++		deleteAllMirrorFiles();
+ 		// Whole map: children never emit session_shutdown (only runtime teardown
+ 		// and /reload do), so there is no per-entry removal to do here — the
+ 		// top-level transition takes every mirror with it.

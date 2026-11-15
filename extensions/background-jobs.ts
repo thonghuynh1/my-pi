@@ -18,6 +18,7 @@ export const piExtension = { id: "background-jobs" };
 const WORKER_PATH = fileURLToPath(new URL("./lib/background-job-worker.mjs", import.meta.url));
 const DELIVERY_HEADER = "[Background Job ";
 const DEFAULT_TAIL_LINES = 40;
+const HEARTBEAT_LEASE_MS = 10_000;
 export type JobStatus = "running" | "completed" | "failed" | "killed" | "timed_out" | "interrupted";
 export interface BackgroundJob {
   id: string;
@@ -61,7 +62,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
   let isAgentBusy = false;
   let hasUserTurnPending = false;
   let compactionInProgress = false;
-  let deliveryInFlight: string[] | undefined;
+  let deliveryInFlight: Array<{ id: string; outcome: string }> | undefined;
   let deliveryAccepted = false;
   let deliveryMessage: string | undefined;
   let deliveryTimer: NodeJS.Timeout | undefined;
@@ -99,12 +100,20 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
     monitor = undefined;
     clearDelivery();
   }
+  function outcomeKey(job: BackgroundJob): string {
+    return JSON.stringify([job.status, job.endedAt ?? null, job.exitCode ?? null, job.error ?? null]);
+  }
+  function processAlive(pid: number | undefined): boolean {
+    if (!pid) return false;
+    try { process.kill(pid, 0); return true; }
+    catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
+  }
   function confirmDelivery(): void {
     if (!deliveryMessage || !hasRecordedUserMessage(lastContext, deliveryMessage)) return;
     const previous = new Map<BackgroundJob, boolean>();
-    for (const id of deliveryInFlight ?? []) {
-      const job = jobs.get(id);
-      if (job) { previous.set(job, job.delivered); job.delivered = true; }
+    for (const item of deliveryInFlight ?? []) {
+      const job = jobs.get(item.id);
+      if (job && outcomeKey(job) === item.outcome) { previous.set(job, job.delivered); job.delivered = true; }
     }
     try { persist(); } catch (error) {
       for (const [job, delivered] of previous) job.delivered = delivered;
@@ -116,7 +125,7 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
     if (!active || isAgentBusy || hasUserTurnPending || compactionInProgress || deliveryInFlight) return;
     const ready = [...jobs.values()].filter((job) => job.status !== "running" && job.notifyOnFinish && !job.delivered);
     if (!ready.length) return;
-    deliveryInFlight = ready.map((job) => job.id);
+    deliveryInFlight = ready.map((job) => ({ id: job.id, outcome: outcomeKey(job) }));
     deliveryTimer = setTimeout(() => { confirmDelivery(); clearDelivery(); flushPendingWakes(); }, 60_000);
     deliveryTimer.unref();
     deliveryMessage = ready.map((job) => [
@@ -133,29 +142,36 @@ export default function backgroundJobsExtension(pi: ExtensionAPI): void {
     for (const job of jobs.values()) {
       if (job.status !== "running" && job.status !== "interrupted") continue;
       const state = readJson<Partial<BackgroundJob>>(join(job.directory, "state.json"));
-      if (state?.token === job.token && !(job.status === "interrupted" && state.status === "running")) {
-        const before = JSON.stringify([job.status, job.pid, job.endedAt, job.exitCode]);
-        const recoveredOutcome = job.status === "interrupted" && state.status !== "running" && state.endedAt !== job.endedAt;
-        Object.assign(job, state);
-        if (recoveredOutcome) { job.delivered = false; if (!state.error) delete job.error; }
-        changed ||= before !== JSON.stringify([job.status, job.pid, job.endedAt, job.exitCode]);
+      if (state?.token === job.token) {
+        const resumeInterrupted = job.status === "interrupted" && state.status === "running"
+          && typeof state.heartbeatAt === "number" && Date.now() - state.heartbeatAt <= HEARTBEAT_LEASE_MS
+          && processAlive(state.supervisorPid);
+        if (job.status !== "interrupted" || state.status !== "running" || resumeInterrupted) {
+          const before = JSON.stringify([job.status, job.pid, job.endedAt, job.exitCode]);
+          const recoveredOutcome = job.status === "interrupted" && state.status !== "running" && state.endedAt !== job.endedAt;
+          Object.assign(job, state);
+          if (resumeInterrupted) {
+            delete job.endedAt;
+            delete job.exitCode;
+            if (!state.error) delete job.error;
+            job.delivered = false;
+          }
+          if (recoveredOutcome) { job.delivered = false; if (!state.error) delete job.error; }
+          changed ||= before !== JSON.stringify([job.status, job.pid, job.endedAt, job.exitCode]);
+        }
       }
       if (job.status === "running") {
         // Never kill a persisted PID: it may have been reused. Commands are sent
         // only to the token-bound supervisor, which owns the live child handle.
-        let alive = true;
-        if (job.supervisorPid) {
-          try { process.kill(job.supervisorPid, 0); }
-          catch (error) { alive = (error as NodeJS.ErrnoException).code !== "ESRCH"; }
-        }
-        const leaseExpired = Date.now() - (job.heartbeatAt ?? job.startedAt) > 10_000;
+        const alive = job.supervisorPid ? processAlive(job.supervisorPid) : true;
+        const leaseExpired = Date.now() - (job.heartbeatAt ?? job.startedAt) > HEARTBEAT_LEASE_MS;
         if (leaseExpired || !alive) {
           // The supervisor may commit completion and exit between our initial
           // read and the liveness probe. Re-read before declaring an unknown outcome.
           const latest = readJson<Partial<BackgroundJob>>(join(job.directory, "state.json"));
           if (latest?.token === job.token && latest.status && latest.status !== "running") {
             Object.assign(job, latest);
-          } else if (!alive || Date.now() - (latest?.token === job.token ? latest.heartbeatAt ?? job.startedAt : job.startedAt) > 10_000) {
+          } else if (!alive || Date.now() - (latest?.token === job.token ? latest.heartbeatAt ?? job.startedAt : job.startedAt) > HEARTBEAT_LEASE_MS) {
             job.status = "interrupted";
             job.endedAt = Date.now();
             job.error = `Supervisor disappeared or its heartbeat expired; command outcome is unknown. Inspect the command log and ${join(job.directory, "supervisor.log")} before explicitly retrying.`;

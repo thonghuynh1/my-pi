@@ -13,11 +13,28 @@ mkdirSync(controls, { recursive: true, mode: 0o700 });
 // Exclusive admission: a duplicate supervisor may never launch the command twice.
 try { closeSync(openSync(join(directory, "started.lock"), "wx", 0o600)); }
 catch { process.exit(1); }
-function commit(value) { writeAtomicJson(resultFile, value); }
+// Progress writes are superseded by the next one, so a blocked rename must never kill the
+// supervisor. The terminal write in finish is the only copy of the outcome, so it passes a
+// longer retry budget. A lock outlasting that budget still loses the write and the host
+// reports interrupted, which is the truthful outcome then.
+function commit(value, options) {
+  try { writeAtomicJson(resultFile, value, options); }
+  catch (error) { console.error(`[supervisor] state write failed: ${error.message}`); }
+}
+let outputWriteFailed = false;
+function appendLog(data) {
+  try { appendFileSync(logFile, data, { mode: 0o600 }); }
+  catch (error) {
+    if (!outputWriteFailed) {
+      outputWriteFailed = true;
+      console.error(`[supervisor] output write failed: ${error.message}`);
+    }
+  }
+}
 
 const state = { token: request.token, status: "running", startedAt: request.startedAt, supervisorPid: process.pid, heartbeatAt: Date.now() };
 commit(state);
-appendFileSync(logFile, `[${request.id}] ${request.command}\nCwd: ${request.cwd}\n\n`, { mode: 0o600 });
+appendLog(`[${request.id}] ${request.command}\nCwd: ${request.cwd}\n\n`);
 let child;
 let terminal = false;
 let childExited = false;
@@ -83,7 +100,7 @@ async function finish(code, error) {
   state.exitCode = code;
   state.endedAt = Date.now();
   if (error || terminationError) state.error = String(error ?? terminationError);
-  commit(state);
+  commit(state, { maxWaitMs: 10_000 });
 }
 try {
   child = process.platform === "win32"
@@ -92,10 +109,9 @@ try {
   state.pid = child.pid;
   commit(state);
   heartbeatTimer = setInterval(() => { state.heartbeatAt = Date.now(); commit(state); }, 2000);
-  const append = (data) => appendFileSync(logFile, data);
-  child.stdout.on("data", append);
-  child.stderr.on("data", append);
-  child.stdin.on("error", (error) => appendFileSync(logFile, `\n[stdin error: ${error.message}]\n`));
+  child.stdout.on("data", appendLog);
+  child.stderr.on("data", appendLog);
+  child.stdin.on("error", (error) => appendLog(`\n[stdin error: ${error.message}]\n`));
   child.on("error", (error) => { void finish(null, error.message); });
   child.on("exit", () => {
     childExited = true;
@@ -107,14 +123,46 @@ try {
   });
   // close, not exit: drain stdout/stderr before committing the terminal outcome.
   child.on("close", (code) => { void finish(code); });
+  let controlPollFailed = false;
+  const reportedControlFailures = new Set();
+  const logControlFailure = (name, error) => {
+    if (reportedControlFailures.has(name)) return;
+    reportedControlFailures.add(name);
+    console.error(`[supervisor] control file failed: ${name}: ${error.message}`);
+  };
   controlTimer = setInterval(() => {
-    for (const name of readdirSync(controls).filter((name) => name.endsWith(".json")).sort()) {
+    let names;
+    try {
+      names = readdirSync(controls).filter((name) => name.endsWith(".json")).sort();
+      controlPollFailed = false;
+    } catch (error) {
+      if (!controlPollFailed) {
+        controlPollFailed = true;
+        console.error(`[supervisor] control file failed: ${error.message}`);
+      }
+      return;
+    }
+    for (const name of names) {
       const file = join(controls, name);
-      const control = JSON.parse(readFileSync(file, "utf8"));
-      unlinkSync(file);
-      if (control.token !== request.token) continue;
-      if (control.action === "kill") requestTermination("killed");
-      if (control.action === "input" && !terminal && !childExited && !requestedStatus && child.stdin.writable) child.stdin.write(control.input + "\n");
+      let control;
+      try { control = JSON.parse(readFileSync(file, "utf8")); }
+      catch (error) {
+        logControlFailure(name, error);
+        try { unlinkSync(file); reportedControlFailures.delete(name); } catch { /* A later poll retries removal. */ }
+        continue;
+      }
+      try { unlinkSync(file); reportedControlFailures.delete(name); }
+      catch (error) {
+        logControlFailure(name, error);
+        continue;
+      }
+      try {
+        if (control.token !== request.token) continue;
+        if (control.action === "kill") requestTermination("killed");
+        if (control.action === "input" && !terminal && !childExited && !requestedStatus && child.stdin.writable) child.stdin.write(control.input + "\n");
+      } catch (error) {
+        console.error(`[supervisor] control action failed: ${error.message}`);
+      }
     }
   }, 100);
   if (request.timeoutSeconds > 0) {

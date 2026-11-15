@@ -1,0 +1,113 @@
+{
+  "bundle": "orca",
+  "source": "https://github.com/VladTemp27/herdr-orca + munza/herdr-mods (better-changes, better-config)",
+  "switch_back_layout": "main",
+  "layout_files": [
+    "layouts/orca.json",
+    "layouts/.state/orca.json"
+  ],
+  "mods": [
+    "better-changes",
+    "better-config",
+    "better-sidebar",
+    "desktop-notifications",
+    "file-icons",
+    "files-open-with",
+    "hibernate",
+    "issues",
+    "live-ports",
+    "my-menu",
+    "my-new-menu",
+    "my-pane",
+    "my-status",
+    "my-tabs",
+    "my-worktree",
+    "new-project",
+    "new-worktree",
+    "open-vscode",
+    "project-settings",
+    "resources",
+    "sidebar-nav",
+    "t3-actions",
+    "usage-limits"
+  ],
+  "keys": {
+    "section": "layout:orca",
+    "note": "Every Orca chord lives in this one section, which Herdr applies only while layouts/orca.json shows. No Orca binding exists in global or terminal.",
+    "chords": [
+      "cmd-shift-a",
+      "cmd-shift-b",
+      "cmd-alt-]",
+      "cmd-alt-[",
+      "cmd-]",
+      "cmd-[",
+      "cmd-w",
+      "cmd-shift-w",
+      "cmd-n",
+      "cmd-g",
+      "cmd-shift-e",
+      "cmd-shift-n",
+      "cmd-alt-,"
+    ]
+  },
+  "data_dirs": [
+    "data/better-changes",
+    "data/better-config",
+    "data/better-sidebar",
+    "data/desktop-notifications",
+    "data/file-icons",
+    "data/files-open-with",
+    "data/hibernate",
+    "data/issues",
+    "data/live-ports",
+    "data/my-menu",
+    "data/my-new-menu",
+    "data/my-pane",
+    "data/my-status",
+    "data/my-tabs",
+    "data/my-worktree",
+    "data/new-project",
+    "data/new-worktree",
+    "data/open-vscode",
+    "data/project-settings",
+    "data/resources",
+    "data/sidebar-nav",
+    "data/t3-actions",
+    "data/usage-limits"
+  ],
+  "shared_keys": [
+    "usage-limits.state",
+    "usage-limits.refresh",
+    "better-sidebar.space-parents",
+    "better-sidebar.space-order",
+    "better-sidebar.card-live",
+    "better-changes.diff-layout",
+    "issues.folders",
+    "issues.spaces",
+    "issues.logins",
+    "issues.allRepos"
+  ],
+  "extra_dirs": [
+    "~/.config/herdr-mods/better-config"
+  ],
+  "local_fits": [
+    "mods/better-changes/mod.json: place set to none (layout provides the slot)",
+    "mods/better-config/main.js: PowerShell listing on Windows instead of /bin/sh (upstream kept as main.js.bak-upstream)",
+    "mods/desktop-notifications/mod.json: place set to none; the Orca layout carries its 0px block explicitly, so it can no longer inject itself into other layouts",
+    "layouts/workbench-saved.json + .state: injected desktop-notifications block removed (.bak-scope backups beside them)",
+    "mods/better-sidebar/views/spaces.js: first space on a repo's main checkout is the project root; sibling spaces on the same checkout nest under it with worktrees (upstream nested worktrees only). Nested siblings no longer draw the 'primary' badge. Upstream kept as views/spaces.js.bak-upstream.",
+    "mods/files-open-with: right-click menu now opens on every platform with built-in 'Insert path into terminal' and 'Copy path' (upstream menu was macOS-only Open With apps). Insert reuses the workspace-files approach in insert.js: capture the focused terminal at right-click, clipboard write + verify, focus, native paste.",
+    "mods/files-open-with: dropdown gained 'Move to Recycle Bin' (trash, never permanent) with an in-menu confirm step; the project root itself can't be deleted from the panel.",
+    "mods/better-sidebar: projects are permanent. Every repo a space opens is remembered (better-sidebar.pinned-projects); after its last space closes it stays as a dimmed 'closed' row \u2014 click reopens a space at the repo root, the small x is the only way to remove it.",
+    "mods/files-open-with viewer: local files are editable (upstream read-only): Ctrl+S / Save button writes via compare-and-swap writeTextFile, unsaved dot + Saved/Not saved states, drafts kept in localStorage, external changes never clobber unsaved edits. Remote/binary/truncated stay read-only.",
+    "mods/files-open-with panel: opening a file no longer resets the Files panel outside the project \u2014 when the focused pane has no folder (a viewer tab), the root falls back to the space's first terminal folder instead of the space's home folder.",
+    "mods/better-sidebar: worktrees always show \u2014 each pinned project's git worktrees are enumerated (better-sidebar.worktrees, 30s refresh) and closed ones nest under the project as dimmed rows; a repo fold no longer hides worktree rows. Delete: live worktree rows have an x opening Orca's worktree remove dialog; closed worktree rows have an x with an inline Remove/Cancel confirm running git worktree remove --force --force (branch kept).",
+    "Automations removed from the bundle by user request: mods/automations, its sidebar-nav link and icon, data/automations, the plugin config and state folders, the Go source in bundles/orca/src, the build and scheduler scripts, and the herdr-automations binary are gone, and the HerdrOrcaAutomations scheduled task is unregistered at removal time. No automations were defined at removal time (automations: []). remove.ps1 still unregisters the legacy task by name so an old install cleans up fully.",
+    "Excalidraw removed from the bundle by user request: mods/excalidraw and its top-bar button in my-tabs are gone, the layout:orca chord cmd-shift-e was removed, and the right panel gained a prs child running the workspace github-prs mod (top bar shows a PRs button, like the workbench). github-prs itself is NOT bundle-owned \u2014 it is the shared workbench mod (herdr-app/mods/github-prs); the orca installer copies it in for portability, but bundle removal leaves it in place."
+  ],
+  "remove": "Run remove.ps1 from this folder. It switches away first if Orca is showing, then deletes everything listed here and nothing else.",
+  "shared_state_keys": [
+    "better-sidebar.pinned-projects",
+    "better-sidebar.worktrees"
+  ]
+}

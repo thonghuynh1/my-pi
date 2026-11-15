@@ -24,11 +24,22 @@ hc label <terminal> resume.app=<agent> resume.session=<id-or-path> resume.kind=i
 ```
 
 Terminal addresses and labels survive a reboot, so after restart every
-recovered shell pane still knows which conversation it held. The
-`project-spaces` mod reads those labels and shows a one-click
-**Resume <Agent>** button on the space's card, plus a **Resume N** button in
-the sidebar header. Clicking types the agent's resume command into the pane.
-Nothing auto-runs.
+recovered shell pane still knows which conversation it held. When a
+recovered shell starts, the profile bridge launches one hidden
+`auto-resume` job for that terminal. It waits for the shell to settle,
+confirms the pane is still idle at that same shell with a recorded session,
+and types the agent's resume line in. This runs at shell start, so it works
+in every layout. A stamp file per terminal and shell
+(`auto-resume-<terminal>-<pid>.json` beside the script) makes it fire at
+most once per shell per recorded session. Quitting an agent after it
+resumes does not restart it. The agent only comes back at the next shell
+start, normally the next reboot. Each job appends its start and send lines
+to `auto-resume-log.jsonl` beside the script.
+
+As a fallback, the `project-spaces` mod reads the same labels and shows a
+one-click **Resume <Agent>** button on the space's card, plus a **Resume N**
+button in the sidebar header, for any labelled shell the automatic pass
+left alone.
 
 ## Agent coverage
 
@@ -77,8 +88,8 @@ launch. Running Pi sessions need a restart or `/reload` to pick up the stub.
 1. Start a supported agent in a Herdr pane.
 2. Run `hc get <terminal-address>` and confirm its labels include
    `resume.app`, `resume.session`, `resume.kind`, and `resume.at`.
-3. Exit the agent so the pane returns to a shell, or reboot and reopen Herdr.
-4. Confirm the sidebar offers **Resume <Agent>** for that space.
+3. Reboot and reopen Herdr, or start a fresh shell in a labelled terminal.
+4. Confirm the agent restarts on its own in that pane. In the `github-workspace` layout, a labelled shell the automatic pass left alone instead offers **Resume <Agent>** on its space card.
 5. Optionally run `session-bridge.ps1 cleanup -DryRun` to confirm cleanup
    can read the terminal records without changing them.
 
@@ -118,8 +129,10 @@ the computer was off for a long time.
 
 ## Limits
 
-- One-click only, by design. Auto-resume on app start would also resurrect
-  agents in panes where you deliberately exited to a shell.
+- Automatic resume cannot tell a reboot recovery from an app restart after
+  you deliberately exited an agent to a shell. It resumes in both cases,
+  once per shell start. Exit the agent again and it stays exited until the
+  next start.
 - The newest agent to run in a pane owns its resume slot (last report wins),
   matching the old herdr TUI.
 - If you resume the same session by hand in a different pane, both panes

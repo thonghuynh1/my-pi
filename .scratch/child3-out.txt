@@ -1,0 +1,4 @@
+state=live status=[] statusType=
+pid=71004 shellPid=71004 pidEq=True
+fgNull=False fgPid=64128 fgEq=False
+app=pi kind=path sessionExists=True

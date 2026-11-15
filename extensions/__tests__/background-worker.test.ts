@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, openSync, closeSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, openSync, closeSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -105,6 +105,78 @@ test("an exited command finishes even while a detached descendant keeps its stdi
     assert.equal(state.exitCode, 3);
     assert.match(readFileSync(join(directory, "output.log"), "utf8"), /root-exited/);
     assert.equal(await completion, 0);
+    passed = true;
+  } finally {
+    if (passed) rmSync(directory, { recursive: true, force: true });
+    else console.error("Supervisor failure evidence:", directory);
+  }
+});
+
+function holdWithoutDeleteShare(file: string, readyFile: string, seconds: number) {
+  return spawn("powershell.exe", ["-NoProfile", "-Command",
+    `$f=[System.IO.File]::Open($env:LOCKFILE,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::Read); [System.IO.File]::WriteAllText($env:LOCKREADY,'1'); Start-Sleep -Seconds ${seconds}; $f.Close()`],
+  { env: { ...process.env, LOCKFILE: file, LOCKREADY: readyFile }, stdio: "ignore", windowsHide: true });
+}
+
+test("supervisor survives a state.json lock that outlasts the rename retry and still records completion", { skip: process.platform !== "win32" }, async () => {
+  const directory = mkdtempSync(join(tmpdir(), "pi-worker-locked-state-"));
+  let passed = false;
+  writeAtomicJson(join(directory, "request.json"), {
+    id: "bg-1", token: randomUUID(), cwd: directory, startedAt: Date.now(), timeoutSeconds: 60,
+    command: `node -e "const fs=require('fs');const t=setInterval(()=>{if(fs.existsSync('go')){clearInterval(t);console.log('go-done')}},50)"`,
+  });
+  let holder: ReturnType<typeof spawn> | undefined;
+  try {
+    let exitCode: number | null | undefined;
+    const completion = runNode([worker, directory]).then((code) => { exitCode = code; return code; });
+    const running = await waitForState(directory, (value) => Boolean(value.pid), 10_000);
+    assert.ok(running?.pid, "supervisor wrote running state" + "\n" + readFileSync(join(directory, "supervisor.log"), "utf8"));
+    const readyFile = join(directory, "lock-ready");
+    holder = holdWithoutDeleteShare(join(directory, "state.json"), readyFile, 9);
+    const readyDeadline = Date.now() + 10_000;
+    while (!existsSync(readyFile) && Date.now() < readyDeadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.ok(existsSync(readyFile), "lock holder opened state.json without delete sharing");
+    await new Promise((resolve) => setTimeout(resolve, 4500));
+    assert.equal(exitCode, undefined, "supervisor stayed alive across heartbeats with a blocked state write");
+    writeFileSync(join(directory, "go"), "1");
+    const state = await waitForState(directory, (value) => value.status !== "running", 20_000);
+    assert.equal(state?.status, "completed", JSON.stringify(state) + "\n" + readFileSync(join(directory, "supervisor.log"), "utf8"));
+    assert.equal(state.exitCode, 0);
+    assert.equal(await completion, 0);
+    assert.match(readFileSync(join(directory, "supervisor.log"), "utf8"), /state write failed/);
+    assert.match(readFileSync(join(directory, "output.log"), "utf8"), /go-done/);
+    passed = true;
+  } finally {
+    holder?.kill();
+    if (passed) rmSync(directory, { recursive: true, force: true });
+    else console.error("Supervisor failure evidence:", directory);
+  }
+});
+
+test("supervisor survives an unwritable output log and a malformed control file", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "pi-worker-bad-io-"));
+  let passed = false;
+  const token = randomUUID();
+  mkdirSync(join(directory, "output.log"));
+  writeAtomicJson(join(directory, "request.json"), {
+    id: "bg-1", token, cwd: directory, startedAt: Date.now(), timeoutSeconds: 30,
+    command: `node -e "setTimeout(() => {}, 30000)"`,
+  });
+  try {
+    let exitCode: number | null | undefined;
+    const completion = runNode([worker, directory]).then((code) => { exitCode = code; return code; });
+    const running = await waitForState(directory, (value) => Boolean(value.pid), 3000);
+    assert.ok(running?.pid, "supervisor started despite the unwritable output log\n" + readFileSync(join(directory, "supervisor.log"), "utf8"));
+    writeFileSync(join(directory, "controls", "00-bad.json"), "{broken");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(exitCode, undefined, "supervisor stayed alive after the malformed control file");
+    writeAtomicJson(join(directory, "controls", "kill.json"), { token, action: "kill" });
+    const state = await waitForState(directory, (value) => value.status !== "running", 20_000);
+    assert.equal(state?.status, "killed", JSON.stringify(state) + "\n" + readFileSync(join(directory, "supervisor.log"), "utf8"));
+    assert.equal(await completion, 0);
+    const supervisorLog = readFileSync(join(directory, "supervisor.log"), "utf8");
+    assert.match(supervisorLog, /output write failed/);
+    assert.match(supervisorLog, /control file failed/);
     passed = true;
   } finally {
     if (passed) rmSync(directory, { recursive: true, force: true });

@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { parseWorktrees, parseStatus, inside, projectKey, checkoutFor, spacesFor, removalBlock } from '../mods/project-spaces/data.js';
+import { parseWorktrees, parseStatus, inside, projectKey, checkoutFor, spacesFor, removalBlock, resumeCommand, resumablePanes } from '../mods/project-spaces/data.js';
 
 test('NUL worktree records preserve unusual paths, detached, locked, prunable and bare entries', () => {
   const rows = parseWorktrees('worktree C:/项目/repo\0HEAD abc\0branch refs/heads/main\0\0worktree C:/tree with\nnewline\0HEAD def\0detached\0locked reason\0\0worktree C:/missing\0prunable missing gitdir\0\0worktree C:/bare\0bare\0\0');
@@ -92,4 +92,34 @@ test('real Git lists unopened worktrees from common dir and reports dirty/untrac
   assert.equal(removalBlock({...missingRow,error:'missing directory'},false),null);
   git(common,['worktree','remove','--force','--force','--',missing]);
   assert.equal(parseWorktrees(git(common,['worktree','list','--porcelain','-z'])).length,1);
+});
+
+test('resume registry turns recorded sessions into exact agent commands', () => {
+  assert.equal(resumeCommand('pi','C:\\s\\a b.jsonl'),'pi --session "C:\\s\\a b.jsonl"');
+  assert.equal(resumeCommand('claude','abc-123'),'claude --resume abc-123');
+  assert.equal(resumeCommand('codex','abc-123'),'codex resume abc-123');
+  assert.equal(resumeCommand('copilot','abc-123'),'copilot --resume=abc-123');
+  assert.equal(resumeCommand('cursor','abc-123'),'cursor-agent --resume abc-123');
+  assert.equal(resumeCommand('opencode','ses_1'),'opencode --session ses_1');
+  assert.equal(resumeCommand('unknown-agent','x'),null);
+  assert.equal(resumeCommand('pi',''),null);
+});
+
+test('resumable panes are labelled shells, never live agents or mod panes', () => {
+  const terminals=[
+    {address:'t1',labels:{'resume.app':'pi','resume.session':'/s/a.jsonl','resume.kind':'path'}},
+    {address:'t2',labels:{'resume.app':'claude','resume.session':'id-2','resume.kind':'id'}},
+    {address:'t3',labels:{}},
+    {address:'t4',labels:{'resume.app':'mystery','resume.session':'x','resume.kind':'id'}},
+  ];
+  const panes=[
+    {pane:'p1',terminal:'t1',tab:'tab1',status:null,program:{shell:true}},
+    {pane:'p2',terminal:'t2',tab:'tab1',status:'working',program:{shell:false,agent:true}},
+    {pane:'p3',terminal:'t3',tab:'tab1',status:null,program:{shell:true}},
+    {pane:'p4',terminal:'t4',tab:'tab2',status:null,program:{shell:true}},
+    {pane:'p5',terminal:null,tab:'tab2',mod:'files'},
+  ];
+  assert.deepEqual(resumablePanes(panes,terminals),[
+    {pane:'p1',terminal:'t1',tab:'tab1',app:'pi',session:'/s/a.jsonl',kind:'path'},
+  ]);
 });

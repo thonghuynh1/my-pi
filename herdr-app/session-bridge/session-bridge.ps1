@@ -2,14 +2,16 @@
 #
 # herdr-core restores a lost terminal as a plain shell and never re-runs the
 # original command. This script records each pane's agent session as terminal
-# labels (resume.app / resume.session / resume.kind / resume.at) while agents run, so the
-# project-spaces mod can offer one-click resume after a reboot.
+# labels (resume.app / resume.session / resume.kind / resume.at) while agents run, so a
+# restored shell can restart its agent automatically after a reboot, in any layout.
+# The project-spaces mod also offers the same resume as a button as a fallback.
 #
-# One file, six invocation modes:
+# One file, seven invocation modes:
 #   . session-bridge.ps1                          (from $PROFILE) wrap shim agents with the env bridge
 #   session-bridge.ps1 pane report-agent-session  (HERDR_BIN_PATH) Herdr hook shim
 #   session-bridge.ps1 claude-hook                Claude SessionStart recorder (stdin JSON)
 #   session-bridge.ps1 record <app> <session> <kind>   generic label writer (Pi/OpenCode stubs)
+#   session-bridge.ps1 auto-resume <term> <pid>   restart a restored shell's recorded agent, once
 #   session-bridge.ps1 -Install                   generate stubs, wire profile + Claude settings
 #   session-bridge.ps1 cleanup [-DryRun] [-LiveDays n]  prune dead/stale resume labels + log
 #
@@ -63,6 +65,15 @@ if ($MyInvocation.InvocationName -eq '.') {
                 [ordered]@{ lastCleanupMs = $now } | ConvertTo-Json -Compress | Set-Content -Path $marker
                 Start-Process pwsh -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$script:Self`"", 'cleanup') | Out-Null
             }
+        } catch {}
+        # Automatic resume: a shell that herdr-core restored (after a reboot
+        # or a core restart) still carries resume.* labels, so restart its
+        # agent without waiting for a button in any one layout. The hidden
+        # job re-checks that this shell is still idle and unstamped before
+        # it types anything, so a shell started for any other reason, or a
+        # pane whose agent is already running, is left alone.
+        try {
+            Start-Process pwsh -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$script:Self`"", 'auto-resume', $env:HC_TERMINAL_ID, $PID) | Out-Null
         } catch {}
     }
     return
@@ -154,6 +165,71 @@ if ($mode -eq "claude-hook") {
     } catch {}
     Limit-ClaudeHookLog
     Set-ResumeLabels $env:HC_TERMINAL_ID "claude" $session "id"
+    exit 0
+}
+
+# ---- Mode: automatic resume ---------------------------------------------------
+# Invoked hidden from the profile when a herdr-core shell starts:
+#   session-bridge.ps1 auto-resume <terminal> <shell-pid>
+# Types the recorded agent's resume line into the pane, once per shell and
+# once per recorded session. Every guard must hold at send time: the terminal
+# is live, it is still the same shell process, no agent status is reported,
+# the foreground is that shell, and a path session still exists on disk.
+if ($mode -eq "auto-resume") {
+    $addr = $args[1]; $shellPid = [int]$args[2]
+    if ([string]::IsNullOrWhiteSpace($addr)) { exit 0 }
+    $logResume = { param($what) try { Add-Content -Path (Join-Path $script:Dir "auto-resume-log.jsonl") -Value ([ordered]@{ t = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); terminal = $addr; shell = $shellPid; what = $what } | ConvertTo-Json -Compress) } catch {} }
+    & $logResume "start"
+    $lines = @{
+        pi = { param($s, $k) if ($k -eq "path") { "pi --session `"$s`"" } else { "pi --session $s" } }
+        claude = { param($s, $k) "claude --resume $s" }
+        codex = { param($s, $k) "codex resume $s" }
+        copilot = { param($s, $k) "copilot --resume=$s" }
+        cursor = { param($s, $k) "cursor-agent --resume $s" }
+        opencode = { param($s, $k) "opencode --session $s" }
+        antigravity = { param($s, $k) "agy --conversation $s" }
+        gemini = { param($s, $k) "gemini --resume $s" }
+    }
+    Start-Sleep -Seconds 2
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        try { $record = (& (Get-Hc) get $addr --json 2>$null | Out-String | ConvertFrom-Json) } catch { exit 0 }
+        if (-not $record -or $record.state -ne "live") { exit 0 }
+        $app = $record.labels."resume.app"; $session = $record.labels."resume.session"
+        $kind = $record.labels."resume.kind"; $at = $record.labels."resume.at"
+        if ([string]::IsNullOrWhiteSpace($app) -or [string]::IsNullOrWhiteSpace($session) -or -not $lines.ContainsKey($app)) { exit 0 }
+        if ($record.status) { exit 0 }
+        if ([int]$record.pid -ne $shellPid) { exit 0 }
+        # The foreground can never be the shell itself while this job lives:
+        # the job is a child of that shell in the same terminal, so the core
+        # reports a transient child pid instead. Accept any PowerShell in
+        # front (the shell, this job, a nested shell); a real program the
+        # user started by hand is none of those and keeps the pane.
+        $fgName = [string]$record.foreground.name
+        if (-not $record.foreground -or $fgName -notin @("pwsh.exe", "powershell.exe", "pwsh", "powershell")) {
+            Start-Sleep -Seconds 1; continue
+        }
+        if ($kind -eq "path" -and -not (Test-Path $session)) { exit 0 }
+        $stamp = Join-Path $script:Dir "auto-resume-$addr-$shellPid.json"
+        if ((Test-Path $stamp) -and (Get-Content $stamp -Raw).Trim() -eq "$at") { exit 0 }
+        "$at" | Set-Content -Path $stamp
+        $line = & $lines[$app] $session $kind
+        & $logResume "send $app"
+        & (Get-Hc) send $addr $line 2>$null | Out-Null
+        # send pastes at once but holds its Enter behind draft protection
+        # (draft_wait), which can leave the line sitting at the prompt for up
+        # to a minute. Press Enter until the agent reports, so the resume is
+        # prompt; an Enter that lands after it started is an empty Enter in
+        # the agent's window, a no-op.
+        for ($i = 0; $i -lt 6; $i++) {
+            Start-Sleep -Seconds 2
+            try { $after = (& (Get-Hc) get $addr --json 2>$null | Out-String | ConvertFrom-Json) } catch { break }
+            if (-not $after -or $after.status) { break }
+            $afterFg = [string]$after.foreground.name
+            if (-not $after.foreground -or $afterFg -notin @("pwsh.exe", "powershell.exe", "pwsh", "powershell")) { break }
+            & (Get-Hc) keys $addr enter 2>$null | Out-Null
+        }
+        exit 0
+    }
     exit 0
 }
 
@@ -304,7 +380,9 @@ export const HcSessionLabelPlugin = async () => {
         Copy-Item $claudeSettings "$claudeSettings.bak-session-bridge" -Force
         $settings = Get-Content $claudeSettings -Raw | ConvertFrom-Json -AsHashtable
         if (-not $settings) { $settings = @{} }
-        $command = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$self`" claude-hook"
+        # pwsh, not powershell: this file uses PowerShell 7 syntax (??), which
+        # Windows PowerShell 5.1 cannot even parse, so a 5.1 hook records nothing.
+        $command = "pwsh -NoProfile -ExecutionPolicy Bypass -File `"$self`" claude-hook"
         $found = $false
         foreach ($group in @($settings.hooks.SessionStart)) {
             foreach ($hook in @($group.hooks)) {
@@ -320,10 +398,17 @@ export const HcSessionLabelPlugin = async () => {
     }
 
     # Profile: replace any older bridge block with one dot-source line.
+    # Create the profile when it is missing (a fresh machine, or Documents
+    # redirected to a folder that has none): skipping it silently would leave
+    # the codex/copilot/cursor wrappers uninstalled while reporting success.
     $profilePath = $PROFILE.CurrentUserCurrentHost
+    if (-not (Test-Path $profilePath)) {
+        New-Item -ItemType Directory -Force (Split-Path $profilePath) | Out-Null
+        New-Item -ItemType File -Force $profilePath | Out-Null
+    }
     if (Test-Path $profilePath) {
         Copy-Item $profilePath "$profilePath.bak-session-bridge" -Force
-        $text = Get-Content $profilePath -Raw
+        $text = (Get-Content $profilePath -Raw) ?? ""
         $text = $text -replace "(?ms)\r?\n# herdr-app session bridge:.*?^}\r?\n", "`n"
         $line = ". `"$self`""
         if ($text -notlike "*$line*") {

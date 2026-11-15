@@ -411,7 +411,7 @@ test("unconfirmed completion is redelivered after reopening", async () => {
   await (resumed as any).emit("session_shutdown", {}, ctx);
 });
 
-function seedJob(ctx: ExtensionContext, job: Record<string, unknown>, state: Record<string, unknown>): void {
+function seedJob(ctx: ExtensionContext, job: Record<string, unknown>, state: Record<string, unknown>) {
   const store = new DurableJobStore<any>(durableSessionDirectory(ctx, "background", "unused"));
   store.load();
   const directory = join(store.directory, "bg-1");
@@ -419,6 +419,7 @@ function seedJob(ctx: ExtensionContext, job: Record<string, unknown>, state: Rec
   writeFileSync(join(directory, "state.json"), JSON.stringify({ token: "seed-token", ...state }));
   store.save(1, [{ id: "bg-1", token: "seed-token", directory, command: "seeded-not-spawned", cwd: process.cwd(),
     startedAt: 1, logFilePath: join(directory, "output.log"), notifyOnFinish: true, ...job }]);
+  return { store, directory };
 }
 
 async function settleRepeatedly(pi: MockPi, ctx: ExtensionContext): Promise<void> {
@@ -443,6 +444,58 @@ test("supervisor-committed interrupted outcome is delivered once, not on every r
   await (pi as any).emit("session_start", {}, ctx);
   await settleRepeatedly(pi, ctx);
   assert.equal((pi as any).delivered ?? 0, 0, "confirmed interrupted outcome must not be redelivered");
+  await (pi as any).emit("session_shutdown", {}, ctx);
+});
+
+test("a fresh heartbeat from a living supervisor returns an interrupted job to running", async () => {
+  const ctx = createMockContext();
+  const seeded = seedJob(ctx,
+    { status: "interrupted", endedAt: Date.now() - 1000, error: "Supervisor disappeared", delivered: true },
+    { status: "running", heartbeatAt: Date.now(), supervisorPid: process.pid, pid: process.pid });
+  const pi = createMockPi();
+  backgroundJobsExtension(pi);
+  await (pi as any).emit("session_start", {}, ctx);
+  const status = await pi.tools.get("bg_status").execute("status", { jobId: "bg-1" }, undefined, undefined, ctx);
+  assert.equal(status.details.status, "running");
+  const saved = seeded.store.load()?.jobs[0];
+  assert.equal(saved?.status, "running");
+  assert.equal(saved?.delivered, false, "the eventual final outcome still needs delivery");
+  assert.equal(saved?.endedAt, undefined);
+  assert.equal(saved?.error, undefined);
+  await (pi as any).emit("session_shutdown", {}, ctx);
+});
+
+test("a stale running state does not resurrect an interrupted job", async () => {
+  const ctx = createMockContext();
+  seedJob(ctx,
+    { status: "interrupted", endedAt: Date.now() - 1000, error: "Supervisor disappeared", delivered: true },
+    { status: "running", heartbeatAt: Date.now() - 20_000, supervisorPid: process.pid, pid: process.pid });
+  const pi = createMockPi();
+  backgroundJobsExtension(pi);
+  await (pi as any).emit("session_start", {}, ctx);
+  const status = await pi.tools.get("bg_status").execute("status", { jobId: "bg-1" }, undefined, undefined, ctx);
+  assert.equal(status.details.status, "interrupted");
+  await (pi as any).emit("session_shutdown", {}, ctx);
+});
+
+test("confirming an old interrupted notice does not mark a replaced outcome delivered", async () => {
+  const ctx = createMockContext();
+  const seeded = seedJob(ctx,
+    { status: "interrupted", endedAt: 2, error: "Supervisor disappeared", delivered: false },
+    { status: "interrupted", endedAt: 2, error: "Supervisor disappeared" });
+  const pi = createMockPi();
+  backgroundJobsExtension(pi);
+  await (pi as any).emit("session_start", {}, ctx);
+  const oldMessage = pi.sentMessages.find((sent) => sent.message.includes("INTERRUPTED"))?.message;
+  assert.ok(oldMessage, "provisional interrupted outcome was sent");
+  writeFileSync(join(seeded.directory, "state.json"), JSON.stringify({ token: "seed-token", status: "completed", exitCode: 0, endedAt: 3 }));
+  const status = await pi.tools.get("bg_status").execute("status", { jobId: "bg-1" }, undefined, undefined, ctx);
+  assert.equal(status.details.status, "completed");
+  (ctx.sessionManager.getEntries() as any[]).push({ type: "message", message: { role: "user", content: oldMessage } });
+  await (pi as any).emit("turn_end");
+  await (pi as any).emit("agent_settled");
+  assert.ok(pi.sentMessages.some((sent) => sent.message.includes("bg-1") && sent.message.includes("COMPLETED")),
+    "the replaced outcome is sent after the old notice is confirmed");
   await (pi as any).emit("session_shutdown", {}, ctx);
 });
 

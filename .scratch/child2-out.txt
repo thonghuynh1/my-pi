@@ -1,0 +1,4 @@
+cmdhc=[] LOCALAPPDATA=[C:\Users\Admin\AppData\Local]
+fallback=C:\Users\Admin\AppData\Local\Programs\herdr-core\hc.exe exists=True
+getlen=1273 app=pi
+PATH=C:\Users\Admin\AppData\Local\Microsoft\WindowsApps\Microsoft.PowerShell_8wekyb3d8bbwe;C:\Program Files\WindowsApps\Microsoft.PowerShell_7.7.0.0_x64__8wekyb3d8bbwe

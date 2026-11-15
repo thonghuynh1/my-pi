@@ -8,6 +8,7 @@ source of truth; `~/.config/herdr-app` is the installed copy.
 Install **Herdr**, **Node.js 20+**, **Git**, and **GitHub CLI** first, with
 `herdr-app`, `node`, `git`, and `gh` on PATH. Use a compatible/current Herdr version;
 these personal clones started from Herdr 0.1.12 and do not inherit shipped updates.
+The optional Windows session-resume bridge also requires PowerShell 7 (`pwsh`).
 
 From your `my-pi` checkout:
 
@@ -22,17 +23,34 @@ shows a warning while direct review requests still work.
 
 The same install command updates an existing installation. It:
 
-1. Copies the five workspace mod folders and `github-workspace` layout.
+1. Copies the five workspace mod folders, `github-workspace` layout, and `session-bridge` folder.
    With `--with-keys`, also installs the shared `keys.json` and `legacy-prefix` helper.
 2. Backs up the previous versions under `~/.config/herdr-app/backups/github-workspace-*`.
 3. Runs `herdr-app check` on each installed mod; attempts to restore all previous files,
    including opted-in keybindings, if checks fail (reports the backup path and any locked-file restore failures).
 4. Switches to the layout when `--activate` is supplied.
 
-No `npm install` or Pi extension registration is needed for this bundle.
-Without `--activate`, the layout is installed without switching your window.
-`--home <path>` overrides the Herdr configuration directory for installation;
-activation still targets the running Herdr app, so omit `--activate` for a staging directory.
+No `npm install` is needed. Without `--activate`, the layout is installed without
+switching your window. `--home <path>` overrides the Herdr configuration directory
+for installation; activation still targets the running Herdr app, so omit
+`--activate` for a staging directory.
+
+### Enable session resume on Windows
+
+The main installer only copies `session-bridge/session-bridge.ps1`; it deliberately
+does not alter agent configuration or your PowerShell profile. After the main
+installer finishes, run its second-stage installer once:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.config\herdr-app\session-bridge\session-bridge.ps1" -Install
+```
+
+That idempotent step generates the Pi and OpenCode recorder stubs, adds Claude
+Code's SessionStart hook, and adds one dot-source line to your PowerShell profile.
+It backs up Claude settings and the profile beside the originals. Restart each
+agent afterward; already-running Pi sessions need a restart or `/reload`.
+See [`session-bridge/README.md`](session-bridge/README.md) for the flow, agent
+coverage, verification, cleanup, and limits.
 
 **Never copied or replaced:** GitHub credentials, settings, terminal sessions,
 machines, layout click state, or `shared.json`. Keyboard bindings are unchanged
@@ -43,7 +61,7 @@ computer/account; cloning this repository does not transfer them.
 The installer intentionally replaces the named custom folders, after backup.
 Keep your code edits here rather than editing the installed copies. Shipped Herdr
 mods and layouts are untouched. To undo, restore the managed paths from the
-printed backup (six for a normal install; eight with `--with-keys`), removing any
+printed backup (seven for a normal install; nine with `--with-keys`), removing any
 that did not exist before installation; switch to `main` to leave this layout.
 
 ### Share the same keybindings across computers
@@ -78,6 +96,14 @@ Herdr, copy its `~/.config/herdr-app/keys.json` back to `herdr-app/keys.json`, c
 and push, then pull and rerun the command on the other computer. Do not copy
 settings or session files to share shortcuts.
 
+## Orca layout (separate bundle)
+
+The Orca layout lives in [`orca/`](orca/README.md) as its own scoped bundle:
+`node herdr-app/orca/install.mjs --activate` installs the layout, its 25 mods
+and only its `layout:orca` key section, without touching the GitHub Workspace
+install. Remove it any time with the `remove.ps1` it installs under
+`~/.config/herdr-app/bundles/orca/`.
+
 ## What's included
 
 - **`mods/project-spaces`** — persistent project groups with every registered Git worktree, including closed checkouts.
@@ -85,8 +111,9 @@ settings or session files to share shortcuts.
 - **`mods/github-tabs`** — workspace tabs with Files, Changes, and PRs buttons.
 - **`mods/github-prs`** — PR dashboard, My PRs, All PRs, detail view, and wrapping merge chain.
 - **`mods/git-changes`** — Changes and Git History, Apple-inspired cards and file disclosures.
-- **`layouts/github-workspace.json`** — connects those mods to Herdr's standard workspace.
+- **`layouts/github-workspace.json`** — connects those mods to Herdr's standard workspace. This is the single saved layout for the whole arrangement (left sidebar, tab bar, Files/Changes/PRs panel stack). Try other layouts freely, then switch back with `herdr-app do layout.switch --name github-workspace` or `Ctrl+Shift+L`.
 - **`keys.json` + `mods/legacy-prefix`** — shared keyboard preset and Ctrl+B menu, installed only with `--with-keys`.
+- **`session-bridge`** — records each pane's agent session as terminal labels so `project-spaces` can offer one-click resume after a reboot. See `session-bridge/README.md`.
 
 ### Projects and worktrees
 
@@ -103,7 +130,11 @@ project colors stay stable when reordered. Full paths and upstream details
 appear on hover. Click a checkout row to open/switch (no separate Go/Open button). Right-click
 any checkout for **Remove worktree…**; open checkouts also offer rename/close
 space actions. Removal is only in that menu, never inline. Multiple spaces on one checkout remain individually
-selectable. Agents stay in the section below. **Machines** opens Herdr's original
+selectable. When a checkout holds several open spaces, each space gets a named header inside the card; only the
+active space expands, listing one compact line per tab with its status and a short program summary such as
+`Pi +1`, while the rest fold to a single `N tabs · M panes` line that switches to that space. Resting the
+pointer on a tab line shows a tooltip listing its panes (program, title, status). The tab lines carry no
+hover state: a rebuild on hover made sidebar scrolling unstable. Agents stay in the section below. **Machines** opens Herdr's original
 space/machine controls. Git refreshes every 15 seconds while the window is active;
 **↻** refreshes manually. Remote projects use their own machine. Failed refreshes
 show an error and retain old data, with checkout actions disabled.

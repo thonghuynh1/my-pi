@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Files Open With mod.json",
+  "description": "What Herdr reads from Files Open With's mod.json, and the settings it takes.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "This file's schema, for editors."
+    },
+    "title": {
+      "type": "string",
+      "description": "The mod's name, as Herdr shows it."
+    },
+    "place": {
+      "enum": [
+        "left",
+        "right",
+        "top",
+        "bottom",
+        "none"
+      ],
+      "description": "Where Herdr first docks the mod."
+    },
+    "settings": {
+      "type": "object",
+      "title": "Files Open With",
+      "additionalProperties": false,
+      "properties": {
+        "syntax": {
+          "title": "Code colors",
+          "description": "Editor: a soft code-editor palette for light and dark. Terminal: the theme's ANSI colors. Off: plain text.",
+          "enum": [
+            "editor",
+            "terminal",
+            "off"
+          ],
+          "default": "editor",
+          "x-labels": {
+            "editor": "Editor",
+            "terminal": "Terminal",
+            "off": "Off"
+          }
+        }
+      }
+    }
+  }
+}

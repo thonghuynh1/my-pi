@@ -87,6 +87,43 @@ export function locations(space, ps) {
 export function spacesFor(row, rows, sp, ps, machine) {
   return projectSpaceIndex(rows, sp, ps, machine).get(row) || [];
 }
+// Session resume registry: one row per agent turns a recorded session
+// (resume.* terminal labels, written by the session-bridge hooks) back into
+// the shell line that reopens it. Ids are flag-safe; paths are quoted.
+export const RESUME_AGENTS = {
+  pi: { name: "Pi", line: s => `pi --session "${s}"` },
+  claude: { name: "Claude", line: s => `claude --resume ${s}` },
+  codex: { name: "Codex", line: s => `codex resume ${s}` },
+  copilot: { name: "Copilot", line: s => `copilot --resume=${s}` },
+  cursor: { name: "Cursor", line: s => `cursor-agent --resume ${s}` },
+  opencode: { name: "OpenCode", line: s => `opencode --session ${s}` },
+  antigravity: { name: "Antigravity", line: s => `agy --conversation ${s}` },
+  gemini: { name: "Gemini", line: s => `gemini --resume ${s}` },
+};
+export function resumeCommand(app, session) {
+  const row = RESUME_AGENTS[app];
+  return row && session ? row.line(session) : null;
+}
+export function resumeName(app) {
+  return RESUME_AGENTS[app]?.name || app;
+}
+// Panes whose agent is gone but whose session was recorded: a shell in the
+// foreground (or no live agent report) carrying resume.* labels. This is the
+// shape of every pane after a reboot, when the core restores shells only.
+export function resumablePanes(panes, terminals) {
+  const byAddress = new Map((terminals || []).map(t => [t.address, t]));
+  const out = [];
+  for (const pane of panes || []) {
+    if (!pane.terminal) continue;
+    const labels = byAddress.get(pane.terminal)?.labels || {};
+    const app = labels["resume.app"], session = labels["resume.session"];
+    if (!resumeCommand(app, session)) continue;
+    const atShell = pane.program?.shell === true || (!pane.program && !pane.status);
+    if (!atShell) continue;
+    out.push({ pane: pane.pane, terminal: pane.terminal, tab: pane.tab, app, session, kind: labels["resume.kind"] || "id" });
+  }
+  return out;
+}
 export function removalBlock(row, open) {
   if (!row) return "Worktree is no longer registered. Refresh the list.";
   if (row.main || row.bare) return "The main checkout cannot be removed here.";

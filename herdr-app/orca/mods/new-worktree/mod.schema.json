@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Create worktree mod.json",
+  "description": "What Herdr reads from new-worktree's mod.json, and the settings it takes.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "This file's schema, for editors."
+    },
+    "title": {
+      "type": "string",
+      "description": "The mod's name, as Herdr shows it."
+    },
+    "place": {
+      "enum": ["left", "right", "top", "bottom", "none"],
+      "description": "Where Herdr first docks the mod."
+    },
+    "settings": {
+      "type": "object",
+      "title": "Create worktree",
+      "properties": {
+        "issue_branch": {
+          "title": "Issue branch",
+          "description": "Branch name for a worktree started from an issue. {number} and {slug} (the title) are filled in. A project's own setting wins.",
+          "type": "string",
+          "default": "dev/feat/{number}"
+        },
+        "issue_prompt": {
+          "title": "Issue prompt",
+          "description": "Pasted into Claude (not sent) for a worktree started from an issue. {number}, {title}, {repo} and {branch} are filled in. Blank keeps this default; a project's own setting wins.",
+          "type": "string",
+          "default": "Work on GitHub issue #{number} in {repo}: \"{title}\". Read it first with: gh issue view {number} -R {repo} --comments"
+        },
+        "pr_prompt": {
+          "title": "PR prompt",
+          "description": "Pasted into Claude (not sent) for a worktree started from a pull request. {number}, {title}, {repo} and {branch} are filled in. Blank keeps this default; a project's own setting wins.",
+          "type": "string",
+          "default": "Pick up GitHub pull request #{number} in {repo}: \"{title}\". Read it first with: gh pr view {number} -R {repo} --comments"
+        }
+      }
+    }
+  }
+}

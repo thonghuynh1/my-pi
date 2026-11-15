@@ -1,0 +1,21 @@
+{
+  "$schema": "./mod.schema.json",
+  "version": "2.5.0",
+  "place": "none",
+  "size": 368,
+  "title": "Better Changes",
+  "overlay": {
+    "kind": "popup",
+    "width": 1,
+    "height": 1,
+    "frame": "none"
+  },
+  "settings": {
+    "refresh": {
+      "status": 10
+    },
+    "default": {
+      "diff": "split"
+    }
+  }
+}

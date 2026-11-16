@@ -6,6 +6,7 @@ import { Viewer, openUrl, labelChip } from "./viewer.js";
 import { icons, icon, avatarPath, loadAvatar } from "./icons.js";
 import { readCache, writeCache, age, repoChanged } from "./cache.js";
 import { Projects, filterMenuView } from "./projects.js";
+import { Dashboard } from "./dashboard.js";
 
 // Orca-style issues and PRs table, opened as a popup (mod.json overlay).
 // Popups it opens (filters, repo, row menus) answer through shared "issues.pick".
@@ -71,12 +72,15 @@ export default class Issues extends View {
     this.overlay = overlay;
     this.repos = sharedMap("folders", "repos"); this.logins = sharedMap("logins", "logins"); this.spaceRepos = sharedMap("spaces", "spaces");
     this.tab = shared("issues.tab") ?? "issues"; this.query = { ...DEFAULT }; this.page = 0;
-    this.projects = new Projects(this);
+    this.projects = new Projects(this); this.dashboard = new Dashboard(this);
     this.results = {}; this.loading = null; this.error = null;
     this.pickAt = shared("issues.pick")?.at; this.changedAt = shared("issues.changed")?.at;
     this.input = InputState.new({ placeholder: "Search", value: this.query[this.tab] });
     this.input.on("submit", (_e, cx) => this.apply(this.input.value(), cx));
     cx.spawn(async (cx) => { await icons(); this.icons = true; cx.notify(); });
+    // The Dashboard needs no repo: start it (cache paint + background fetch) now,
+    // not after repo resolution. Its load guards keep the later call a no-op.
+    if (this.tab === "dashboard") this.load(cx);
     this.resolve(cx);
     this.refreshRepos(cx);
     this.scanLocal(cx);
@@ -128,16 +132,18 @@ export default class Issues extends View {
       this.detected = found ?? this.spaceRepos[space]?.repo ?? null;
       const choice = selected?.repo ? selected : found ? { repo: found, on } : this.spaceRepos[space];
       this.repo = choice?.repo ?? null; this.repoOn = choice?.on ?? null; this.resolved = true;
+      cx.notify();
+      // Paint (from cache) and fetch behind it before the login round-trip;
+      // `me` only feeds assignee controls, so it can land afterwards.
+      this.load(cx);
       if (this.repo) {
         const id = this.repoOn ?? "";
         if (!this.logins[id]) {
           const r = await exec("gh", ["api", "user", "-q", ".login"], { on: this.repoOn }).catch(() => null);
           if (r?.code === 0) { this.logins[id] = r.stdout.trim(); remember("logins", id, this.logins[id]); }
         }
-        this.me = this.logins[id];
+        if (this.logins[id] !== this.me) { this.me = this.logins[id]; cx.notify(); }
       }
-      cx.notify();
-      this.load(cx);
     });
   }
 
@@ -146,6 +152,7 @@ export default class Issues extends View {
   // The list for the query: the disk cache at once, then GitHub only when it may have changed.
   // force (Refresh, the person's own edits) always fetches.
   load(cx, force = false) {
+    if (this.tab === "dashboard") return this.dashboard.load(cx, force);
     if (!this.repo) return;
     if (this.tab === "projects") return this.projects.load(cx, force);
     const key = this.key(), held = this.results[key];
@@ -182,7 +189,7 @@ export default class Issues extends View {
   }
 
   setTab(tab, cx) {
-    this.tab = tab; this.page = 0; setShared("issues.tab", tab); this.input.set_value(this.query[tab]); this.load(cx); cx.notify();
+    this.tab = tab; this.page = 0; setShared("issues.tab", tab); this.input.set_value(this.query[tab] ?? ""); this.load(cx); cx.notify();
   }
 
   // A popup's answer (shared "issues.pick").
@@ -232,11 +239,15 @@ export default class Issues extends View {
     cx.spawn(async () => startWorkspace(args));
   }
 
-  openIssue(i, { repo = this.repo, pr = this.tab === "prs" } = {}) {
+  openIssue(i, { repo = this.repo, pr = this.tab === "prs", on, feedback } = {}) {
+    const where = on !== undefined ? on : this.repoOn;
     openOverlay({ mod: "issues", kind: "dialog", width: 0.86, height: 0.9, props: { issue: {
-      repo, number: i.number, on: this.repoOn, data: null, me: this.me,
-      pr, folder: this.folder(repo), machine: this.repoOn } } });
+      repo, number: i.number, on: where, data: null, me: this.me,
+      pr, folder: this.folder(repo), machine: where,
+      ack: feedback ? { viewer: feedback.viewer, at: feedback.at, repo, number: i.number } : undefined } } });
   }
+
+  openExternal(url) { openUrl(url); }
 
   // Under the control just pressed: Herdr's default spot (the pointer) isn't tracked over
   // this dialog, so popups landed where the pointer last was in the window (the sidebar).
@@ -308,7 +319,7 @@ export default class Issues extends View {
       .text_color(t.foreground).text_size(13).px(20).pt(14).pb(16).gap(12)
       .child(this.topBar(t))
       .child(this.tabsRow(t))
-      .child(!this.repo ? this.empty(t) : this.tab === "projects" ? this.projects.card(t, cx) : this.card(t, cx));
+      .child(this.tab === "dashboard" ? this.dashboard.card(t, cx) : !this.repo ? this.empty(t) : this.tab === "projects" ? this.projects.card(t, cx) : this.card(t, cx));
   }
 
   topBar(t) {
@@ -324,16 +335,17 @@ export default class Issues extends View {
     const known = [...new Map([...Object.entries(this.repos).map(([k, v]) => [v, JSON.parse(k)[1] ?? null]),
       ...Object.values(this.spaceRepos).map((s) => [s.repo, s.on ?? null])]).entries()].sort(([a], [b]) => a.localeCompare(b));
     return h_flex().gap(8).items_center()
+      .child(this.chip("tab-dashboard", "Dashboard", this.tab === "dashboard", t, (cx) => this.setTab("dashboard", cx)))
       .child(this.chip("tab-issues", "Issues", this.tab === "issues", t, (cx) => this.setTab("issues", cx)))
       .child(this.chip("tab-prs", "PRs", this.tab === "prs", t, (cx) => this.setTab("prs", cx)))
       .child(this.chip("tab-projects", "Projects", this.tab === "projects", t, (cx) => this.setTab("projects", cx)))
-      .child(this.btn("repo-pick", t, [div().size(8).rounded(2).bg(t.muted), div().child(this.repo?.split("/")[1] ?? "Choose repository"), this.glyph("updown", 14, t.muted)],
+      .when(this.tab !== "dashboard", (e) => e.child(this.btn("repo-pick", t, [div().size(8).rounded(2).bg(t.muted), div().child(this.repo?.split("/")[1] ?? "Choose repository"), this.glyph("updown", 14, t.muted)],
         () => {
           const at = this.anchor();
           openOverlay({ mod: "issues", kind: "popup", width: 420, height: 480, ...(at ? { at } : {}),
             props: { repoMenu: { current: this.repo, following: this.following, detected: this.detected ?? null, local: known } } });
-        }))
-      .when(Boolean(this.repo), (e) => e
+        })))
+      .when(Boolean(this.repo) && this.tab !== "dashboard", (e) => e
         .child(this.btn("repo-github", t, this.glyph("external", 16), () => openUrl(`https://github.com/${this.repo}/${{ prs: "pulls", projects: "projects" }[this.tab] ?? "issues"}`), { square: true })));
   }
 

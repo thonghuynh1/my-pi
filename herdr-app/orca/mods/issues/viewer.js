@@ -5,6 +5,7 @@ import { icons, icon, avatarPath, loadAvatar } from "./icons.js";
 import { blocks, picture, failed, loadPicture } from "./pictures.js";
 import { PR_DETAIL, COLOR, MERGE, checks, checkSummary, linkedIssues, filesTab, checksTab } from "./pr.js";
 import { spaceFor, startWorkspace } from "./start.js";
+import { acknowledgeFeedback } from "./dashboard.js";
 import { readCache, writeCache, age } from "./cache.js";
 
 export const FIELDS = "number,title,body,author,state,stateReason,labels,assignees,createdAt,updatedAt,comments,url";
@@ -64,9 +65,10 @@ function reactions(r) {
   return Object.entries(r ?? {}).filter(([k, n]) => EMOJI[k] && n > 0).map(([k, n]) => ({ emoji: EMOJI[k], count: n }));
 }
 
-// The REST timeline as GitHub draws it: comments, and the events between them
-// (a burst of label changes by one person is one line).
-function timeline(raw) {
+// The REST timeline as GitHub draws it: comments, reviews, and the events
+// between them (a burst of label changes by one person is one line). Inline
+// review comments never appear in the timeline; the caller merges them in.
+function timeline(raw, inline = []) {
   const items = [];
   for (const e of raw) {
     const who = e.actor ?? e.user, base = { login: login(who), avatar: who?.avatar_url, at: e.created_at };
@@ -74,6 +76,12 @@ function timeline(raw) {
       case "commented":
         items.push({ ...base, kind: "comment", body: e.body, role: e.author_association, reactions: reactions(e.reactions), url: e.html_url });
         break;
+      case "reviewed": {
+        const at = e.submitted_at ?? base.at, review = e.state ?? "commented";
+        if (e.body?.trim()) items.push({ ...base, at, kind: "comment", body: e.body, role: e.author_association, review, url: e.html_url });
+        else items.push({ ...base, at, kind: "review", review });
+        break;
+      }
       case "labeled": case "unlabeled": {
         const last = items.at(-1), added = e.event === "labeled";
         if (last?.kind === "labels" && last.login === base.login && Date.parse(base.at) - Date.parse(last.at) < 60000) (added ? last.added : last.removed).push(e.label);
@@ -102,6 +110,13 @@ function timeline(raw) {
       }
     }
   }
+  for (const c of inline) {
+    if (!c?.body || !c.created_at) continue;
+    const line = c.line ?? c.original_line;
+    items.push({ login: login(c.user), avatar: c.user?.avatar_url, at: c.created_at, kind: "comment", body: c.body, url: c.html_url,
+      file: c.path ? `${c.path.split("/").pop()}${line ? `:${line}` : ""}` : null });
+  }
+  if (inline.length) items.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   return items;
 }
 
@@ -127,11 +142,13 @@ export function labelChip(l, t) {
 // With data it shows at once; the full item and its timeline load behind it. folder and
 // machine (a checkout of the repo) let Start workspace make a worktree. Links open here, with Back.
 export class Viewer {
-  constructor({ repo, number, on, data, me, pr, folder, machine, tab }, overlay, cx) {
-    this.repo = repo; this.number = number; this.on = on; this.me = me; this.overlay = overlay;
+  constructor({ repo, number, on, data, me, pr, folder, machine, tab, ack }, overlay, cx) {
+    this.repo = repo; this.number = number; this.on = on; this.me = me; this.overlay = overlay; this.ack = ack ?? null;
     this.folder = folder ?? null; this.machine = machine ?? on ?? null;
     this.history = []; this.cache = {}; this.timelines = {}; this.labels = {}; this.tab = "write";
     this.kinds = {}; this.diffs = {}; this.openFiles = new Set(); this.prTab = "conversation"; this.mergeMethod = "squash";
+    this.reviewMenu = false; this.reviewChoice = "comment";
+    this.threadLoading = false; this.threadFailed = false; this.loadedAt = null;
     if (typeof pr === "boolean") this.kinds[`${repo}#${number}`] = pr;
     if (["checks", "files"].includes(tab)) this.prTab = tab;
     if (data) this.cache[`${repo}#${number}`] = data;
@@ -154,6 +171,7 @@ export class Viewer {
   load(cx, force = false) {
     const repo = this.repo, number = this.number, id = this.id(), current = () => this.id() === id;
     this.issue = this.cache[id] ?? null; this.error = null; this.loading = true;
+    this.threadLoading = true; this.threadFailed = false; let done = false;
     const gh = async (args) => {
       const r = await exec("gh", args, { on: this.on });
       if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
@@ -165,23 +183,41 @@ export class Viewer {
         if (kept?.issue && current()) {
           this.kinds[id] ??= kept.kind; this.cache[id] = kept.issue;
           if (kept.timeline) this.timelines[id] = kept.timeline;
-          this.issue = kept.issue; cx.notify();
+          this.issue = kept.issue;
+          if (kept.at) this.loadedAt = new Date(kept.at).toLocaleTimeString();
+          cx.notify();
           if (!force && age(kept) < VIEW_FRESH) return;
         }
         // A link may point at either: the issues API marks pull requests.
         if (this.kinds[id] === undefined) this.kinds[id] = await gh(["api", `repos/${repo}/issues/${number}`, "--jq", ".pull_request != null"]).catch(() => false);
         const pr = this.kinds[id];
-        const [issue, pages] = await Promise.all([
-          gh(pr ? ["pr", "view", String(number), "-R", repo, "--json", PR_DETAIL] : ["issue", "view", String(number), "-R", repo, "--json", DETAIL]),
-          gh(["api", "--paginate", "--slurp", `repos/${repo}/issues/${number}/timeline?per_page=100`]).catch(() => null),
-        ]);
+        // Detail first, so the page paints; the paginated timeline lands behind it.
+        const issue = await gh(pr ? ["pr", "view", String(number), "-R", repo, "--json", PR_DETAIL] : ["issue", "view", String(number), "-R", repo, "--json", DETAIL]);
         this.cache[id] = issue;
-        if (pages) this.timelines[id] = timeline(pages.flat());
-        if (current()) this.issue = issue;
+        if (current()) { this.issue = issue; cx.notify(); }
         writeCache(`view:${id}`, { at: Date.now(), kind: pr, issue, timeline: this.timelines[id] ?? null });
+        if (current()) this.ackViewed(repo, number);
+        const [pages, inline] = await Promise.all([
+          gh(["api", "--paginate", "--slurp", `repos/${repo}/issues/${number}/timeline?per_page=100`]).catch(() => null),
+          pr ? gh(["api", "--paginate", "--slurp", `repos/${repo}/pulls/${number}/comments?per_page=100`]).catch(() => null) : null,
+        ]);
+        if (pages) {
+          this.timelines[id] = timeline(pages.flat(), inline?.flat() ?? []);
+          writeCache(`view:${id}`, { at: Date.now(), kind: pr, issue, timeline: this.timelines[id] });
+        } else if (current()) this.threadFailed = true;
+        done = true;
+        if (current()) { this.threadLoading = false; cx.notify(); }
       } catch (e) { if (current()) this.error = String(e?.message ?? e); }
-      finally { if (current()) { this.loading = false; cx.notify(); } }
+      finally { if (current()) { this.loading = false; this.threadLoading = false; if (done && !this.error) this.loadedAt = new Date().toLocaleTimeString(); cx.notify(); } }
     });
+  }
+
+  // Opening from the Dashboard marks its captured feedback seen, once the
+  // detail actually shows (a failed load keeps the bell).
+  ackViewed(repo, number) {
+    if (!this.ack || this.ackDone || this.ack.repo !== repo || this.ack.number !== number) return;
+    this.ackDone = true;
+    acknowledgeFeedback(this.ack.viewer, repo, number, this.ack.at);
   }
 
   go(repo, number, cx) {
@@ -199,8 +235,20 @@ export class Viewer {
   }
 
   reset() {
-    this.editing = false; this.closeMenu = false; this.mergeMenu = false; this.confirmMerge = false; this.picking = null; this.queue = [];
-    this.prTab = "conversation"; this.openFiles = new Set();
+    this.editing = false; this.closeMenu = false; this.mergeMenu = false; this.confirmMerge = false; this.reviewMenu = false; this.picking = null; this.queue = [];
+    this.prTab = "conversation"; this.openFiles = new Set(); this.threadFailed = false; this.loadedAt = null;
+  }
+
+  // Where the conversation's load state shows: at the end of the thread itself,
+  // not only in the header. The timeline carries reviews and review comments;
+  // until it lands the thread falls back to the basic comment list.
+  threadStatus(t) {
+    if (this.threadLoading) return h_flex().flex_none().gap(8).items_center().justify_center().py(14).text_size(12).text_color(t.muted)
+      .child(svg("mods/workspace-chrome/spinner.svg").size(13).text_color(t.working).spin(900))
+      .child(this.timelines[this.id()] ? "Checking for new comments…" : "Loading comments and events…");
+    if (this.threadFailed) return div().flex_none().py(12).text_center().text_size(12).text_color(t.ansi1)
+      .child("Couldn't load the full conversation — showing basic comments. Press Refresh to try again.");
+    return null;
   }
 
   // Start (or open) a worktree for this issue or PR, as the issues table does.
@@ -253,6 +301,17 @@ export class Viewer {
   comment(cx) {
     const body = this.reply.value().trim();
     if (body) this.change("Commenting", ["comment", "--body", body], cx, () => this.cleared());
+  }
+
+  // GitHub's Submit review: the comment box is the review body. Approve takes
+  // no body; Comment and Request changes need one, as on GitHub.
+  review(cx) {
+    const body = this.reply.value().trim();
+    const args = ["review", this.reviewChoice === "approve" ? "--approve" : this.reviewChoice === "changes" ? "--request-changes" : "--comment"];
+    if (body) args.push("--body", body);
+    this.reviewMenu = false;
+    const label = { approve: "Approving", changes: "Requesting changes", comment: "Submitting review" }[this.reviewChoice];
+    this.change(label, args, cx, () => this.cleared());
   }
 
   // Closing or reopening takes what's in the comment box along, as on GitHub.
@@ -371,7 +430,9 @@ export class Viewer {
         .child(div().text_color(t.muted).child(c.first ? `opened ${ago(c.at)}` : ago(c.at)))
         .child(div().flex_1())
         .when(!c.first && c.login === author, (e) => e.child(this.badge("Author", t)))
-        .when(!c.first && Boolean(ROLES[c.role]), (e) => e.child(this.badge(ROLES[c.role], t))))
+        .when(!c.first && Boolean(ROLES[c.role]), (e) => e.child(this.badge(ROLES[c.role], t)))
+        .when(Boolean(c.review), (e) => e.child(this.badge({ approved: "Approved", changes_requested: "Changes requested", commented: "Reviewed", dismissed: "Review dismissed" }[c.review] ?? "Reviewed", t)))
+        .when(Boolean(c.file), (e) => e.child(this.badge(c.file, t))))
       .child(div().px(16).py(14).text_size(14).child(c.body?.trim()
         ? this.markdown(key, c.body, t, cx)
         : div().text_color(t.muted).italic().child("No description provided.")))
@@ -405,6 +466,7 @@ export class Viewer {
     const muted = (text) => div().child(text);
     const [glyph, fill] = e.kind === "closed" ? [e.reason === "not_planned" ? "skipped" : "done", e.reason === "not_planned" ? GITHUB.skipped : GITHUB.done]
       : e.kind === "reopened" ? ["issue", GITHUB.open]
+      : e.kind === "review" ? [e.review === "approved" ? "pass" : e.review === "changes_requested" ? "fail" : "chat", e.review === "approved" ? GITHUB.open : e.review === "changes_requested" ? COLOR.fail : null]
       : [{ labels: "tag", assign: "user", renamed: "pencil", milestone: "milestone", mention: "link", commit: "commit" }[e.kind], null];
     const parts = [];
     switch (e.kind) {
@@ -422,6 +484,7 @@ export class Viewer {
       case "renamed": parts.push(muted("changed the title"), div().line_through().child(e.from ?? ""), strong(e.to ?? "")); break;
       case "milestone": parts.push(muted(e.added ? "added this to the" : "removed this from the"), strong(e.title ?? ""), muted("milestone")); break;
       case "mention": parts.push(muted("mentioned this")); break;
+      case "review": parts.push(muted(e.review === "approved" ? "approved these changes" : e.review === "changes_requested" ? "requested changes" : "reviewed")); break;
       case "commit": parts.push(muted("added a commit that references this issue")); break;
     }
     const color = e.state === "OPEN" || e.state === "open" ? GITHUB.open : e.merged || e.state === "closed" ? GITHUB.done : t.muted;
@@ -454,6 +517,32 @@ export class Viewer {
       e.kind === "comment" ? this.card(`issue-comment-${n}`, e, t, cx) : this.event(`issue-event-${n}`, e, t, cx)])];
   }
 
+  // The review dropdown under the composer: pick a verdict, then Submit.
+  // GitHub won't let authors approve or request changes on their own PR.
+  reviewPanel(i, t, cx, { busy, text }) {
+    const own = Boolean(this.me) && login(i.author).replace(/^app\//, "").toLowerCase() === this.me.toLowerCase();
+    const options = [
+      ["comment", "Comment", "Comment without a verdict", "chat", t.muted, false],
+      ["approve", "Approve", own ? "You can't approve your own pull request" : "Approve these changes", "pass", COLOR.pass, own],
+      ["changes", "Request changes", own ? "You can't request changes on your own pull request" : "Block merging until the feedback is addressed", "fail", COLOR.fail, own],
+    ];
+    const picked = options.find(([id]) => id === this.reviewChoice), needsBody = this.reviewChoice !== "approve";
+    const canSubmit = !busy && !picked[5] && (!needsBody || text);
+    const hint = picked[5] ? picked[2]
+      : needsBody && !text ? (this.reviewChoice === "changes" ? "Request changes needs a comment above" : "Write a comment above first")
+      : this.reviewChoice === "approve" && !text ? "The comment above is optional" : "The comment above goes in the review";
+    return v_flex().px(8).py(6).gap(1).border_t(1).border_color(t.border).bg(t.raised)
+      .children(options.map(([id, title, note, glyph, tint, disabled]) => h_flex().id(`pr-review-${id}`).px(8).py(6).gap(10).items_start().rounded(6)
+        .when(!disabled, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.reviewChoice = id; cx.notify(); }))
+        .child(div().w(14).flex_none().pt(2).text_size(12).text_color(GITHUB.link).child(this.reviewChoice === id ? "✓" : ""))
+        .child(div().pt(2).child(this.glyph(glyph, 16, disabled ? t.dim : tint)))
+        .child(v_flex().child(div().text_size(13).font_semibold().text_color(disabled ? t.dim : t.foreground).child(title))
+          .child(div().text_size(12).text_color(t.muted).child(note)))))
+      .child(h_flex().px(8).pt(6).gap(8).items_center()
+        .child(div().flex_1().text_size(12).text_color(t.muted).child(hint))
+        .child(this.button("pr-review-submit", "Submit review", t, (_e, cx) => this.review(cx), { primary: true, enabled: canSubmit })));
+  }
+
   composer(i, t, cx) {
     const open = i.state === "OPEN", busy = Boolean(this.busy), text = Boolean(this.replying), pr = this.isPr();
     const tab = (id, label) => div().id(`issue-tab-${id}`).h(32).px(14).flex().items_center().rounded_t(6).text_size(13).cursor_pointer()
@@ -475,12 +564,14 @@ export class Viewer {
           .when(pr && i.state !== "MERGED", (e) => e.child(open
             ? this.button("pr-close", text ? "Close with comment" : "Close pull request", t, (_e, cx) => this.setState(true, null, cx), { enabled: !busy, glyph: "pull-closed", tint: COLOR.fail })
             : this.button("pr-reopen", text ? "Reopen with comment" : "Reopen pull request", t, (_e, cx) => this.setState(false, null, cx), { enabled: !busy, glyph: "pull", tint: GITHUB.open })))
+          .when(pr && open, (e) => e.child(this.button("pr-review", "Submit review ▾", t, (_e, cx) => { this.reviewMenu = !this.reviewMenu; cx.notify(); }, { enabled: !busy })))
           .when(!pr, (e) => e.child(open
             ? h_flex().gap(0)
               .child(this.button("issue-close-done", text ? "Close with comment" : "Close issue", t, (_e, cx) => this.setState(true, "completed", cx), { enabled: !busy, glyph: "done", tint: GITHUB.done }))
               .child(this.button("issue-close-more", "▾", t, (_e, cx) => { this.closeMenu = !this.closeMenu; cx.notify(); }, { enabled: !busy }))
             : this.button("issue-reopen", text ? "Reopen with comment" : "Reopen issue", t, (_e, cx) => this.setState(false, null, cx), { enabled: !busy, glyph: "issue", tint: GITHUB.open })))
           .child(this.button("issue-comment", "Comment", t, (_e, cx) => this.comment(cx), { primary: true, enabled: text && !busy })))
+        .when(pr && open && Boolean(this.reviewMenu), (e) => e.child(this.reviewPanel(i, t, cx, { busy, text })))
         .when(!pr && open && Boolean(this.closeMenu), (e) => e.child(v_flex().px(8).py(6).border_t(1).border_color(t.border).bg(t.raised)
           .children([["done", "Close as completed", "Done, closed, fixed, resolved", "completed", GITHUB.done], ["skipped", "Close as not planned", "Won't fix, can't repro, stale", "not planned", GITHUB.skipped]]
             .map(([glyph, title, note, reason, tint]) => h_flex().id(`issue-close-${reason}`).px(8).py(6).gap(10).items_start().rounded(6).cursor_pointer()
@@ -605,14 +696,18 @@ export class Viewer {
       .child(div().text_size(13).text_color(t.muted).child(i?.url.includes("/pull/") ? `${this.repo} · pull request` : this.repo))
       .child(div().flex_1().min_w(0).text_size(12).text_color(t.ansi1).truncate().child(i && this.error ? this.error : ""))
       .when(this.loading || Boolean(this.busy), (e) => e.child(h_flex().gap(6).items_center().text_size(12).text_color(t.muted)
-        .child(svg("mods/workspace-chrome/spinner.svg").size(12).text_color(t.working).spin(900)).child(this.busy ?? "Refreshing")))
+        .child(svg("mods/workspace-chrome/spinner.svg").size(12).text_color(t.working).spin(900))
+        .child(this.busy ?? (this.threadLoading && i ? "Loading comments…" : "Refreshing"))))
+      .when(Boolean(i) && !this.loading && !this.busy && Boolean(this.loadedAt), (e) => e.child(div().flex_none().text_size(12).text_color(t.dim).child(`Loaded ${this.loadedAt}`)))
       .when(Boolean(i) && !this.loading && !this.busy, (e) => e.child(this.button("issue-refresh", "Refresh", t, (_e, cx) => { this.load(cx, true); cx.notify(); }, { glyph: "refresh" })))
       .when(Boolean(i), (e) => e.child(this.button("issue-copy", "Copy", t, () => copyMenu({ repo: this.repo, number: i.number, title: i.title, url: i.url }, below(this.press)), { glyph: "copy" })))
       .when(Boolean(i), (e) => e.child(this.button("issue-github", "Open on GitHub", t, () => openUrl(i.url), { glyph: "external" })))
       .child(this.button("issue-close", "", t, () => closeOverlay(this.overlay), { glyph: "close" }));
     if (!i) return v_flex().id("issue").size_full().bg(t.background).text_color(t.foreground).text_size(14).px(32).pt(16).gap(20)
       .child(bar)
-      .child(this.loading ? div().text_color(t.muted).child(`Loading #${this.number}…`) : div().text_color(t.ansi1).child(this.error ?? ""));
+      .child(this.loading ? h_flex().gap(8).items_center().text_color(t.muted)
+          .child(svg("mods/workspace-chrome/spinner.svg").size(14).text_color(t.working).spin(900)).child(`Loading #${this.number}…`)
+        : div().text_color(t.ansi1).child(this.error ?? ""));
 
     const pr = this.isPr(), talk = !pr || this.prTab === "conversation";
     const [state, color, glyph] = pr ? [prState(i).label, prState(i).color, prState(i).glyph]
@@ -642,6 +737,7 @@ export class Viewer {
       .child(h_flex().flex_1().min_h(0).items_start()
         .child(v_flex().id(`issue-thread-${this.id()}-${pr ? this.prTab : "issue"}`).flex_1().min_w(0).h_full().overflow_y_scrollbar().pl(32).pr(24).py(20)
           .children(talk ? this.thread(i, t, cx) : [this.prTab === "checks" ? checksTab(this, i, t) : filesTab(this, i, t)])
+          .when(talk && Boolean(this.threadStatus(t)), (e) => e.child(this.threadStatus(t)))
           .when(talk, (e) => e.child(div().flex_none().h(28)).child(this.composer(i, t, cx)))
           .child(div().flex_none().h(24)))
         .child(this.sidebar(i, t, cx)));

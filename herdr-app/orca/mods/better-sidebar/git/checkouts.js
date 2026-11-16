@@ -37,6 +37,7 @@ export async function readCheckout(cwd, on) {
   if (top.code !== 0 || common.code !== 0) throw new Error("Cannot read repository metadata");
 
   const repo = common.stdout.trim();
+  const topPath = top.stdout.trim();
   const info = {
     name: repo.endsWith("/.git")
       ? basename(repo.slice(0, -5))
@@ -45,7 +46,10 @@ export async function readCheckout(cwd, on) {
     ahead: 0,
     behind: 0,
     repo: JSON.stringify([on, repo]),
-    linked: repo !== `${top.stdout.trim()}/.git`,
+    linked: repo !== `${topPath}/.git`,
+    // The checkout's own root: spaces in different subfolders of one
+    // worktree share this, while their terminal folders differ.
+    top: topPath,
   };
   for (const line of status.stdout.split("\n")) {
     if (line.startsWith("# branch.head ")) info.branch = line.slice(14);

@@ -133,10 +133,9 @@ export default class Tabs extends View {
       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
-    // Only panels the side panel has: Issues and Automations are popups now (sidebar-nav).
-    // PRs always rides along (same as the workbench's github-tabs): its
-    // button shows whenever the layout's panel actually has a prs child.
-    const enabled = [...new Set([...(shared("workspace.panels") ?? ["files", "changes"]), "prs"])].filter(id => body?.children?.some(c => c.id === id));
+    // Only panels the side panel has: Issues (with the PR dashboard) and
+    // Automations are popups now (sidebar-nav).
+    const enabled = [...new Set(shared("workspace.panels") ?? ["files", "changes"])].filter(id => body?.children?.some(c => c.id === id));
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon) => {
       const on = panel && !panel.hidden && body?.active === id;
@@ -157,7 +156,6 @@ export default class Tabs extends View {
       .child(button("tab-new", "+", () => openOverlay({ mod: "my-new-menu", kind: "popup", width: 250, height: 543 })))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
-      .when(enabled.includes("prs"), el => el.child(panelButton("prs", "PRs", "mods/github-prs/pr.svg")))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/my-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/my-tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/my-tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));

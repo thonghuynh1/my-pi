@@ -35,15 +35,27 @@ and is reported. Everything else is copied to `layouts/orca.json`, `mods/`, and
 - `better-sidebar`: projects are permanent — once a repo has been opened it
   stays in the sidebar after its last space closes (dimmed, marked closed);
   clicking reopens a space at the repo root, and only the row's × removes it.
-- Excalidraw is removed: the right panel's third child is **PRs** (the shared
-  workbench `github-prs` mod, installed here for portability but not
-  bundle-owned), with a PRs button in the top bar instead of Excalidraw.
-- `better-sidebar`: worktrees always show (enumerated from git, nested under
-  their project, even with no space open) and carry a delete: live ones open
+- Excalidraw is removed, and the old right-panel **PRs** child and its top-bar
+  button are gone too: the PR dashboard now lives in the **Issues** popup as
+  its Dashboard tab (your PRs and review requests across repos, with the
+  unseen-feedback bell, Dismiss/Remove/Restore and the same
+  `github-prs.attention.<viewer>` state, so nothing was reset). The Issues
+  PRs tab still covers one repo in detail. The workbench `github-prs` mod
+  still serves the github-workspace layout.
+- `better-sidebar`: worktrees show nested under their project (enumerated
+  from git, even with no space open) and carry a delete: live ones open
   Orca's remove dialog, closed ones confirm inline and run
-  `git worktree remove --force --force` (branch kept).
+  `git worktree remove --force --force` (branch kept). A project's root row
+  always shows a fold chevron: clicking it collapses the project, hiding its
+  worktree rows and agents until clicked again (kept in `repos.folded`;
+  navigating to a hidden space unfolds its project).
 - `better-sidebar`: the first space on a repo's main checkout is the project
   root; sibling spaces on the same checkout nest under it with its worktrees.
+  Nested spaces are grouped by the checkout they live in (its git top
+  folder): a linked worktree's first space keeps the worktree row as before,
+  and any further spaces in that same worktree sit inside it as spaces —
+  own name, color tile, agent fold — instead of looking like more worktrees.
+  Spaces on the main checkout stay under the root as before.
 - `desktop-notifications`: `place` set to `none`, so it lives only in Orca's
   explicit slot and cannot inject itself into other layouts. (Notifications
   have no Windows sender upstream and stay silent there.)

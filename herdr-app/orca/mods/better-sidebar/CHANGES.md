@@ -6,7 +6,11 @@ This mod is Better Sidebar 3.0.0 from [munza/herdr-mods](https://github.com/munz
 Modified files:
 
 - `main.js`: registers the `card` and `groups` views.
-- `views/spaces.js`: issue badges beside PR badges, both opening the issues mod's viewer;
+- `views/spaces.js`: nested spaces are grouped by the checkout they live in (its git
+  top folder; `git/checkouts.js` now also returns `top`) — a linked worktree's first
+  space keeps the worktree row as before, and any further spaces in that same
+  worktree sit inside it as spaces (own name, color tile, per-space agent fold)
+  instead of looking like more worktrees; issue badges beside PR badges, both opening the issues mod's viewer;
   a live-ports plug icon on the branch line; the hover card; repo-row hover buttons
   (fold worktrees, menu, new worktree); one section per machine (bold bar, green dot while connected, a
   rule between machines); folders (`views/groups.js`): any space or repo can be filed, by dragging

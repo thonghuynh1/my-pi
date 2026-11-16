@@ -120,8 +120,10 @@ export class Spaces {
     } catch {
       /* Ignore invalid saved UI state. */
     }
+    this.subspaceIds = new Set(); // spaces drawn inside their worktree's row (ordered())
     this.worktreeCount = {};
     this.worktreeIds = {}; // repo key -> its worktree spaces' ids
+    this.repoRoots = new Map(); // repo key -> its project root space's id (rebuilt in ordered())
     this.agents = new SpaceAgents();
     // The list scrolls itself so it can follow the active space: Herdr can't move
     // a native scroll area from code. Heights come from sized().
@@ -643,8 +645,14 @@ export class Spaces {
       Date.now() - (this.born[w.id] ??= Date.now()) > 1500;
     for (const w of sp) if (!this.shown.has(w.id) && ready(w)) this.shown.add(w.id);
     const list = sp
-      .map((w, i) => ({ w, i, g: this.git[checkoutKey(w, ps)] ?? null }))
+      .map((w, i) => {
+        const folder = spaceFolder(w, ps);
+        const g = this.git[JSON.stringify([w.machine ?? null, folder])] ?? null;
+        const checkoutPath = g ? normPath(g.top ?? folder) : null;
+        return { w, i, g, checkoutPath, checkoutId: g ? JSON.stringify([w.machine ?? null, checkoutPath]) : null };
+      })
       .filter((r) => this.shown.has(r.w.id));
+    this.subspaceIds = new Set();
     // Each space's folder unit (a repo, or the space itself) and where those units live.
     this.unitKey = {};
     this.unitMachine = {};
@@ -661,6 +669,7 @@ export class Spaces {
     // checkout drew as projects of their own.
     const roots = new Map();
     for (const r of list) if (r.g && !r.g.linked && !roots.has(r.g.repo)) roots.set(r.g.repo, r.w.id);
+    this.repoRoots = roots;
     const nested = (r) => Boolean(r.g) && roots.has(r.g.repo) && roots.get(r.g.repo) !== r.w.id;
     const out = [];
     const placed = new Set(); // repos whose worktrees are listed (under the first of its spaces)
@@ -674,12 +683,31 @@ export class Spaces {
       const kids = list.filter((k) => nested(k) && k.g.repo === r.g.repo);
       this.worktreeCount[r.g.repo] = kids.length;
       this.worktreeIds[r.g.repo] = kids.map((k) => k.w.id);
-      // Orca bundle fit: worktrees always show — a repo's fold collapses
-      // only its agents, never the worktree rows themselves.
-      kids.forEach((k, n) => out.push({ ...k, tree: n === kids.length - 1 ? "└─" : "├─" }));
-      const liveFolders = new Set(list.filter((k) => k.g?.repo === r.g.repo).map((k) => normPath(spaceFolder(k.w, ps))));
-      for (const wt of this.ghostWorktrees(r.g.repo, liveFolders))
-        out.push({ ghostWorktree: { repo: r.g.repo, machine: r.w.machine ?? null, root: repoRoot(r.g), ...wt }, w: null, g: null, tree: "\u251c\u2500" });
+      // A folded project (its root row's chevron, kept in repos.folded) hides
+      // its worktree rows and agents; the counts above still record them, so
+      // the root row can label what it stands for and space navigation
+      // (rowIds/navOrder) keeps passing through the hidden spaces.
+      if (!this.reposFolded.has(r.g.repo)) {
+        // Group the nested spaces by the checkout they live in: a linked
+        // worktree's first space keeps the worktree row as before, and any
+        // further spaces in that same worktree sit inside it as spaces.
+        // Spaces on the main checkout stay under the root as before.
+        const byCheckout = new Map();
+        for (const k of kids) {
+          const id = k.g?.linked ? (k.checkoutId ?? `space:${k.w.id}`) : "main";
+          if (!byCheckout.has(id)) byCheckout.set(id, []);
+          byCheckout.get(id).push(k);
+        }
+        const flat = [...byCheckout.values()].flatMap((grp) =>
+          grp.map((k, n) => ({ ...k, subspace: n > 0 })));
+        flat.forEach((k, n) => {
+          if (k.subspace) this.subspaceIds.add(k.w.id);
+          out.push({ ...k, tree: n === flat.length - 1 ? "└─" : "├─" });
+        });
+        const liveFolders = new Set(list.filter((k) => k.g?.repo === r.g.repo).map((k) => normPath(k.checkoutPath ?? spaceFolder(k.w, ps))));
+        for (const wt of this.ghostWorktrees(r.g.repo, liveFolders))
+          out.push({ ghostWorktree: { repo: r.g.repo, machine: r.w.machine ?? null, root: repoRoot(r.g), ...wt }, w: null, g: null, tree: "\u251c\u2500" });
+      }
     }
     this.drawn = out;
     return out;
@@ -772,7 +800,7 @@ export class Spaces {
     const group = key && s.projects[key];
     if (group && s.groups.some((g) => g.id === group) && isFolded(s, group, m)) setFold(group, m, false);
     const g = this.git[checkoutKey(w, panes())];
-    if (g?.linked && this.reposFolded.delete(g.repo)) {
+    if (g?.repo && this.repoRoots.get(g.repo) !== id && this.reposFolded.delete(g.repo)) {
       localStorage.setItem("repos.folded", JSON.stringify([...this.reposFolded]));
       changed = true;
     }
@@ -1227,11 +1255,12 @@ export class Spaces {
     return badge;
   }
 
-  // Whether a row needs the line under its name.
-  hasDetail(w, g) {
+  // Whether a row needs the line under its name. A space inside a worktree
+  // doesn't repeat the branch its worktree's row already shows.
+  hasDetail(w, g, subspace = false) {
     const status = this.checkoutStatus(w);
     const moved = w.active && (g?.ahead > 0 || g?.behind > 0);
-    return Boolean(this.shownBranch(g) || moved || status?.prs.length || status?.issue || status?.error || this.ports(w).length || this.foldedSummary(w, g) || this.sleeping(w) || noteOf(w));
+    return Boolean((!subspace && this.shownBranch(g)) || moved || status?.prs.length || status?.issue || status?.error || this.ports(w).length || this.foldedSummary(w, g) || this.sleeping(w) || noteOf(w));
   }
 
   // Set by the hibernate mod while a space is asleep: { at, count }.
@@ -1245,9 +1274,9 @@ export class Spaces {
   }
 
   // Under the name: the branch on the left; ahead/behind and the PR on the right.
-  detailLine(w, g, t, tree) {
+  detailLine(w, g, t, tree, subspace = false) {
     const status = this.checkoutStatus(w);
-    const branch = this.shownBranch(g);
+    const branch = subspace ? null : this.shownBranch(g);
     const ports = this.ports(w);
     return h_flex()
       .id(`space-detail-${w.id}`)
@@ -1262,7 +1291,7 @@ export class Spaces {
       )
       // The repo's main folder, as opposed to a linked worktree. Nested
       // sibling spaces share that folder but aren't the root (Orca fit).
-      .when(Boolean(g) && !g.linked && !tree, (el) => el.child(Badge("primary")))
+      .when(!subspace && Boolean(g) && !g.linked && !tree, (el) => el.child(Badge("primary")))
       .child(div().flex_1())
       .when(w.active && g?.ahead > 0, (el) => el.child(Badge(`\u2191${g.ahead}`)))
       .when(w.active && g?.behind > 0, (el) => el.child(Badge(`\u2193${g.behind}`)))
@@ -1356,6 +1385,13 @@ export class Spaces {
     cx.notify();
   }
 
+  // Only this space's agents, whatever its repo's folds say.
+  toggleSpaceAgents(w, cx) {
+    if (!this.agentsFolded.delete(w.id)) this.agentsFolded.add(w.id);
+    localStorage.setItem("spaces.agents-folded", JSON.stringify([...this.agentsFolded]));
+    cx.notify();
+  }
+
   // The header's switch between agents in spaces and the Agents panel.
   agentsSwitch(t) {
     const on = inlineAgents();
@@ -1384,12 +1420,14 @@ export class Spaces {
     if (r.ghost) return this.ghostRow(r.ghost, t);
     if (r.ghostWorktree) return this.ghostWorktreeRow(r.ghostWorktree, t);
     const { w, i, g, tree } = r;
-    const detail = this.hasDetail(w, g);
+    const subspace = Boolean(r.subspace);
+    const detail = this.hasDetail(w, g, subspace);
     const row = v_flex()
       .relative()
       .id(`space-${w.id}`)
       .px(8)
-      .h(rowHeight({ tree }) + (detail ? 20 : 0))
+      .when(subspace, (el) => el.pl(40))
+      .h(rowHeight({ tree: subspace ? true : tree }) + (detail ? 20 : 0))
       .flex_none()
       .justify_center()
       .rounded(8)
@@ -1397,8 +1435,8 @@ export class Spaces {
       .when(!w.active, (el) => el.hover((s) => s.bg(t.hover)))
       .when(this.pressed === i && this.over !== i, (el) => el.opacity(0.5))
       .on_mouse_down("right", () => this.menu(w))
-      .child(this.rowTitle(w, g, tree, t))
-      .when(detail, (el) => el.child(this.detailLine(w, g, t, Boolean(tree))));
+      .child(this.rowTitle(w, g, tree, t, subspace))
+      .when(detail, (el) => el.child(this.detailLine(w, g, t, Boolean(tree), subspace)));
     if (this.pressed !== null && this.over === i && this.pressed !== i)
       row.child(this.dropLine(i, t));
     // The wrapper drives the hover card; the row itself handles dragging.
@@ -1416,7 +1454,7 @@ export class Spaces {
     // Agents line up with the space's name: past the avatar, or past a worktree's branch icon.
     return v_flex().id(`space-block-${w.id}`).flex_none().pb(2)
       .child(wrap)
-      .children(this.agents.rows(w.id, t, tree ? 52 : 35));
+      .children(this.agents.rows(w.id, t, subspace ? 67 : tree ? 52 : 35));
   }
 
   // ── Hover card: the row's PR, issue and ports (views/card.js) ────────────
@@ -1427,8 +1465,9 @@ export class Spaces {
     const was = this.hovering;
     if (hovered) this.hovering = w.id;
     else if (this.hovering === w.id) this.hovering = null;
-    // Only rows with hover buttons look different when hovered.
-    if (was !== this.hovering && (this.isMain(g) || this.hasAgents(w, g))) cx.notify();
+    // Only rows with hover buttons look different when hovered; a space
+    // inside a worktree always has one (its menu).
+    if (was !== this.hovering && (this.isMain(g) || this.hasAgents(w, g) || this.subspaceIds.has(w.id))) cx.notify();
     const h = shared(HOVER_KEY) ?? {};
     if (hovered) {
       if (this.card && h.row !== w.id) setShared(HOVER_KEY, { ...h, row: w.id });
@@ -1558,35 +1597,60 @@ export class Spaces {
       });
   }
 
-  rowTitle(w, g, tree, t) {
+  rowTitle(w, g, tree, t, subspace = false) {
     return h_flex()
       .gap(9)
       .items_center()
-      .when(Boolean(tree), (el) => el.pl(22).child(Icon("branch", 13).text_color(t.dim)))
-      .when(!tree, (el) => el.child(this.avatar(w, t, g)))
+      .when(subspace, (el) => el.child(this.spaceAvatar(w, t)))
+      .when(!subspace && Boolean(tree), (el) => el.pl(22).child(Icon("branch", 13).text_color(t.dim)))
+      .when(!subspace && !tree, (el) => el.child(this.avatar(w, t, g)))
       .child(
-        div().flex_1().min_w(0).truncate().tooltip(w.name).text_color(t.foreground).child(shownName(w, g)),
+        // A space inside a worktree shows its own name; its worktree's row
+        // above carries the branch.
+        div().flex_1().min_w(0).truncate().tooltip(w.name).text_color(t.foreground).child(subspace ? w.name : shownName(w, g)),
       )
-      .when(!tree && Boolean(g) && !g.linked, (el) => el.child(this.repoButtons(w, g, t)))
+      .when(!subspace && !tree && Boolean(g) && !g.linked, (el) => el.child(this.repoButtons(w, g, t)))
       // A live worktree's delete: Orca's own remove dialog (checks unsaved work).
-      .when(Boolean(tree) && Boolean(g?.linked), (el) => el.child(
+      .when(!subspace && Boolean(tree) && Boolean(g?.linked), (el) => el.child(
         div().id(`wt-remove-${w.id}`).flex_none().w(18).h(20).flex().items_center().justify_center().text_color(t.dim).cursor_pointer()
           .hover((s) => s.text_color(t.foreground))
           .tooltip("Close & remove worktree\u2026")
           .on_click((_e, cx) => { cx.stop_propagation(); run("worktree", { space: w.id, action: "remove" }); })
           .child("\u00d7")))
-      .when((Boolean(tree) || !this.isMain(g)) && this.hasAgents(w, g) && (this.hovering === w.id || this.agentsHidden(w, g)), (el) =>
+      .when(subspace && this.hasAgents(w, g) && (this.hovering === w.id || this.agentsHidden(w, g)), (el) =>
+        el.child(this.foldAgentsButton(w, g, t, true)))
+      .when(subspace && this.hovering === w.id, (el) => el.child(
+        div().on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_mouse_up("left", (_e, cx) => cx.stop_propagation())
+          .child(IconButton({ id: `space-menu-${w.id}`, icon: "ellipsis", label: "Space options", iconSize: 13, muted: true, onClick: () => this.menu(w) }).size(22))))
+      .when(!subspace && (Boolean(tree) || !this.isMain(g)) && this.hasAgents(w, g) && (this.hovering === w.id || this.agentsHidden(w, g)), (el) =>
         el.child(this.foldAgentsButton(w, g, t)),
       );
   }
 
-  foldAgentsButton(w, g, t) {
+  // A space's own tile: its color and initial, never the project's icon.
+  spaceAvatar(w, t) {
+    const color = (shared("space.colors") ?? {})[w.id] ?? "ansi6";
+    const fill = color.startsWith("#") ? color : (AVATAR_COLORS[color] ?? t[color]);
+    return h_flex()
+      .size(18)
+      .flex_none()
+      .rounded(5)
+      .bg(fill)
+      .items_center()
+      .justify_center()
+      .text_size(TEXT.avatar)
+      .font_bold()
+      .text_color("#ffffff")
+      .child([...w.name][0]?.toUpperCase() ?? "?");
+  }
+
+  foldAgentsButton(w, g, t, spaceOnly = false) {
     const hidden = this.agentsHidden(w, g);
     return div()
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_mouse_up("left", (_e, cx) => cx.stop_propagation())
       .child(IconButton({ id: `space-fold-agents-${w.id}`, icon: hidden ? "chevron-right" : "chevron-down",
-        label: hidden ? "Show agents" : "Hide agents", iconSize: 13, muted: true, onClick: (cx) => this.toggleAgents(w, g, cx) }).size(22));
+        label: hidden ? "Show agents" : "Hide agents", iconSize: 13, muted: true, onClick: (cx) => (spaceOnly ? this.toggleSpaceAgents(w, cx) : this.toggleAgents(w, g, cx)) }).size(22));
   }
 
   // A repo's row: fold its worktrees, its menu, and a new worktree, shown on hover.
@@ -1605,7 +1669,9 @@ export class Spaces {
       .flex_none()
       .gap(1)
       .items_center()
-      .when((kids > 0 || agents) && (hovered || folded), (el) =>
+      // The fold chevron always shows (not just on hover) so a project can be
+      // found and collapsed at a glance; menu/new-worktree stay hover-only.
+      .when(kids > 0 || agents, (el) =>
         el.child(
           button("repo-fold", folded ? "chevron-right" : "chevron-down", this.foldLabel(kids, agents, folded), (cx) => this.toggleAgents(w, g, cx)),
         ),

@@ -191,13 +191,6 @@
                           "content": {
                             "mod": "better-changes"
                           }
-                        },
-                        {
-                          "id": "prs",
-                          "type": "block",
-                          "content": {
-                            "mod": "github-prs"
-                          }
                         }
                       ],
                       "active": "files"

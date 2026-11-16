@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { restore } from '../install.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
-export const orcaMods = ['better-changes', 'better-config', 'better-sidebar', 'desktop-notifications', 'github-prs', 'file-icons', 'files-open-with', 'hibernate', 'issues', 'live-ports', 'my-menu', 'my-new-menu', 'my-pane', 'my-status', 'my-tabs', 'my-worktree', 'new-project', 'new-worktree', 'open-vscode', 'project-settings', 'resources', 'sidebar-nav', 't3-actions', 'usage-limits'];
+export const orcaMods = ['better-changes', 'better-config', 'better-sidebar', 'desktop-notifications', 'file-icons', 'files-open-with', 'hibernate', 'issues', 'live-ports', 'my-menu', 'my-new-menu', 'my-pane', 'my-status', 'my-tabs', 'my-worktree', 'new-project', 'new-worktree', 'open-vscode', 'project-settings', 'resources', 'sidebar-nav', 't3-actions', 'usage-limits'];
 const exists = async path => { try { return await lstat(path); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
 
 function runHerdr(args) {

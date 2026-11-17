@@ -5,6 +5,7 @@ Personal Pi package that bundles:
 - Pi built-in MCP configuration (no `pi-mcp-adapter`; uses `builtin:mcp`)
 - `@narumitw/pi-file-context` (`/file-context` in-TUI file browser; Tab inserts `@path`)
 - `pi-claude-bridge` (Claude Code subscription as `claude-bridge/*` models via Agent SDK — no separate `pi install` needed)
+- `pi-emphasis` (colored `[[Done]]`/`[[Failed]]` status pills, icons and bold in TUI replies, plus the `reply_style` prompt rules that teach the agent to write them; git-pinned in `package.json`, not on npm — needs Pi ≥1.5 and a Nerd Font terminal, or set `PI_EMPHASIS_PILL_ICONS=0`/`PI_EMPHASIS_ROUND_CAPS=0`)
 - `usage-footer.ts` footer/status extension showing model and context usage
 - `subagents.ts` in-process subagent tool with `explore`, `shell`, and `custom` modes
 

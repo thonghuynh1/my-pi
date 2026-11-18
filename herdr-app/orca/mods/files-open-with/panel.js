@@ -117,7 +117,7 @@ export default class Panel {
         const marks = {}, ignored = new Set();
         if (top?.code === 0) {
           // Writes nothing under .git (index lock, fsmonitor cookie): the folder watch would refresh again.
-          const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=normal", "--ignored"], { cwd, on }).catch(() => null);
+          const status = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=normal", "--ignored=matching"], { cwd, on }).catch(() => null);
           let count = 0;
           if (status?.code === 0) for (const entry of status.stdout.split("\0").filter(Boolean)) {
             const xy = entry.slice(0, 2), file = `${top.stdout.trim()}/${entry.slice(3)}`;

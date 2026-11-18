@@ -1,0 +1,12 @@
+{
+  "reposRoot": "C:\\GitRepos",
+  "repos": [
+    "Tickets",
+    "Activities",
+    "Messages",
+    "Documents",
+    "MailRouter",
+    "Core"
+  ],
+  "timeoutSeconds": 60
+}

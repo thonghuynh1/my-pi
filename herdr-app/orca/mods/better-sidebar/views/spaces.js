@@ -530,13 +530,75 @@ export class Spaces {
     }
   }
 
+  wtOn(wt) {
+    return wt.machine ? { on: wt.machine } : {};
+  }
+
+  async wtListed(wt) {
+    const r = await exec("git", ["-C", wt.root, "worktree", "list", "--porcelain"], { ...this.wtOn(wt), timeout: 600_000 });
+    if (r.code !== 0) return null;
+    return r.stdout.split("\n").filter((l) => l.startsWith("worktree "))
+      .some((l) => normPath(l.slice(9).trim()).toLowerCase() === normPath(wt.path).toLowerCase());
+  }
+
+  wtIsWindows(wt) {
+    return /^[A-Za-z]:[\\/]/.test(wt.path) || wt.path.includes("\\");
+  }
+
+  async wtDirExists(wt) {
+    if (this.wtIsWindows(wt)) {
+      const q = wt.path.replace(/'/g, "''");
+      const r = await exec("powershell.exe", ["-NoProfile", "-Command", `Test-Path -LiteralPath '${q}'`], { ...this.wtOn(wt), timeout: 60_000 });
+      return r.code === 0 && /^true$/i.test((r.stdout ?? "").trim());
+    }
+    const r = await exec("test", ["-d", wt.path], { ...this.wtOn(wt), timeout: 60_000 });
+    return r.code === 0;
+  }
+
+  async wtDeleteDir(wt) {
+    if (this.wtIsWindows(wt)) {
+      const q = wt.path.replace(/'/g, "''");
+      const r = await exec("powershell.exe", ["-NoProfile", "-Command", `if (Test-Path -LiteralPath '${q}') { Remove-Item -LiteralPath '${q}' -Recurse -Force -ErrorAction Stop }`], { ...this.wtOn(wt), timeout: 600_000 });
+      return r.code === 0 ? "" : (r.stderr || r.stdout || "folder delete failed").trim();
+    }
+    const r = await exec("rm", ["-rf", "--", wt.path], { ...this.wtOn(wt), timeout: 600_000 });
+    return r.code === 0 ? "" : (r.stderr || r.stdout || "folder delete failed").trim();
+  }
+
+  // Removal is only done when git no longer lists the worktree and its
+  // folder is gone. Git can unregister a worktree while locked files
+  // (node_modules on Windows) leave the folder behind, and a bare git
+  // failure can leave both, so sweep and prune before reporting.
+  async strictRemoveWorktree(wt) {
+    if (normPath(wt.path).toLowerCase() === normPath(wt.root).toLowerCase()) return "That is the main checkout, not a worktree.";
+    const opts = { ...this.wtOn(wt), timeout: 600_000 };
+    let r = await exec("git", ["-C", wt.root, "worktree", "remove", "--force", "--force", "--", wt.path], opts);
+    let listed = await this.wtListed(wt);
+    if (listed) {
+      r = await exec("git", ["-C", wt.root, "worktree", "remove", "--force", "--force", "--", wt.path], opts);
+      listed = await this.wtListed(wt);
+    }
+    if (listed === null) return (r.stderr || "git worktree list failed").trim();
+    if (listed) {
+      const delErr = await this.wtDeleteDir(wt);
+      await exec("git", ["-C", wt.root, "worktree", "prune", "--expire", "now"], opts);
+      listed = await this.wtListed(wt);
+      if (listed) return `Git still lists this worktree and its folder could not be fully deleted. ${delErr || (r.stderr || "").trim()}`.trim();
+    }
+    if (await this.wtDirExists(wt)) {
+      const delErr = await this.wtDeleteDir(wt);
+      if (await this.wtDirExists(wt)) return `Worktree removed from git, but its folder is still there (files in use?). Close what is using it and remove:\n${wt.path}\n${delErr}`.trim();
+    }
+    return "";
+  }
+
   // Old-way removal for a worktree with no space: two force flags (locked
   // checkouts too), the branch is kept. Live ones use the worktree dialog.
   removeWorktree(wt, cx) {
     cx.spawn(async (cx) => {
       try {
-        const r = await exec("git", ["-C", wt.root, "worktree", "remove", "--force", "--force", "--", wt.path], wt.machine ? { on: wt.machine } : {});
-        if (r.code !== 0) throw new Error((r.stderr || "git worktree remove failed").trim());
+        const err = await this.strictRemoveWorktree(wt);
+        if (err) throw new Error(err);
         const all = { ...(shared(WT_KEY) ?? {}) };
         all[wt.repo] = (all[wt.repo] ?? []).filter((x) => normPath(x.path) !== normPath(wt.path));
         setShared(WT_KEY, all);
@@ -559,18 +621,14 @@ export class Spaces {
       .cursor_pointer()
       .hover((s) => s.bg(t.hover))
       .on_click(() => { if (!confirming) run("space.new", { machine: wt.machine ?? "", folder: wt.path }); })
+      .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.confirmWorktree = wt.path; cx.notify(); })
       .child(Icon("branch", 13).text_color(t.dim))
       .child(div().min_w(0).truncate().text_color(t.dim)
-        .tooltip(`${wt.path} — worktree, no space open. Click to open one here.`).child(name))
-      .when(Boolean(wt.branch), (el) => el.child(div().flex_none().text_size(TEXT.caption).text_color(t.dim).child(wt.branch)))
+        .tooltip(`${wt.path} — worktree, no space open. Click to open one here. Right-click to remove it.`).child(name))
+      .when(Boolean(wt.branch), (el) => el.child(div().min_w(0).truncate().text_size(TEXT.caption).text_color(t.dim).tooltip(wt.branch).child(wt.branch)))
       .child(div().flex_1())
       .when(!confirming, (el) => el
-        .child(div().flex_none().text_size(TEXT.caption).text_color(t.dim).child("closed"))
-        .child(div().id(`ghost-wt-remove-${wt.path.replace(/[^a-z0-9]+/gi, "-")}`).flex_none().w(18).h(20).flex().items_center().justify_center().text_color(t.dim).cursor_pointer()
-          .hover((s) => s.text_color(t.foreground))
-          .tooltip("Remove worktree\u2026 (branch is kept, local files are deleted)")
-          .on_click((_e, cx) => { cx.stop_propagation(); this.confirmWorktree = wt.path; cx.notify(); })
-          .child("\u00d7")))
+        .child(div().flex_none().text_size(TEXT.caption).text_color(t.dim).child("closed")))
       .when(confirming, (el) => el
         .child(div().flex_none().text_size(TEXT.caption).text_color(t.ansi1).child("Remove worktree?"))
         .child(div().id(`ghost-wt-yes-${wt.path.replace(/[^a-z0-9]+/gi, "-")}`).flex_none().px(6).h(20).flex().items_center().rounded(5).bg(t.blocked).text_color(t.background).text_size(TEXT.caption).font_semibold().cursor_pointer()
@@ -1610,13 +1668,6 @@ export class Spaces {
         div().flex_1().min_w(0).truncate().tooltip(w.name).text_color(t.foreground).child(subspace ? w.name : shownName(w, g)),
       )
       .when(!subspace && !tree && Boolean(g) && !g.linked, (el) => el.child(this.repoButtons(w, g, t)))
-      // A live worktree's delete: Orca's own remove dialog (checks unsaved work).
-      .when(!subspace && Boolean(tree) && Boolean(g?.linked), (el) => el.child(
-        div().id(`wt-remove-${w.id}`).flex_none().w(18).h(20).flex().items_center().justify_center().text_color(t.dim).cursor_pointer()
-          .hover((s) => s.text_color(t.foreground))
-          .tooltip("Close & remove worktree\u2026")
-          .on_click((_e, cx) => { cx.stop_propagation(); run("worktree", { space: w.id, action: "remove" }); })
-          .child("\u00d7")))
       .when(subspace && this.hasAgents(w, g) && (this.hovering === w.id || this.agentsHidden(w, g)), (el) =>
         el.child(this.foldAgentsButton(w, g, t, true)))
       .when(subspace && this.hovering === w.id, (el) => el.child(

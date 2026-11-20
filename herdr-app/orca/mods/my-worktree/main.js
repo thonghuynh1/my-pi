@@ -65,6 +65,61 @@ async function git(cwd, args, on, timeout) {
   return { ok: r.code === 0, out: (r.stdout ?? "").trim(), err: (r.stderr ?? r.stdout ?? "").trim() };
 }
 
+const normPath = (p) => (p ?? "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+const isWindowsPath = (p) => /^[A-Za-z]:[\\/]/.test(p ?? "") || (p ?? "").includes("\\");
+
+async function worktreeListed(main, path, on) {
+  const l = await git(main, ["worktree", "list", "--porcelain"], on, 600_000);
+  if (!l.ok) return null;
+  return l.out.split("\n").filter((x) => x.startsWith("worktree ")).some((x) => normPath(x.slice(9)) === normPath(path));
+}
+
+async function dirExists(path, on) {
+  if (isWindowsPath(path)) {
+    const q = path.replace(/'/g, "''");
+    const r = await exec("powershell.exe", ["-NoProfile", "-Command", `Test-Path -LiteralPath '${q}'`], { on, timeout: 60_000 });
+    return r.code === 0 && /^true$/i.test((r.stdout ?? "").trim());
+  }
+  const r = await exec("test", ["-d", path], { on, timeout: 60_000 });
+  return r.code === 0;
+}
+
+async function deleteDir(path, on) {
+  if (isWindowsPath(path)) {
+    const q = path.replace(/'/g, "''");
+    const r = await exec("powershell.exe", ["-NoProfile", "-Command", `if (Test-Path -LiteralPath '${q}') { Remove-Item -LiteralPath '${q}' -Recurse -Force -ErrorAction Stop }`], { on, timeout: 600_000 });
+    return r.code === 0 ? "" : (r.stderr || r.stdout || "folder delete failed").trim();
+  }
+  const r = await exec("rm", ["-rf", "--", path], { on, timeout: 600_000 });
+  return r.code === 0 ? "" : (r.stderr || r.stdout || "folder delete failed").trim();
+}
+
+// Removal is only done when git no longer lists the worktree and its folder
+// is gone. Git can unregister a worktree while locked files (node_modules on
+// Windows) leave the folder behind, so sweep leftovers and prune stale
+// registrations before reporting success or failure.
+async function strictRemoveWorktree(main, top, on, force) {
+  if (normPath(top) === normPath(main)) return "That is the main checkout, not a worktree.";
+  let r = await git(main, ["worktree", "remove", ...(force ? ["--force"] : []), top], on, 600_000);
+  let listed = await worktreeListed(main, top, on);
+  if (listed) {
+    r = await git(main, ["worktree", "remove", "--force", "--force", top], on, 600_000);
+    listed = await worktreeListed(main, top, on);
+  }
+  if (listed === null) return r.err || "git worktree list failed.";
+  if (listed) {
+    const delErr = await deleteDir(top, on);
+    await git(main, ["worktree", "prune", "--expire", "now"], on, 600_000);
+    listed = await worktreeListed(main, top, on);
+    if (listed) return `Git still lists this worktree and its folder could not be fully deleted. ${delErr || r.err || ""}`.trim();
+  }
+  if (await dirExists(top, on)) {
+    const delErr = await deleteDir(top, on);
+    if (await dirExists(top, on)) return `Worktree removed from git, but its folder is still there (files in use?). Close what is using it and remove: ${top} ${delErr}`.trim();
+  }
+  return "";
+}
+
 // The submodule repos git keeps for a checkout (nested ones too, checked out
 // or not): { name, dir, pinned }. `config` is the args that read its
 // .gitmodules; `pinned` is the commit its parent records ("" if none).
@@ -247,8 +302,8 @@ export default class Worktree extends View {
     // Terminals first: a shell sitting in the folder keeps it busy on Windows.
     run("space.close", { id: s.id, confirmed: true });
     const force = this.dirty || mods.length > 0;
-    const r = await git(this.repo.main, ["worktree", "remove", ...(force ? ["--force"] : []), this.repo.top], this.on, 600_000);
-    if (!r.ok) return r.err || "git worktree remove failed.";
+    const err = await strictRemoveWorktree(this.repo.main, this.repo.top, this.on, force);
+    if (err) return err;
     if (this.note() && !this.keepNote) {
       const { [noteKey(s)]: _gone, ...rest } = shared(NOTES) ?? {};
       setShared(NOTES, rest);
